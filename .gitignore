@@ -22,6 +22,13 @@ docs/
 #     （本插件也**不**会替用户在别人的项目里写 .gitignore；要忽略由用户自己定）。
 _stash/
 
+# ★★ `_store-research/` —— **别人的源码副本**（DSH STORE 的校验器）。
+#   2026-10-11 为查清「Catalog blocked」根因而下载，**只读研究材料**：
+#     · 它**不在** `files` 白名单里 ⇒ 永远不会进发布包（不影响发布）；
+#     · 但它**是第三方代码**，不该混进我们的仓库历史 ⇒ 与 `_调研-*.md` 同规格：留本机。
+#   ★ 真源在 https://github.com/AI-Scarlett/DSH-Store ，需要时可重新拉取。
+_store-research/
+
 # 依赖与产物
 node_modules/
 *.tgz

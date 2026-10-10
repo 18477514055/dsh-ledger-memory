@@ -6449,6 +6449,139 @@ section("情形 35：逐字胶囊落盘（可回溯 + 抗压缩链失真）");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 42：D61 —— 胶囊素材**跨重启**必须还在（2026-10-11）
+//
+//   病因：`createCapsuleMemory()` 的 `bySid` 是**进程内 Map** ⇒ 内核一重启就清空
+//         ⇒ 「重启后首次压缩」的胶囊**只含重启以来的原话**（实测：只 1 条）。
+//   ★ 实测坐实（口径 = **内核进程启动**边界）：03:33 胶囊收 0 条 / 边界内真值 0 条；
+//     03:51 胶囊收 **1** 条（03:35:01）/ 边界内真值**恰好 1 条** ⇒ 精确吻合。
+//     ★ 我第一版用 `session/end-seed` 当"重启"代理 ⇒ 0/4 全不吻合，那是**我的尺子错**。
+//
+//   本情形怎么模拟"重启"：`mod.apply()` **再执行一次** = 新的一份插件状态
+//   （`capsule` 是 apply 内部新建的），而**同一个 DSH_HOME**（沙箱）⇒
+//   `capsules.json` 会被第二份读到 —— 这正是重启的语义。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 42：D61 胶囊素材跨重启（进程内 Map ⇒ 重启清空）");
+{
+  const mkProj42 = (tag) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n做点什么\n", "utf8");
+    fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.mkdirSync(path.join(dir, "_a"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+  const settle42 = async () => {
+    for (let i = 0; i < 8; i += 1) await new Promise((r) => setTimeout(r, 0));
+  };
+  let seq42 = 0;
+  /** 喂一条用户原话 + 一次写文件（照情形 35 的合法性要求：消息 id 每次不同）。 */
+  const feed42 = async (run, root, sid, text) => {
+    seq42 += 1;
+    for (const h of run.handlers.get("session/event") ?? []) {
+      await h({ id: sid, header: { id: sid, cwd: root } }, {
+        type: "user/message", time: Date.now(),
+        data: { id: `m42-${sid}-${seq42}`, role: "user", content: [{ type: "text", text }], source: { kind: "user" } },
+      });
+      await h({ id: sid, header: { id: sid, cwd: root } }, {
+        type: "tool/call",
+        data: { turn: 1, step: 1, callId: `c42-${sid}-${seq42}`, name: "write",
+          arguments: JSON.stringify({ file_path: path.join(root, "src", `r${seq42}.ts`) }) },
+      });
+    }
+  };
+  /** 走真命令 /ledger compact ⇒ 当场压 + 抓胶囊（最短的那条路）。 */
+  const compact42 = async (run, root, sid) => {
+    const agent = {
+      session: { header: { id: sid, cwd: root }, id: sid, requestContext: () => ({ contextWindow: 1000 }) },
+      steer: () => {},
+    };
+    run.services.tokenMeter._total = 350;
+    const cmd = run.registeredCommands.get("ledger");
+    const res = await cmd.handler({
+      commandId: "c42", agent, rawInput: "compact", attachments: [],
+      signal: new AbortController().signal,
+    });
+    await settle42();
+    return res;
+  };
+  const capsuleTexts42 = (root) => {
+    const out = [];
+    const walk = (d) => {
+      let ents;
+      try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/capsules[\\/]/.test(p)) out.push(fs.readFileSync(p, "utf8"));
+      }
+    };
+    walk(path.join(root, "_ledger-log"));
+    return out;
+  };
+  const storePath42 = path.join(process.env.DSH_HOME ?? "", "plugin-data", "dsh-ledger-memory", "capsules.json");
+
+  // ── 42a：喂 3 条原话 ⇒ **会话结束(dispose)** ⇒ 素材必须落盘 ──────────────
+  const root = mkProj42("d61-persist");
+  const sid = "session-d610000-0001";
+  {
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls: [] });
+    mod.apply(run.ctx, {});
+    await feed42(run, root, sid, "第一条：这条原话在重启后也必须还在");
+    await feed42(run, root, sid, "第二条：同样必须还在");
+    await feed42(run, root, sid, "第三条：必须还在");
+
+    // 触发 dispose ⇒ 应把素材刷到盘上
+    for (const h of run.handlers.get("agent/disposed") ?? []) {
+      await h({ agent: { session: { header: { id: sid, cwd: root }, id: sid } } });
+    }
+    const exists = fs.existsSync(storePath42);
+    // ★★ 判据必须**精确到本 sid**，不能只看"文件存在" ——
+    //   沙箱家是整个自检共用的，别的用例（情形 35 等）走压缩时也会写这个文件
+    //   ⇒ 只看存在性是**假绿**（我第一次反向验证就撞上了：文件在，但本 sid 没记）。
+    let rec;
+    try { rec = exists ? JSON.parse(fs.readFileSync(storePath42, "utf8")).bySession?.[sid] : undefined; } catch { rec = undefined; }
+    ok(
+      "★★★ 42a：会话结束时**本 sid 的**素材落盘（capsules.json 里真有这一条）",
+      rec !== undefined && (rec.userMessages?.length ?? 0) >= 3,
+      `文件在=${exists}；本 sid 记录的原话条数=${rec?.userMessages?.length ?? 0}`
+    );
+  }
+
+  // ── 42b：★★★ 模拟重启（第二次 apply = 全新进程内状态，同一个家）──────────
+  {
+    const run2 = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls: [] });
+    mod.apply(run2.ctx, {}); // ← 「重启」：新的 capsule Map，盘上那份还在
+    // 重启后**只喂一条新原话**（真实情形正是如此：重启后就说了这么一句）
+    await feed42(run2, root, sid, "重启之后才说的第四条");
+    await compact42(run2, root, sid);
+    const texts = capsuleTexts42(root);
+    const first = texts[0] ?? "";
+    ok(
+      "★★★ 42b：重启后压缩 ⇒ 胶囊里**既有**重启前的原话、也有重启后的",
+      first.includes("第一条：这条原话在重启后也必须还在") &&
+        first.includes("重启之后才说的第四条"),
+      `重启前那句在不在=${first.includes("第一条：这条原话在重启后也必须还在")}；` +
+        `重启后那句在不在=${first.includes("重启之后才说的第四条")}`
+    );
+    ok(
+      "★★★ 42b：**不是**只含「重启以来」的那一条（D61 的病征）",
+      first.includes("第二条：同样必须还在") && first.includes("第三条：必须还在"),
+      `胶囊里的原话条数=${(first.match(/^- .\d{4}-\d{2}-\d{2} /gm) ?? []).length}`
+    );
+  }
+
+  rmrf(root);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ★★★ 情形 36：交接单闭环（第③层 —— 让新对话无缝衔接）
 //
 //   ★ 这条要测的不是"能写文件"，而是**环路闭得上**：

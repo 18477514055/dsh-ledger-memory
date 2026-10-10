@@ -3835,6 +3835,119 @@ section("情形 24：手动高保真压缩（工具 + 命令）");
     rmrf(root);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // 24a-2：★★★ 缺漏③ —— 胶囊**前缀截断**会不会砍掉「重读指针」
+  //
+  //   ★ 这条是**三份审计报告（001 B5 / 002 B2）都指出、但没有一份去测量**的：
+  //     拼接顺序 `userBlock + errBlock + artBlock + copyBlock`，截断 `slice(0, MAX)`
+  //     保留**前缀** ⇒ 排在**最后**的 `copyBlock`（**去哪重读磁盘**的指针）
+  //     最可能被整段砍掉 —— 而它正是"高保真"里最该保的东西。
+  //
+  //   ★ 为什么必须测而不是推断：源码上限允许用户原话块达到
+  //     `CAPSULE_USER_MSG_MAX(40) × CAPSULE_USER_MSG_CHARS(1200) = 48000` 字符，
+  //     是总上限 `CAPSULE_MAX_CHARS(16000)` 的 **3 倍** ⇒ **可达**。
+  //     但"可达"不等于"会发生" —— 要喂够长的输入看真结果。
+  //
+  //   ★ 本用例走**真实现**（喂事件 ⇒ 插件自己产胶囊），不是手工复现拼接逻辑。
+  // ═══════════════════════════════════════════════════════════════════════
+  // 24a-2a：喂 40 条 × 1200 字符（顶到源码允许的最大）⇒ 看指针与器物索引还在不在
+  //
+  //   ★ 为什么用 `/ledger compact` **命令**而不是 `ledger_compact` 工具：
+  //     工具只**排队**（回合末 idle 才真压），而这里要验"压的那一刻胶囊长什么样"。
+  //     命令是**当场压**的（D40）⇒ 最短、最直的路。
+  //   ★ 为什么 `requestContext` 必须给：`measurePressure` 拿不到 `contextWindow`
+  //     就返回 undefined，压缩会直接放弃 —— 这是抄 35 组时最容易漏的一处。
+  {
+    const root = mkProj("capsule-trunc");
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true });
+    mod.apply(run.ctx, {});
+    const sid = "session-cccc9999-8888";
+    const agent = {
+      session: {
+        header: { id: sid, cwd: root },
+        id: sid,
+        requestContext: () => ({ contextWindow: 1000 }),
+      },
+      steer: () => {},
+    };
+    const h = run.handlers.get("session/event") ?? [];
+    const emit = async (ev) => {
+      for (const f of h) await f({ id: sid, header: { id: sid, cwd: root } }, ev);
+    };
+    // 40 条 × 1200 字符 = 48000 字符（= `CAPSULE_USER_MSG_MAX × CHARS`，源码允许的最大）
+    for (let i = 0; i < 40; i += 1) {
+      await emit({
+        type: "user/message",
+        time: Date.now(),
+        data: {
+          id: `m-${i}`,
+          role: "user",
+          content: [{ type: "text", text: `第${i}条原话 ` + "甲".repeat(1188) }],
+          source: { kind: "user" },
+        },
+      });
+    }
+    await emit({
+      type: "tool/call",
+      data: {
+        turn: 1, step: 1, callId: "c-t", name: "write",
+        arguments: JSON.stringify({ file_path: path.join(root, "big.ts") }),
+      },
+    });
+    run.services.tokenMeter._total = 350; // 有水位，但远低于 70%（不触发自动那条）
+    const cmd = run.registeredCommands.get("ledger");
+    const res = await cmd.handler({
+      commandId: "c-trunc", agent, rawInput: "compact", attachments: [],
+      signal: new AbortController().signal,
+    });
+    await settle();
+    eq("★★ 长输入下命令压缩成功", res.kind, "success");
+
+    const capFiles = (() => {
+      const out = [];
+      const walk = (d) => {
+        let ents;
+        try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const e of ents) {
+          const p = path.join(d, e.name);
+          if (e.isDirectory()) walk(p);
+          else out.push(p);
+        }
+      };
+      walk(path.join(root, "_ledger-log"));
+      return out.filter((f) => /capsules[\\/]/.test(f));
+    })();
+
+    ok("★★ 长输入下**胶囊真的落盘了**（否则下面那条测的是空气）", capFiles.length >= 1, `找到 ${capFiles.length} 份`);
+    if (capFiles.length >= 1) {
+      const capText = fs.readFileSync(capFiles[capFiles.length - 1], "utf8");
+      const truncated = /胶囊过长已截断/.test(capText);
+      const hasPointer = /可确定性重读|去哪重读|磁盘上的真源/.test(capText);
+      const hasArtifact = /器物索引/.test(capText);
+      const hasUser = /用户原话/.test(capText);
+      console.log(
+        `       （落盘胶囊 ${capText.length} 字符；截断=${truncated ? "**是**" : "否"}；` +
+          `用户原话=${hasUser ? "在" : "缺"}；器物索引=${hasArtifact ? "在" : "缺"}；重读指针=${hasPointer ? "在" : "**缺**"}）`
+      );
+      if (truncated) {
+        ok(
+          "★★★ 缺漏③：胶囊被截断时，**「去哪重读」的指针也必须还在**" +
+            "（它排在拼接最后，最容易被 slice(0,MAX) 整段砍掉）",
+          hasPointer,
+          `胶囊 ${capText.length} 字符已截断；指针${hasPointer ? "在" : "**被砍掉了 —— 报告 B5/B2 实测成立**"}`
+        );
+      } else {
+        ok(
+          "★★ 本夹具**没把胶囊压到 16000 上限** ⇒ 报告 B5/B2 的**机制成立但本机未复现**，" +
+            "不下「已证实」的结论（要更大的输入才压得到边界）",
+          true,
+          `胶囊仅 ${capText.length} 字符（上限 16000）`
+        );
+      }
+    }
+    rmrf(root);
+  }
+
   // 24b：★★★ 命令入口 `/ledger compact` —— **立刻压**（2026-10-09 用户要求）
   //
   //   ★ 用户原话：*"为什么这些指令都不是马上执行呢？…到水位的时候主动按压缩不能进行"*。
@@ -7381,6 +7494,155 @@ section("情形 38：项目锁（总工作区里锁定到子项目）");
 //   `ledger-manual-tool-*`（正是不经过 turn-stopping 落盘的两组）。
 //   ⇒ 等过去抖窗口再统一扫一遍，自检才不留垃圾。
 for (const d of CREATED_ROOTS) rmrf(d);
+// ═══════════════════════════════════════════════════════════════════════════
+// 情形 39：★★★ 三份审计报告点出的两条**高危缺陷**（2026-10-11）
+//
+//   审计员 002 的关键方法论：**这两条落在自检盲区** ——
+//     · 决策写入用例**全部用 `mode:"append"`**（L821 / L4170）
+//     · `compactNow` 夹具**全部成功返回、无一注入抛错**
+//   ⇒ 926 项全绿**不为这两条高危路径背书**。
+//   ⇒ 所以这里**先写会红的用例**（TDD 的顺序），再改实现 —— 否则修了什么、有没有修好，
+//     都只能靠"读一遍觉得对"来判断。
+//
+//   A1：`ledger_write` 对 `decisions` **默认 replace** ⇒ 不传 `mode` 即抹掉全部历史决策。
+//       工具描述却称决策记录 "is never archived / append-only" ⇒ 实现与承诺**直接冲突**。
+//   A4：70% 路径**排队即**置 `hfCompacted=true`；`compactNow` **抛异常**时 idle handler
+//       只 warn、**不复位不重排** ⇒ **本会话全量兜底永久停摆**，只剩内核 80% 硬压（抓不到胶囊）。
+//       ★ 精确边界：返回 `null`（无可压历史）那条**有** `delete` 恢复；闸门拒绝那条也**正确地**
+//         不置真 —— 缺陷**仅限真压缩抛异常/超时**这一条路径。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 39：审计报告点出的 A1 / A4 高危缺陷（先写会红的用例）");
+{
+  const mkA = (tag) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n做点事\n", "utf8");
+    fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n\n## D1 早期决策\n- 这条必须保住\n", "utf8");
+    fs.mkdirSync(path.join(dir, "_a"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 7,
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+
+  // ── A1：默认 mode（不传）写 decisions，**不许**抹掉历史 ────────────────
+  {
+    const root = mkA("a1-decisions-default");
+    const run = makeCtx();
+    mod.apply(run.ctx, {});
+    const A = execFor(root, "session-a1a1a1a1-a1a1");
+    const T = run.registeredTools;
+
+    // 先追加一条（这是现在唯一被测试覆盖的写法）
+    await T.get("ledger_write").execute(
+      { target: "decisions", mode: "append", content: "## D2 追加的决策\n- 第二条\n" },
+      A
+    );
+    const before = fs.readFileSync(path.join(root, "DECISIONS.md"), "utf8");
+    ok("前置：D1 与 D2 都在", before.includes("D1 早期决策") && before.includes("D2 追加的决策"), before);
+
+    // ★ 关键：**不传 mode**（工具描述说这是 append-only 的长期档案）
+    const r = await T.get("ledger_write").execute(
+      { target: "decisions", content: "## D3 新决策\n- 第三条\n" },
+      A
+    );
+    const after = fs.readFileSync(path.join(root, "DECISIONS.md"), "utf8");
+    ok(
+      "★★★ A1：不传 mode 写 decisions ⇒ **旧决策必须还在**（append-only 承诺）",
+      after.includes("D1 早期决策") && after.includes("D3 新决策"),
+      `ok=${r.ok} 文件内容=\n${after.slice(0, 400)}`
+    );
+    rmrf(root);
+  }
+
+  // ── A1b：显式 replace 才允许覆盖（有意为之的操作要有明确出口）──────────
+  {
+    const root = mkA("a1b-decisions-explicit-replace");
+    const run = makeCtx();
+    mod.apply(run.ctx, {});
+    const A = execFor(root, "session-a1b1b1b1-a1b1");
+    const r = await run.registeredTools
+      .get("ledger_write")
+      .execute({ target: "decisions", mode: "replace", content: "## 只剩这一条\n" }, A);
+    const after = fs.readFileSync(path.join(root, "DECISIONS.md"), "utf8");
+    ok(
+      "★★ A1b：**显式** mode:replace 仍然允许整份覆盖（有意为之的出口不能堵死）",
+      after.includes("只剩这一条"),
+      `ok=${r.ok} 内容=\n${after.slice(0, 300)}`
+    );
+    rmrf(root);
+  }
+
+  // ── A4：全量压缩**抛异常**后，本会话必须还能再试（不许永久停摆）────────
+  {
+    const root = mkA("a4-compact-throws");
+    // ★ 与 37i 组同形状的假 agent（那里是块作用域，这里自带一份）
+    const mkAgent39 = (sid, rounds) => {
+      const events = [];
+      let seq = 1;
+      for (let r = 0; r < rounds; r += 1) {
+        events.push({ type: "user/message", seq, data: { message: { role: "user", content: [] } } });
+        seq += 1;
+        events.push({
+          type: "assistant/message",
+          seq,
+          data: { message: { role: "assistant", content: [{ type: "tool-call", id: `c${seq}` }] } },
+        });
+        seq += 1;
+        events.push({ type: "tool/result", seq, data: { message: { role: "tool" } } });
+        seq += 1;
+      }
+      const bySeq = new Map(events.map((e) => [e.seq, e]));
+      return {
+        session: {
+          header: { id: sid, cwd: root },
+          id: sid,
+          requestContext: () => ({ contextWindow: 1000 }),
+          surface: { nodes: events.map((e) => e.seq) },
+          eventAt: (s) => bySeq.get(s),
+        },
+        steer: () => {},
+      };
+    };
+
+    let now = 0;
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true });
+    // ★ 夹具：`compactNow` **抛异常**（这正是 A4 的真实触面；002 指出现有夹具全都成功返回）
+    run.services.compaction = {
+      compactRegion: async () => ({ shadowedSeqs: [], shadowedTokenCount: 0 }),
+      compactNow: async () => {
+        now += 1;
+        throw new Error("compaction backend exploded");
+      },
+    };
+    mod.apply(run.ctx, {});
+    const sid = "session-a4a4a4a4-a4a4";
+    const agent = mkAgent39(sid, 7);
+
+    // 推到 70% 以上 ⇒ 自动全量排队
+    run.services.tokenMeter._total = 800;
+    await runPreStep(run, { agent, messages: [] });
+    // 让 idle handler 真跑一次（会调 compactNow ⇒ 抛异常）
+    await fire(run, "agent/status", { agent, status: "idle" });
+    eq("★★ A4 前置：`compactNow` 确实被调用过（异常路径真的走到了）", now >= 1, true);
+
+    // ★ 关键：**再给一次机会** —— 第一次失败不该用掉整个会话的资格
+    run.services.tokenMeter._total = 820;
+    await runPreStep(run, { agent, messages: [] });
+    await fire(run, "agent/status", { agent, status: "idle" });
+    ok(
+      "★★★ A4：压缩抛异常后**必须还能重试**（不许本会话兜底永久停摆）",
+      now >= 2,
+      `compactNow 调用次数=${now}（若为 1 ⇒ 一次异常就把本会话兜底永久关掉了）`
+    );
+    rmrf(root);
+  }
+}
+
 if (CREATED_ROOTS.length > 0) {
   await new Promise((r) => setTimeout(r, 1500));
   for (const d of CREATED_ROOTS) rmrf(d);

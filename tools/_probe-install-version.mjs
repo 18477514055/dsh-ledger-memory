@@ -188,20 +188,23 @@ console.log("    ⇒ **就是它**（★ 这也是唯一能解释「卸载重装
 console.log("  · ② 里若看到 `^0.1.0` 或精确 `0.1.0` ⇒ 是**第二条**（0.x 的插入符不跨次版本），但它单独不足以解释卸载重装无效。");
 console.log("  · ③ 里 node_modules 的版本 = 你实际在用的版本。");
 
-console.log("\n═══ ⑥ 修法（★ 我已在隔离副本上跑通；A + B 必须一起做）═══");
+console.log("\n═══ ⑥ 修法（★ 我已在隔离副本上跑通；「按精确版本装」那一步是关键）═══");
 console.log("  ⚠️ 先说一句：**「在界面里卸载重装」是治不好的** —— 卸载动不了 pnpm-workspace.yaml。");
 console.log("");
 console.log("  ① 备份：");
 console.log("       copy package.json package.json.bak");
 console.log("       copy pnpm-workspace.yaml pnpm-workspace.yaml.bak");
 console.log("");
-console.log("  ② A —— 按**精确版本**装一次（对「依赖还写着旧范围」的状态直接有效）：");
-console.log("       pnpm add " + NAME + "@<你要的版本>      # 例如 @0.4.0 或 @latest");
+console.log("  ② ★ 关键一步 —— 按**精确版本**装一次：");
+console.log("       pnpm add " + NAME + "@<你要的版本>      # 例如 @1.0.0 或 @latest");
+console.log("     ★ 实测：pnpm 会**自己**把那行改成 `<包>@0.1.0 || <新版本>`（追加而非替换），");
+console.log("       新版本于是进了候选集、解析取最新 ⇒ **这一步就足以破局**。");
 console.log("");
-console.log("  ③ B —— 删掉 pnpm-workspace.yaml 里那一行 `- " + NAME + "@<旧版本>`");
+console.log("  ③ 建议顺手清掉那行（**不是必需**，但更干净）：删掉 pnpm-workspace.yaml 里");
+console.log("     `- " + NAME + "@…` 那一行 —— 以后就不会再有歧义。");
 console.log("");
 console.log("  ④ ★ **重启客户端**（服务端半边只在启动时加载一次）。");
 console.log("");
-console.log("  ★ 为什么 A 和 B 都要：只删豁免行 ⇒ 依赖仍写着旧范围，天花板还在；");
-console.log("    只按精确版本装 ⇒ 豁免行还留着，下次裸名装又被带回旧版。");
+console.log("  ★ 更正说明：我先前写过「A 和 B 必须一起做」 —— 实测**只要 A** 就够；");
+console.log("    B 只是让状态更干净。此处以实测为准。");
 

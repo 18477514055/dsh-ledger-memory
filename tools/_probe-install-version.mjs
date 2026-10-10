@@ -101,6 +101,51 @@ if (range === undefined) {
   console.log(`  ⇒ ${range}（1.x 及以上的插入符）⇒ 允许跨次版本 ⇒ **不会有这个问题**。`);
 }
 
+// ── ②b ★★★ `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`（**最常被漏掉的真枷锁**）──
+//
+// ★ 为什么必须查这里（2026-10-11 的教训）：
+//   用户"卸载重装三次都只装到 0.1.0"。我一开始只查了注册表/镜像/依赖范围，
+//   全都不足以解释"卸载重装无效"。
+//   **真凶是这个文件里一行过期的豁免**：
+//       minimumReleaseAgeExclude:
+//         - <包名>@<旧版本>
+//   隔离目录 A/B/A/B 实测（pnpm 12.3.4）：有这行 ⇒ 裸名安装被钉到那一版；
+//   删掉 ⇒ 立刻解析到 latest。
+//   ★ 而**卸载重装治不好它** —— 卸载动的是 profile 的 dependencies，
+//     动不了 `pnpm-workspace.yaml` 那一行。这正是"怎么卸载重装都没用"的原因。
+//   ★ 更阴的一点：pnpm **自己会往这个文件追加**豁免行（装成功时自动写），
+//     但它**只追加、不更新已存在的旧行** ⇒ 旧行一旦在，就永远躺在那儿。
+console.log("\n═══ ②b ★★★ pnpm-workspace.yaml 里的 minimumReleaseAgeExclude ★最容易漏的一条★ ═══");
+for (const p of profiles) {
+  const ws = path.join(DSH, "profiles", p, "pnpm-workspace.yaml");
+  if (!fs.existsSync(ws)) { console.log(`  profile「${p}」：没有 pnpm-workspace.yaml`); continue; }
+  const text = fs.readFileSync(ws, "utf8");
+  const lines = text.split("\n");
+  const inSection = lines.some((l) => /^\s*minimumReleaseAgeExclude\s*:/.test(l));
+  console.log(`  profile「${p}」：有 minimumReleaseAgeExclude 段 ? ${inSection ? "是" : "否"}`);
+  // 找出与目标包有关的豁免行
+  const hits = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const l = lines[i];
+    if (!l.includes(NAME)) continue;
+    if (!/^\s*-/.test(l)) continue; // 只要列表项
+    hits.push({ n: i + 1, t: l.trim() });
+  }
+  if (hits.length === 0) {
+    console.log(`      ★ 没有本包的豁免行 ⇒ 这条路是干净的`);
+  } else {
+    for (const h of hits) {
+      console.log(`      ★★ L${h.n}: ${h.t}`);
+      // 解析出 @版本，判断它是不是"过期"的
+      const m = h.t.match(new RegExp(`${NAME.replace(/[/\\]/g, "\\$&")}@([0-9][^\\s|]*)`));
+      if (m) {
+        console.log(`      ⇒ 这条把「裸名安装」的解析**钉在 ${m[1]}**。`);
+        console.log(`      ⇒ ★ 解药：删掉这一行（卸载重装**治不好**它 —— 卸载动不了这个文件）。`);
+      }
+    }
+  }
+}
+
 // ── ③ 已装的实际版本 + 锁文件 ────────────────────────────────
 console.log("\n═══ ③ 磁盘上实际装的是哪一版 ═══");
 for (const p of profiles) {
@@ -138,10 +183,25 @@ for (const f of [
 if (process.env.npm_config_registry) console.log(`  环境变量 npm_config_registry = ${process.env.npm_config_registry}`);
 
 console.log("\n═══ ⑤ 结论怎么读 ═══");
-console.log("  · ② 里若看到 `^0.1.0` 或精确 `0.1.0` ⇒ **就是它**，与界面显示无关。");
+console.log("  · ②b 里若看到 `minimumReleaseAgeExclude: - " + NAME + "@<旧版本>`");
+console.log("    ⇒ **就是它**（★ 这也是唯一能解释「卸载重装三次都无效」的一条）。");
+console.log("  · ② 里若看到 `^0.1.0` 或精确 `0.1.0` ⇒ 是**第二条**（0.x 的插入符不跨次版本），但它单独不足以解释卸载重装无效。");
 console.log("  · ③ 里 node_modules 的版本 = 你实际在用的版本。");
-console.log("  · 若 ② 干净、③ 却仍是旧版 ⇒ 再看是否有 pnpm 元数据缓存/私有源，需要单独查。");
-console.log("\n  解药（按省事程度）：");
-console.log("   ① 在 DSH 界面里**先卸载、再安装**（最省事，且治本）");
-console.log("   ② 或显式给版本：pnpm add " + NAME + "@latest");
-console.log("   ③ 或先把依赖删掉：pnpm remove " + NAME + " && pnpm add " + NAME);
+
+console.log("\n═══ ⑥ 修法（★ 我已在隔离副本上跑通；A + B 必须一起做）═══");
+console.log("  ⚠️ 先说一句：**「在界面里卸载重装」是治不好的** —— 卸载动不了 pnpm-workspace.yaml。");
+console.log("");
+console.log("  ① 备份：");
+console.log("       copy package.json package.json.bak");
+console.log("       copy pnpm-workspace.yaml pnpm-workspace.yaml.bak");
+console.log("");
+console.log("  ② A —— 按**精确版本**装一次（对「依赖还写着旧范围」的状态直接有效）：");
+console.log("       pnpm add " + NAME + "@<你要的版本>      # 例如 @0.4.0 或 @latest");
+console.log("");
+console.log("  ③ B —— 删掉 pnpm-workspace.yaml 里那一行 `- " + NAME + "@<旧版本>`");
+console.log("");
+console.log("  ④ ★ **重启客户端**（服务端半边只在启动时加载一次）。");
+console.log("");
+console.log("  ★ 为什么 A 和 B 都要：只删豁免行 ⇒ 依赖仍写着旧范围，天花板还在；");
+console.log("    只按精确版本装 ⇒ 豁免行还留着，下次裸名装又被带回旧版。");
+

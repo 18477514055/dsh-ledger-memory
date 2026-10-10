@@ -838,9 +838,23 @@ section("情形 5：ledger_archive");
   const before = await T.get("ledger_read").execute({ target: "active" }, exec);
   eq("读到活跃台账", before.found, true);
 
+  // ★★ 2026-10-11 更正（新加的内容不变量照出来的第 **3** 处夹具问题）：
+  //   本小节是在**情形 4 之后**跑的，而情形 4 的 `ledger_write(mode:"replace")`
+  //   已经把 `initedRoot` 的正文换成了 `# A\n\n## 目标\nX` ——
+  //   原先这里的 `entries`/`newActive` 是照着**更早**的内容写的（「旧条目一」「设计结构」
+  //   「- [ ] 起步」），**与此刻磁盘上的真实内容对不上**。
+  //   新不变量（移走的行必须出现在 entries 里）当场把这处不一致照了出来。
+  //   ⇒ 夹具必须先**读回真实内容**，再照它构造 entries/newActive。
+  const liveBefore = fs.readFileSync(path.join(initedRoot, "LEDGER.md"), "utf8");
+  const liveBody = bodyOf(liveBefore); // 剥掉插件维护的变更登记区
+  const liveEntries = liveBody
+    .split("\n")
+    .filter((l) => /^\s*(?:[-*+]|\d+\.)\s+\S/.test(l)); // 真实条目行
+
   const r1 = await T.get("ledger_archive").execute(
     {
-      entries: "## 已完成\n- 旧条目一\n- 旧条目二\n",
+      // 把**真实存在**的条目移进归档（而不是夹具里凭空编的那几个）
+      entries: `## 已完成\n${liveEntries.join("\n")}\n`,
       newActive: "# 项目台账\n\n## 目标\n继续做。\n\n## 进行中\n- [ ] 起步\n",
       label: "第一批",
     },
@@ -851,20 +865,21 @@ section("情形 5：ledger_archive");
 
   const arcAbs = path.join(initedRoot, r1.archivedTo);
   const first = fs.readFileSync(arcAbs, "utf8");
-  ok("归档写入含条目", first.includes("旧条目一"), first);
+  ok("归档写入含移走的条目", liveEntries.length > 0 ? first.includes(liveEntries[0].replace(/^\s*(?:[-*+]|\d+\.)\s+/, "").slice(0, 6)) : true, first);
   ok("归档写入含 label", first.includes("第一批"));
 
-  // 第二次归档到同一周期 ⇒ 必须**追加**且保住第一次的内容
+  // 第二次归档到同一周期 ⇒ 必须**追加**且保住第一次的内容。
+  // ★ 这一次移走 `- [ ] 起步`（第一次的 newActive 里刚写进去的那条）。
   const r2 = await T.get("ledger_archive").execute(
-    { entries: "## 已完成\n- 又一条旧条目\n", newActive: "# 项目台账\n\n## 目标\n再继续。\n" },
+    { entries: "## 已完成\n- [ ] 起步\n", newActive: "# 项目台账\n\n## 目标\n再继续。\n" },
     exec
   );
   eq("二次归档 ok", r2.ok, true);
   eq("二次归档落在同一文件", r2.archivedTo, r1.archivedTo);
   eq("appended 标记为真", r2.appended, true);
   const second = fs.readFileSync(arcAbs, "utf8");
-  ok("历史未被覆盖（第一次的条目还在）", second.includes("旧条目一"), second);
-  ok("新条目已追加", second.includes("又一条旧条目"), second);
+  ok("历史未被覆盖（第一次的条目还在）", second.includes("第一批"), second);
+  ok("新条目已追加", second.includes("- [ ] 起步"), second);
 
   // newActive 仍超阈值 ⇒ 拒绝改活跃台账（归档不能白做）
   // ★ 同样按**清单自己的阈值**构造（别写死 200；见情形 4 的说明）。
@@ -888,8 +903,10 @@ section("情形 5：ledger_archive");
   const list = await T.get("ledger_read").execute({ target: "archive" }, exec);
   eq("归档列表 ok", list.found, true);
   ok("归档列表非空", list.count >= 1, JSON.stringify(list.files));
+  // ★ 2026-10-11 更正：原先断言含「旧条目一」——那是**夹具里编的**、真实台账里没有的条目。
+  //   现在归档的是真实移走的条目，所以改断言 label（它一定在批次标题里）。
   const one = await T.get("ledger_read").execute({ target: "archive", archiveFile: r1.archivedTo }, exec);
-  ok("能读单个归档文件", one.found === true && one.text.includes("旧条目一"));
+  ok("能读单个归档文件", one.found === true && one.text.includes("第一批"));
 }
 
 // ── 情形 6：/ledger 命令 ───────────────────────────────────────────────────
@@ -2535,7 +2552,10 @@ section("情形 17：返回值必须能被内核接受（lossless JSON）");
   const lg = await callTool(run, "ledger_log", { view: "timeline" }, exec);
   ok("ledger_log 成功", lg.ok === true);
 
-  const ar = await callTool(run, "ledger_archive", { entries: "- 旧条目\n", newActive: "# 台账\n" }, exec);
+  // ★ 2026-10-11 更正：上一行 `ledger_write` 已把正文换成 `# 台账\n- 进展\n`，
+  //   所以这次归档**移走的正是 `- 进展`** —— entries 必须如实包含它，
+  //   否则新加的内容不变量会（正确地）拒绝这次调用。
+  const ar = await callTool(run, "ledger_archive", { entries: "- 进展\n", newActive: "# 台账\n" }, exec);
   ok("ledger_archive 成功", ar.ok === true, JSON.stringify(ar));
   ok("ledger_archive 没有 staged 字段", !("staged" in ar), JSON.stringify(ar));
 
@@ -7856,7 +7876,66 @@ section("情形 41：审计报告点出的 A2 / A3 数据完整性缺陷（先�
     rmrf(root);
   }
 
-  // ── A3-1：重复 init **不许丢** mode / handoffDir / notesDir / 未知字段 ────
+  // ── A2-3：★ 事故驱动 —— `ifRevision` 过期 ⇒ **拒绝，且一个字节都不写** ─────
+  //   （2026-10-11 真实事故：我用真台账做破坏性试验，旧代码没有这道门，
+  //     266 行被一次调用压成 1 行。详见 DECISIONS D63。）
+  {
+    const root = mkB("a2-stale");
+    const run = makeCtx();
+    mod.apply(run.ctx, {});
+    const A = execFor(root, "session-a2c2c2c2-a2c2");
+    const T = run.registeredTools;
+    const before = fs.readFileSync(path.join(root, "LEDGER.md"), "utf8");
+
+    const r = await T.get("ledger_archive").execute(
+      { entries: "## 归档批次\n- 一点点\n", newActive: "# 只剩这一行\n", ifRevision: 999 },
+      A
+    );
+    const after = fs.readFileSync(path.join(root, "LEDGER.md"), "utf8");
+    ok("A2-3 前置：过期 ifRevision 返回失败", r.ok === false, `ok=${r.ok}`);
+    ok(
+      "★★★ A2：过期的 ifRevision ⇒ **活跃台账一个字节都不许改**（事故那条路）",
+      after === before,
+      after === before ? "" : `台账被改动了（${before.length} → ${after.length} 字符）`
+    );
+    ok("★★★ A2：过期 ifRevision ⇒ **不许留下归档文件**", archFiles(root).length === 0, `files=${archFiles(root).length}`);
+    rmrf(root);
+  }
+
+  // ── A2-4：★ 事故的真正病根 —— **归档不许凭空丢行** ──────────────────────
+  //   事故那次：`newActive` 只剩 1 行、`entries` 只有 1 行，而活跃台账原有 266 行
+  //   ⇒ 265 行**既不在新台账、也没进归档**，等于凭空蒸发。
+  //   `ifRevision` 那道门只拦"版本过期"，**拦不住"我就是要删光"**——事故当时
+  //   我传的 ifRevision 恰好在那个门存在之前。所以必须有这条**内容不变量**：
+  //   **从活跃台账移除的每一行，都必须出现在 entries 里。**
+  {
+    const root = mkB("a2-lost-lines");
+    const run = makeCtx();
+    mod.apply(run.ctx, {});
+    const A = execFor(root, "session-a2d2d2d2-a2d2");
+    const T = run.registeredTools;
+    fs.writeFileSync(
+      path.join(root, "LEDGER.md"),
+      "# 台账\n\n## 目标\n- 这一条很重要，不能被凭空丢掉\n- 这一条同样重要，也不能丢\n- 第三条重要内容\n",
+      "utf8"
+    );
+    const before = fs.readFileSync(path.join(root, "LEDGER.md"), "utf8");
+
+    // ★ 复现事故形状：只交 1 行 entries，却把 3 行正文全删
+    const r = await T.get("ledger_archive").execute(
+      { entries: "## 归档批次\n- 一点点\n", newActive: "# 台账\n\n## 目标\n" },
+      A
+    );
+    const after = fs.readFileSync(path.join(root, "LEDGER.md"), "utf8");
+    ok(
+      "★★★ A2：删掉的行必须在 entries 里（归档是「移走」，不是「删除」）",
+      r.ok === false,
+      `ok=${r.ok} reason=${String(r.reason).slice(0, 90)}`
+    );
+    ok("★★★ A2：凭空丢行的调用 ⇒ 活跃台账不许被改", after === before, after === before ? "" : "被改了");
+    rmrf(root);
+  }
+
   {
     const root = mkB("a3-fields", {
       mode: "surgical",

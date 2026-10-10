@@ -1,0 +1,61 @@
+{
+  "name": "dsh-ledger-memory",
+  "version": "0.1.1",
+  "description": "台账记忆（Ledger Memory）：为 DSH 提供工程化的项目记忆 —— 台账的检测/注入/归档/Git 配合，活动日志（L0–L4），三层上下文压缩与逐字胶囊落盘，以及跨会话的交接单闭环。可回溯、可追查。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "ledger",
+    "memory",
+    "context",
+    "compaction",
+    "handoff",
+    "traceability",
+    "agent"
+  ],
+  "license": "MIT",
+  "author": "陈黛华 (https://github.com/18477514055)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/18477514055/dsh-ledger-memory.git"
+  },
+  "homepage": "https://github.com/18477514055/dsh-ledger-memory#readme",
+  "bugs": {
+    "url": "https://github.com/18477514055/dsh-ledger-memory/issues"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node tools/selftest.mjs",
+    "probes": "node tools/_probe-assertion-can-fail.mjs && node tools/_probe-dirty-source.mjs && node tools/_probe-capsule-persistence.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  }
+}

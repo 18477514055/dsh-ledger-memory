@@ -1,0 +1,12 @@
+# dsh-ledger-memory —— 项目台账自动管理
+#
+# 这个文件是「profile bundle patch」：内核组合 profile 时会把它插进插件树。
+# ★ 两条实测教训（改动前必读）：
+#   1. package.json 里必须同时有 dsh.bundle.patch 和（如果带浏览器半边）dsh.client，
+#      只写 dsh.client 会让内核直接失败：
+#        profile bundle "..." declares no dsh.bundle in its package.json
+#   2. id 一律用包名，别自创短名。
+
+- insert:
+    - id: dsh-ledger-memory
+      name: dsh-ledger-memory

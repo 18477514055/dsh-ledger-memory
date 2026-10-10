@@ -1,0 +1,25 @@
+# ── 只提交插件本体；开发过程记录留在本机（含私有项目名与本机路径）──
+LEDGER.md
+DECISIONS.md
+.dsh-ledger.json
+_ledger-log/
+_ledger-archive/
+_handoff/
+_调研-billion-context.md
+_调研-内核bundle-patch机制.md
+_计划-设置面板.md
+capsules/
+
+# ★ README 双份制的「给我自己」那一份 —— 内部决策 / 踩坑 / 状态
+#   规矩真源：70-旧工作区原件\第三工作区\插件发布-必读.md §4
+#   它对内、不进包（files 白名单里没有 docs）、也不公开
+docs/
+
+# 依赖与产物
+node_modules/
+*.tgz
+*.log
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db

@@ -85,10 +85,14 @@ pnpm 会把那一行**自己改成** `- dsh-ledger-memory@0.1.0 || 1.0.0`（追�
 ★ **建议顺手把那行清掉**（不是必需，但更干净）：删掉
 `pnpm-workspace.yaml` 里 `- dsh-ledger-memory@…` 那一行，以后就不会再有歧义。
 
-诊断工具：仓库里 `tools/_probe-install-version.mjs`（**只读**）会把上面这些一次性查清：
-```
-node tools/_probe-install-version.mjs
-```
+**自查（不需要任何额外文件）**：打开
+`<DSH_HOME>/profiles/<你的 profile>/pnpm-workspace.yaml`，看有没有
+`- dsh-ledger-memory@` 开头的那一行。**有** ⇒ 就是它；**没有** ⇒ 问题在依赖范围（上面第 1 条）。
+
+> 本仓库里另有一个更省事的只读诊断：`node tools/_probe-install-version.mjs`。
+> ⚠️ 它**只在本仓库里有**、**不在 npm 包里**（包内只有 `lib/`、`README.md`、
+> `cordis.patch.yml`、`package.json` 与 `tools/selftest.mjs`）——
+> 所以从 npm 装的用户请用上面那条手工自查。
 
 ## 用法
 

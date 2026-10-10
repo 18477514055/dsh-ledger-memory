@@ -27,6 +27,18 @@ node_modules/
 *.tgz
 *.log
 
+# ★★★ 临时脚本与临时文本 —— **绝不提交**。
+#   为什么专门加这一条（2026-10-10 真实失误）：
+#   我用 `git commit -F tools/_tmp-msg040.txt` 写提交说明，
+#   随后 `git add -- tools` 把整个 tools/ 暂存了 ⇒ **把那个临时文件也提交进了仓库**
+#   （提交 89b4fac 里确实有 `tools/_tmp-msg040.txt`，45 行）。
+#   ⇒ 教训：`git add -- <目录>` 会连带暂存那一层里**所有未被忽略**的文件，
+#     「临时文件应该不在里面」这个印象**挡不住它** —— 必须靠 .gitignore 硬挡。
+#   ★ 注意 `_probe-dirty-source.mjs` 查的是**工作区**有没有 `_tmp-*` 残留，
+#     它**查不出**"已经提交进 git"——两件事要分开看，这次就是漏在后一件上。
+_tmp-*
+tools/_tmp-*
+
 # 编辑器 / 系统
 .DS_Store
 Thumbs.db

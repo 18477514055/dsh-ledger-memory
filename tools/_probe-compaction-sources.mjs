@@ -76,8 +76,20 @@ for (const p of cands) {
       const nm = cmdName.get(src);
       label = nm === "compact" ? "官方 /compact（无胶囊）" : nm === "ledger" ? "我们的 /ledger compact（有胶囊）" : `命令 ${nm ?? "?"}`;
     } else {
-      // 没有 sourceCommandId ⇒ 自动触发（内核 0.8 或我们的增量/70%）
-      label = j.data?.turn === null ? "自动（无 turn）" : "自动（回合内）";
+      // 没有 sourceCommandId ⇒ **非手动**。但**仅凭会话日志分不出**是"我们的增量"
+      // 还是"内核自己那一次" —— 两者都会出现在这里。
+      // ★★ 2026-10-11 更正（尺子错第 16 次的同一类）：
+      //   原来这里写「自动（回合内）」/「自动（无 turn）」，并据此下结论
+      //   "官方 17 次 vs 我们 0 次" —— **那个归因是错的**：
+      //   我拿它当"我们的增量从未跑过"的证据，而实际 10-10 19:20:35 那次
+      //   正是我们的 `auto:delta`（L0 有明写）。
+      //   ★ 教训（第 4 条纪律）：**分不出来就要报"无法判定"**，
+      //     不能拿一个粗标签去支撑一个具体结论。
+      //   这里保留两个桶，但**只陈述机制**、不再暗示归属：
+      label =
+        j.data?.turn === null
+          ? "非手动·回合末（turn=null）· 归属需另证"
+          : "非手动·回合内（turn=N）· 归属需另证";
     }
     bySource.set(label, (bySource.get(label) ?? 0) + 1);
     detail.push({ sid, label, turn: j.data?.turn ?? null });
@@ -91,5 +103,12 @@ for (const [k, v] of [...bySource.entries()].sort((a, b) => b[1] - a[1])) {
 
 const official = bySource.get("官方 /compact（无胶囊）") ?? 0;
 const ours = bySource.get("我们的 /ledger compact（有胶囊）") ?? 0;
-console.log(`\n★ 结论：官方 /compact **${official}** 次 vs 我们的 **${ours}** 次`);
-console.log("  ⇒ 用户真实习惯是**按官方的**，而那些压缩**抓不到逐字胶囊**。");
+console.log(`\n★ 手动那一类：官方 /compact **${official}** 次 vs 我们的 /ledger compact **${ours}** 次`);
+console.log("  ⇒ 用户真实习惯偏向官方那条，而那些压缩**抓不到逐字胶囊**。");
+
+console.log(
+  "\n★★ 要判「非手动那几次」到底是谁，**会话日志不够** —— 请另查活动日志：" +
+    "\n   `_ledger-log/**/L0-milestones.md` 里 `compaction/end` 的中文标签就是插件自己写的归属：" +
+    "\n     `自动（增量）` = 我们的增量 · `自动（70% 水位）` = 我们全量 · `手动（工具/命令）` = 手动" +
+    "\n   （会话日志只有 `turn` 一个字段，两种自动都长一样。）",
+);

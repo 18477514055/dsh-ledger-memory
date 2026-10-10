@@ -5664,8 +5664,18 @@ section("情形 27：官方设置面板");
      *   ⇒ 保留 250 token。而 7 轮 × 3 节点 = **21 个节点**，每个 10 token 只有 **210** 总 token
      *   ⇒ 从后往前攒不够 250 ⇒ `selectIncrementalRange` 返回 null ⇒ **一次都不压** ⇒ 断言红。
      *
-     *   ★ 真实内核里不会这样：`tokenMeter.measure()` 的 totalTokens **就是** surface 各节点之和，
-     *     所以"节点总量 210 而水位 350"是不可能出现的状态。⇒ 是**夹具**要修，不是代码错。
+     *   ⚠️⚠️ **前提已更正（2026-10-11 03:45）** —— 这里原本写着
+     *     「真实内核里 `measure()` 的 totalTokens **就是** surface 各节点之和」，
+     *     并据此断言"节点总量 210 而水位 350"是**不可能**的状态。**那句话是错的。**
+     *     ★ 逐字读内核 `dsh-token-meter/lib/types/index.js` 的真源码，`measure()` 返回的是：
+     *         `tokens: estimateToolsTokens(header) + surface.surfaceTokens`   ← **含工具头**
+     *         `totalTokens: Math.max(0, baseline.tokens + surfaceDeltaTokens)`
+     *         `nodes: surface.nodes`                                          ← **只有 surface**
+     *     ⇒ **totalTokens 含工具头、Σnodes 不含** ⇒ `Σnodes < totalTokens` 是**常态**，
+     *       本机 406 个工具、定义 JSON ≈116K token ⇒ 两者差得极大。
+     *     ★ 这个错误前提让**夹具内部自洽、真机不自洽** ⇒ 934 项全绿而真机零压缩（D62）。
+     *       真机那种不自洽现由**情形 40** 专门复现（`_total` 与 `Σ_priced` 故意不等）。
+     *     ⇒ 本夹具为求简单仍取 total == Σnodes；**别再把它当成"与现实一致"的证据**。
      *   ⇒ 每个节点给 20 token：21 × 20 = 420 > 350（水位），内部自洽。
      *     ⚠️ 但别给太大：`selectIncrementalRange` 是"攒够 retain 就停"，
      *       节点 token 越大、保留段占用的节点越少、压掉的越多（end 越小）。

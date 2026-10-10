@@ -160,10 +160,13 @@ const CASES = [
     marker: "涨够 20 点 ⇒ 调了一次 compactRegion",
   },
   {
-    // ★★★ 把"保留最近一大块"改成"全压"（retain=0）—— 那就退回旧行为了。
+    // ★★★ 把"压掉固定一段（棘轮）"改成"全压"（retain=0）—— 那就退回旧行为了。
     //   ⇒ 必须红在"只压最旧一段、不碰最新"那条上。
+    // ★ 2026-10-11：保留量已从"常量"改成"当前水位 − 每轮压掉的点"（棘轮），
+    //   所以 good 串跟着改。**探针的 good 串必须跟着源码走**，
+    //   否则它会因为"找不到 good 串"而报错或误判（本机栽过）。
     name: "增量压缩退化成「全压」（retain 归零）",
-    good: "  const retainTokens = Math.floor((settings.deltaKeepPoints / 100) * pressure.window);",
+    good: "  const retainTokens = Math.floor(keepRatio * pressure.window);",
     bad: "  const retainTokens = 0;",
     marker: "只压最旧一段、不碰最新",
   },
@@ -171,10 +174,10 @@ const CASES = [
     // ★★★ 增量压缩的锚点：必须取**压后**水位。
     //   取压前 ⇒ 阈值一轮比一轮高（21→42→63→84…）⇒ 冲破 70%，正是用户要避免的。
     //   （轨迹证据见 `tools/_probe-delta-anchor.mjs`。）
+    // ★ 2026-10-11：写入已改成 `setAnchor(...)`（多了一步落盘），good 串随之更新。
     name: "增量压缩的锚点取成「压前」水位（阈值会一轮轮漂高）",
-    good: `    const after = measurePressure(ctx, agent);
-    state.deltaAnchor.set(key, after === undefined ? settings.deltaKeepPoints / 100 : after.ratio);`,
-    bad: `    state.deltaAnchor.set(key, pressure.ratio);`,
+    good: `    const after = measurePressure(ctx, agent);`,
+    bad: `    const after = undefined; // 冒充"量不到"⇒ 退回到不重量的错路`,
     // ★ 标记词逐字取自**失败清单**（不是"锚点"这种泛词 —— 泛词可能在别处出现）。
     marker: "若锚点是压前 350",
   },

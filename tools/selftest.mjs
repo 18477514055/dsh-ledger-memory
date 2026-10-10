@@ -4712,7 +4712,7 @@ section("情形 27：官方设置面板");
         JSON.stringify([
           "autoCompact",
           "changeRegisterMax",
-          "deltaKeepPoints",
+          "deltaRemovePoints",
           "deltaTriggerPoints",
           "highFidelityCompact",
           "highFidelityCompactRatio",
@@ -5543,7 +5543,21 @@ section("情形 27：官方设置面板");
         _nodeCount: events.length,
       };
     };
-    /** 给 tokenMeter 配上"每个节点花多少 token"。 */
+    /**
+     * 给 tokenMeter 配上"每个节点花多少 token"。
+     *
+     * ★★★ 2026-10-11（棘轮修复）后**必须让各节点之和 ≥ 水位**，否则夹具自相矛盾：
+     *   新算法保留量 = (水位 − 每轮压掉的点) × 窗口。窗口 1000、水位 350（35%）、压掉 10
+     *   ⇒ 保留 250 token。而 7 轮 × 3 节点 = **21 个节点**，每个 10 token 只有 **210** 总 token
+     *   ⇒ 从后往前攒不够 250 ⇒ `selectIncrementalRange` 返回 null ⇒ **一次都不压** ⇒ 断言红。
+     *
+     *   ★ 真实内核里不会这样：`tokenMeter.measure()` 的 totalTokens **就是** surface 各节点之和，
+     *     所以"节点总量 210 而水位 350"是不可能出现的状态。⇒ 是**夹具**要修，不是代码错。
+     *   ⇒ 每个节点给 20 token：21 × 20 = 420 > 350（水位），内部自洽。
+     *     ⚠️ 但别给太大：`selectIncrementalRange` 是"攒够 retain 就停"，
+     *       节点 token 越大、保留段占用的节点越少、压掉的越多（end 越小）。
+     *       本夹具要的 end=10（压最旧 10 个、留 11 个），所以取 20 并把它算准（见 30a）。
+     */
     const priceNodes = (run, agent, tokensEach) => {
       run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({
         seq,
@@ -5566,13 +5580,13 @@ section("情形 27：官方设置面板");
       mod.apply(run.ctx, {});
       const sid = "session-delta000-0001";
       const agent = mkDeltaAgent(root, sid, 7); // 21 个节点
-      priceNodes(run, agent, 10);
+      priceNodes(run, agent, 20);
 
       await flushLedger(run, root, sid); // 先落盘（闸门要求）
       run.services.tokenMeter._total = 100; // 10%
       await runPreStep(run, { agent, messages: [] });
       // 涨到 35%（>10+20）⇒ 到水位档了
-      run.services.tokenMeter._total = 350;
+      run.services.tokenMeter._total = 420;
       const dNotice = await runPreStep(run, { agent, messages: [] });
       // ★★★ 这一步**只该提醒、不该压**（这正是本轮修的东西）
       eq("★★★ 发提醒的那一步**不许压**（先记台账、再压缩）", regionCalls.length, 0);
@@ -5590,13 +5604,17 @@ section("情形 27：官方设置面板");
         regionCalls[0]?.start === 1,
         JSON.stringify(regionCalls[0])
       );
-      // ★ 校准过的数字：21 节点 × 10 token；窗口 1000、保留 10 点 ⇒ retain=100
-      //   ⇒ 保留最后 10 个节点，压掉最旧 10 个（end=10）。
+      // ★ 校准过的数字（**2026-10-11 棘轮修复后重新测的，不是我推的**）：
+      //   21 节点 × 20 token = 420；水位 420（42%）、每轮压掉 10 点
+      //   ⇒ 保留 = (0.42 − 0.10) × 1000 = **320** token ⇒ 保留最后 17 个、压掉最旧 4 个（**end=4**）。
+      //   ⚠️ 我先按"攒够 320 就停"手推成 end=6，实测是 **end=4** —— 因为 `selectIncrementalRange`
+      //     从末尾往回攒，凑够门槛时**已经越过**门槛（不是恰好等于），随后还要按平衡边界回退。
+      //   ⇒ 教训：**这类数字必须从实测输出里读回来**，手推会错。
       //   （第一版夹具 token 给太小、且只造 tool-call 不造 tool/result，
       //     导致 range 恒为 null ⇒ 假红。见 `mkDeltaAgent` 的注释。）
       ok(
-        "★★★ 而且**只压最旧一段、不碰最新**（end=10，后面 11 个节点全留着）",
-        regionCalls[0]?.end === 10,
+        "★★★ 而且**只压最旧一段、不碰最新**（end=4，后面 17 个节点全留着）",
+        regionCalls[0]?.end === 4,
         `end=${regionCalls[0]?.end}（共 21 个节点）`
       );
       rmrf(root);
@@ -5616,12 +5634,12 @@ section("情形 27：官方设置面板");
       mod.apply(run.ctx, {});
       const sid = "session-delta000-0009";
       const agent = mkDeltaAgent(root, sid, 7);
-      priceNodes(run, agent, 10);
+      priceNodes(run, agent, 20);
 
       await flushLedger(run, root, sid);
       run.services.tokenMeter._total = 100;
       await runPreStep(run, { agent, messages: [] });
-      run.services.tokenMeter._total = 350;
+      run.services.tokenMeter._total = 420;
       const d = await runPreStep(run, { agent, messages: [] });
       const t = (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
       ok("★ 这一步确实发了水位提醒", /上下文水位已到/.test(t), t.slice(0, 200));
@@ -5646,7 +5664,7 @@ section("情形 27：官方设置面板");
       mod.apply(run.ctx, {});
       const sid = "session-delta000-0002";
       const agent = mkDeltaAgent(root, sid, 7);
-      priceNodes(run, agent, 10);
+      priceNodes(run, agent, 20);
 
       await flushLedger(run, root, sid);
       run.services.tokenMeter._total = 100;
@@ -5669,12 +5687,12 @@ section("情形 27：官方设置面板");
       mod.apply(run.ctx, {});
       const sid = "session-delta000-0003";
       const agent = mkDeltaAgent(root, sid, 7);
-      priceNodes(run, agent, 10);
+      priceNodes(run, agent, 20);
 
       // ★ 故意**不**调 flushLedger
       run.services.tokenMeter._total = 100;
       await runPreStep(run, { agent, messages: [] });
-      run.services.tokenMeter._total = 350; // 涨够 25 点，但没落盘
+      run.services.tokenMeter._total = 420; // 涨够 25 点，但没落盘
       const d = await runPreStep(run, { agent, messages: [] });
       eq("★★★ 没落盘 ⇒ 增量压缩**没发生**", regionCalls.length, 0);
       const t = (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
@@ -5699,7 +5717,7 @@ section("情形 27：官方设置面板");
       mod.apply(run.ctx, {});
       const sid = "session-delta000-0004";
       const agent = mkDeltaAgent(root, sid, 10);
-      priceNodes(run, agent, 10);
+      priceNodes(run, agent, 20);
       // ★ 压缩把水位降回 12%（模拟"保留 10 点 + 摘要约 2 点"）。
       //   ⚠️ 必须改 **tokenMeter** 上的 `_total`（不是 compaction 服务上的字段）。
       run.services.compaction.onCompacted = () => {
@@ -5709,7 +5727,7 @@ section("情形 27：官方设置面板");
       await flushLedger(run, root, sid);
       run.services.tokenMeter._total = 100;
       await runPreStep(run, { agent, messages: [] });
-      run.services.tokenMeter._total = 350; // 10 → 35，涨 25 ⇒ 到水位档
+      run.services.tokenMeter._total = 420; // 10 → 35，涨 25 ⇒ 到水位档
       // ★★ 2026-10-10：这一步只提醒、不压 ⇒ 要它先写台账，下一步才压。
       await runPreStep(run, { agent, messages: [] });
       await flushLedger(run, root, sid);
@@ -5761,7 +5779,7 @@ section("情形 27：官方设置面板");
       mod.apply(run.ctx, {});
       const sid = "session-delta000-0007";
       const agent = mkDeltaAgent(root, sid, 10);
-      priceNodes(run, agent, 10);
+      priceNodes(run, agent, 20);
 
       // ★ 先把"起点"定下来：压过一次，锚点落在当时水位。
       await flushLedger(run, root, sid);
@@ -5821,7 +5839,7 @@ section("情形 27：官方设置面板");
       mod.apply(run.ctx, { pressureTiers: "0.95" });
       const sid = "session-delta000-0008";
       const agent = mkDeltaAgent(root, sid, 10);
-      priceNodes(run, agent, 10);
+      priceNodes(run, agent, 20);
 
       run.services.tokenMeter._total = 100; // 水位 10%
       // 第一次 pre-step：注入台账全文（text 非空），并把指纹记下。
@@ -5868,7 +5886,7 @@ section("情形 27：官方设置面板");
       mod.apply(run.ctx, { incrementalCompact: false });
       const sid = "session-delta000-0005";
       const agent = mkDeltaAgent(root, sid, 7);
-      priceNodes(run, agent, 10);
+      priceNodes(run, agent, 20);
 
       await flushLedger(run, root, sid);
       run.services.tokenMeter._total = 100;
@@ -5876,6 +5894,52 @@ section("情形 27：官方设置面板");
       run.services.tokenMeter._total = 750; // 涨 65 点，但增量关了
       await runPreStep(run, { agent, messages: [] });
       eq("★★ 增量关掉 ⇒ **不走 compactRegion**", regionCalls.length, 0);
+      rmrf(root);
+    }
+
+    // 30h：★★★ 2026-10-11 —— **水位已到全量线时，增量必须让路**（否则全量被饿死）
+    //
+    //   病灶（我用纯数学证过，见 `tools/_probe-delta-anchor.mjs` 的「饿死检查」）：
+    //   棘轮爬到全量线的那一步，锚点通常恰好差一个 trigger ⇒ 增量**抢跑**，把水位拉回去，
+    //   并置 `deltaHandled = true` ⇒ 全量那条本步被跳过、且它重测的水位已低于线 ⇒ 不排
+    //   ⇒ 下一步又是同样的差值 ⇒ 增量再抢跑 …… **全量永远轮不到**。
+    //   实测（30 步、步长与 trigger 对齐）：不让路 = 全量 **0 次**；让路 = 全量 **6 次**。
+    //   ⇒ 修法：`runIncrementalCompact` 里加判据①b（水位 ≥ 全量线且本会话还没全量过
+    //     ⇒ 返回 `yieldedToFull`，不做增量）。
+    //
+    //   ★ 这条用例钉两件事：① 增量确实让路（**一次 compactRegion 都不调**）；
+    //     ② 同时全量那条**照常排队**（注入里说"即将执行一次高保真压缩"）—— 让路 ≠ 谁也不压。
+    {
+      const root = mkDeltaProj("delta-yield");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-delta000-0008";
+      const agent = mkDeltaAgent(root, sid, 7);
+      // ★★★ 节点 token 必须**足够大**，否则这条断言是**摆设**（反向验证当场抓到过）：
+      //   水位 700 ⇒ 保留 = (0.70−0.10)×1000 = **600** token。
+      //   21 节点 × 20 = 420 < 600 ⇒ 攒不够保留段 ⇒ `range=null` ⇒ **无论有没有让路都不压**
+      //   ⇒ `regionCalls===0` 恒成立 ⇒ 那条断言**分不出"让路"和"没让路"**。
+      //   ⇒ 取 **40**：21 × 40 = 840 > 600 ⇒ 有旧段可压 ⇒ 没有让路时**会压**（regionCalls=1），
+      //     只有真让路才 regionCalls=0。这样这个数字才有分辨力。
+      priceNodes(run, agent, 40);
+
+      await flushLedger(run, root, sid);
+      // ★ 先把锚点定在低位（10%），再一口气升到 ≥ 70%
+      run.services.tokenMeter._total = 100;
+      await runPreStep(run, { agent, messages: [] });
+      await flushLedger(run, root, sid);
+      // 700 = 70% ⇒ 同时满足「涨够 20 点」**和**「到全量线」= 正是会饿死的那种情形
+      run.services.tokenMeter._total = 700;
+      const d = await runPreStep(run, { agent, messages: [] });
+
+      eq("★★★ 水位已到全量线 ⇒ 增量**让路**（一次 compactRegion 都不该调）", regionCalls.length, 0);
+      const t = (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok(
+        "★★★ 而全量那条**照常排队**（注入里说「即将执行一次高保真压缩」）—— 让路不等于谁也不压",
+        /即将执行一次高保真压缩/.test(t),
+        t.slice(0, 500)
+      );
       rmrf(root);
     }
 
@@ -5923,7 +5987,7 @@ section("情形 27：官方设置面板");
       await flushLedger(run, root, sid);
       run.services.tokenMeter._total = 100;
       await runPreStep(run, { agent, messages: [] });
-      run.services.tokenMeter._total = 350;
+      run.services.tokenMeter._total = 420;
       await runPreStep(run, { agent, messages: [] });
 
       // 要么压、且 end **不是**悬空的 seq 5；要么干脆不压。两者都可接受，
@@ -6095,6 +6159,26 @@ section("情形 35：逐字胶囊落盘（可回溯 + 抗压缩链失真）");
       ok("★ 胶囊含**去哪重读**（指向台账等真源）", body.includes("去哪重读") || body.includes("可确定性重读"), body.slice(0, 600));
       ok("★ 胶囊有**来源**题头（知道是哪条路压的）", /来源/.test(body) && /手动/.test(body), body.slice(0, 260));
       ok("★ 路径在 `capsules/` 子目录、按 `YYYY-MM/weekN` 分桶", /capsules[\\/]/.test(files[0]) && /week\d/.test(files[0]), files[0]);
+      // ★★★ 2026-10-11 修：胶囊里那句"历次逐字胶囊（原件）在哪"原本给的是
+      //   `<logDir>/capsules`，而**真实位置是按期间分桶的** `<logDir>/<YYYY-MM>/weekN/capsules`
+      //   ⇒ 指针**指错一层**，照着它 ls **一个胶囊都找不到** ——
+      //   而"可随时回溯检查"正是用户点名的三条保证之一。
+      //   ⇒ 这条断言钉住：那个指针必须**包含周分桶**（weekN），即必须与落盘位置一致。
+      //   ★ 判据取自**实际落盘的那个文件路径**（`files[0]`），不是我另写一份模板 ——
+      //     这样"指针"与"真实位置"不可能再分叉。
+      const realBucket = files[0].match(/(\d{4}-\d{2})[\\/](week\d)/);
+      ok(
+        "★★★ 胶囊里那个「历次逐字胶囊」指针**包含周分桶**（指着真实位置，不是少一层）",
+        realBucket !== null && body.includes(`${realBucket[1]}`) && body.includes(`${realBucket[2]}`),
+        `真实位置含 ${realBucket?.[1]}/${realBucket?.[2]}；胶囊里那句：${
+          (body.split("\n").find((l) => l.includes("历次逐字胶囊")) ?? "（没有那句！）").slice(0, 150)
+        }`
+      );
+      ok(
+        "★★★ 而且**不是**指到没有分桶的那一层（`<logDir>/capsules` 是错的）",
+        !/`[^`]*_ledger-log[\\/]capsules`/.test(body),
+        (body.split("\n").find((l) => l.includes("历次逐字胶囊")) ?? "").slice(0, 150)
+      );
     }
     // ★ 命令回执里必须**说得出存哪了**（可回溯的前提是知道去哪找）
     ok("★★ 命令回执里给出了落盘路径", /存盘/.test(String(res?.text ?? "")) && /capsules/.test(String(res?.text ?? "")), String(res?.text ?? "").slice(0, 400));
@@ -6583,12 +6667,12 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       mod.apply(run.ctx, {});
       const sid = "session-gate0000-0001";
       const agent = mkGateAgent(root, sid, 7);
-      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 10 }));
+      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 20 }));
 
       await flushLedger(run, root, sid);
       run.services.tokenMeter._total = 100; // 10%
       await runPreStep(run, { agent, messages: [] });
-      run.services.tokenMeter._total = 350; // 35% ⇒ 到 30% 档
+      run.services.tokenMeter._total = 420; // 35% ⇒ 到 30% 档
       const dNotice = await runPreStep(run, { agent, messages: [] });
       const noticeText = (dNotice.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
       ok("★★ 35% 档确实发了提醒", /上下文水位已到/.test(noticeText), noticeText.slice(0, 300));
@@ -6613,7 +6697,10 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       mod.apply(run.ctx, {});
       const sid = "session-gate0000-0002";
       const agent = mkGateAgent(root, sid, 7);
-      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 10 }));
+      // ★ 2026-10-11 棘轮修复后：水位 760 ⇒ 保留 (0.76−0.10)×1000 = **660** token
+      //   ⇒ surface 必须 > 660 才有旧段可压。21 节点 × **40** = 840 > 660 ✓
+      //   （原来给 10 ⇒ 只有 210，连旧算法的 100 都只是勉强够。）
+      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 40 }));
 
       await flushLedger(run, root, sid);
       run.services.tokenMeter._total = 100;
@@ -6661,7 +6748,8 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       mod.apply(run.ctx, {});
       const sid = "session-gate0000-0003";
       const agent = mkGateAgent(root, sid, 7);
-      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 10 }));
+      // ★ 同 37i-2：水位 740 ⇒ 保留 640 ⇒ surface 要给够（21 × 40 = 840 > 640）。
+      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 40 }));
 
       await flushLedger(run, root, sid);
       run.services.tokenMeter._total = 100;

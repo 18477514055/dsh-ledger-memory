@@ -109,21 +109,33 @@ console.log("");
 //
 //   ★ 沉淀成一句通用纪律：**判据的输入必须是"被测系统自己产生的那部分"** ——
 //     把被观测方的正文混进来，测的就不是它了。
+//   ★★★ 2026-10-11 **第三个「尺子错」也发生在这里**（由审计员 003 发现，我已独立复核）：
+//
+//   错法③（**闭合标记被正文里的字面量抢走**）：我改用"剥掉正文"之后**仍然全红**。
+//     根因：本插件的注入 = `<<<LEDGER\n<整个 LEDGER.md>\nLEDGER>>>`，
+//     而**我在 LEDGER.md 第七节里亲手写了这两个标记的字面量**
+//     （"剥掉 `<<<LEDGER` … `LEDGER>>>` 正文"）⇒ 台账里 `<<<LEDGER` 出现 **3 次**、
+//     `LEDGER>>>` 出现 **2 次**。
+//     旧实现取"第一个 `<<<LEDGER` + 它之后**第一个** `LEDGER>>>`"，
+//     于是**正文里那个被引用的 `LEDGER>>>`** 被当成了结束 ⇒ 只切掉一小段，
+//     **其后整段台账正文被当成"插件模板"** ⇒ 判据**恒为真**，永远报"需重启内核"。
+//     ⚠️ 这条最危险：它给出的**行动建议是错的**（会让你白白重启、打断会话），
+//        而 003 复核 + 我实测都确认：源码里 `收尾停手` **0 命中**，活内核**无需重启**。
+//     ⇒ 修：**第一个开始 + 最后一个结束**（`indexOf` + `lastIndexOf`）。
+//        这样无论正文里出现多少个标记字面量都不会切错。
+//
+//   ★ 沉淀成两条硬纪律：
+//     (**a**) **剥离用的标记本身，绝不能出现在被剥离的内容里** ——
+//           否则"哨兵"会被内容冒充。要选正文不可能含有的边界，或改用长度前缀。
+//     (**b**) 判据词/边界被污染时，**必须报"无法判定"，而不是给出一个错误结论** ——
+//           一个会误导行动的假阳性，比没有判据更糟。
 function templateOnly(s) {
-  let out = "";
-  let i = 0;
-  while (i < s.length) {
-    const a = s.indexOf("<<<LEDGER", i);
-    if (a < 0) {
-      out += s.slice(i);
-      break;
-    }
-    out += s.slice(i, a);
-    const b = s.indexOf("LEDGER>>>", a);
-    if (b < 0) break; // 正文没闭合就到此为止（保守：宁可少查，不可误判）
-    i = b + "LEDGER>>>".length;
-  }
-  return out;
+  // ★ 第一个开始 + **最后一个**结束 —— 内容里再有标记字面量也不会切错。
+  const a = s.indexOf("<<<LEDGER");
+  if (a < 0) return s; // 没有正文 ⇒ 全文都是模板
+  const b = s.lastIndexOf("LEDGER>>>");
+  if (b < a) return s; // 没闭合 ⇒ 保守：返回全部（宁可多查，不可误判）
+  return s.slice(0, a) + s.slice(b + "LEDGER>>>".length);
 }
 
 const rows = [];
@@ -143,6 +155,9 @@ for (const line of text.split("\n")) {
     at: typeof e.time === "number" ? e.time : 0,
     old: tpl.includes("收尾停手"),
     duty: tpl.includes("是你的义务"),
+    // ★ 自检：判据词**不应该**出现在正文里（出现就会被剥离，而不是被当成模板）。
+    //   这一条是为了让"污染"这件事**当场可见**，而不是悄悄给出错误结论。
+    rawHasOld: body.includes("收尾停手"),
   });
 }
 rows.sort((a, b) => a.at - b.at);
@@ -159,8 +174,12 @@ for (const r of recent) {
 }
 const last = rows[rows.length - 1];
 console.log("");
-console.log("★ 只看**最近一条**（历史会淹没现状），且**只看模板**（台账正文会污染判据）");
+console.log("★ 判据二**可信的前提**：下面这条必须成立");
 console.log("");
+
+// ── 前提自检：判据词若出现在被剥掉的正文里 ⇒ 判据二不可信，必须拒绝给结论 ──
+const contaminated = last !== undefined && last.rawHasOld && !last.old;
+const stillInTemplate = last !== undefined && last.old;
 
 // ── 判据一：结构性字段（这个探针**不能**自己调工具，所以给出指令）──────
 console.log("── 判据一（结构性，首选）：`ledger_status` 有没有 `compactionCounts` ──");
@@ -173,13 +192,25 @@ if (rows.length === 0) {
   console.log("  ⇒ 不要据此说「代码没生效」。改看 `ledger_status` 的 `compactionCounts`：");
   console.log("     有 ⇒ 新代码已加载；没有 ⇒ 仍是旧代码（需重启）。");
   process.exit(3);
-} else if (last.old) {
-  console.log("判定：✗ **最近一次注入仍是旧代码**（还带着「收尾停手」）");
+} else if (stillInTemplate) {
+  // 旧句**剥掉正文后仍在模板里** ⇒ 这才是真的"模板还带旧句"
+  console.log("判定：✗ **最近一次注入的模板仍带旧矛盾句**（剥掉正文后依然命中）");
   console.log(`  （出现在 ${new Date(last.at).toLocaleString("zh-CN")}）`);
-  console.log("  ⇒ 结论：需要**重启内核**，新代码才会被加载。");
+  console.log("  ⇒ 但**先别急着重启**：请用判据一（结构性）复核。若 `compactionCounts` 存在，");
+  console.log("     说明活内核已是新版，那就是本探针的判据词**又被别处污染**了，不是代码问题。");
   process.exit(1);
+} else if (contaminated) {
+  // ★ 这条是 003 发现的坑：判据词在正文里（已被正确剥离），但剥离前它在 ⇒ 说明污染源是**台账正文**
+  console.log("判定：✓ **新代码已生效**（模板里已无旧矛盾句）");
+  console.log("  ⚠️ 注意：判据词「收尾停手」**在台账正文里仍有出现**（已被正确剥掉，未影响判定）。");
+  console.log("     这是**预期的**：本项目台账自己引用过这句话。剥离逻辑已改成"
+    + "「第一个开始 + 最后一个结束」，故正文里的字面量不会再骗过它。");
+  console.log(`  （${new Date(last.at).toLocaleString("zh-CN")}；义务句=${last.duty ? "有" : "无"}）`);
+  console.log("");
+  console.log("★ 仍然请用**判据一（结构性）**做最终确认 —— 那条不受任何文本污染。");
+  process.exit(0);
 } else {
-  console.log("判定：✓ **新代码已生效**（最近一次注入已无旧矛盾句）");
+  console.log("判定：✓ **新代码已生效**（最近一次注入的模板里没有旧矛盾句）");
   console.log(`  （${new Date(last.at).toLocaleString("zh-CN")}；义务句=${last.duty ? "有" : "无"}）`);
   process.exit(0);
 }

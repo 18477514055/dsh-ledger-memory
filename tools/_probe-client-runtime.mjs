@@ -204,6 +204,17 @@ ok("★ 组件用了 useEffect 去取设置", effects.length > 0, `effects=${eff
 console.log("\n═══ ⑤ 挂载后的数据流：fetch 成功 ⇒ 渲染出七项 ═══");
 // 装一个假 fetch 返回完整的 config.json
 const SPECS = [
+  {
+    key: "mode",
+    kind: "choice",
+    label: "压缩模式",
+    hint: "h",
+    // ★ 与宿主出站形状一致：**已展开的数组**（宿主那边是取值函数，为躲 TDZ）。
+    options: [
+      { value: "steady", label: "正常推进", hint: "按位置压缩" },
+      { value: "surgical", label: "反复追究", hint: "按内容分流" },
+    ],
+  },
   { key: "turnEndOffer", kind: "boolean", label: "回合末弹四选一卡片", hint: "h" },
   { key: "highFidelityCompact", kind: "boolean", label: "高保真压缩", hint: "h" },
   { key: "highFidelityCompactRatio", kind: "number", label: "压缩水位", hint: "h", min: 0.5, max: 0.79, step: 0.01 },
@@ -213,6 +224,7 @@ const SPECS = [
   { key: "pressureTiers", kind: "tiers", label: "水位档位", hint: "h" },
 ];
 const SETTINGS = {
+  mode: "steady",
   turnEndOffer: false,
   highFidelityCompact: true,
   highFidelityCompactRatio: 0.7,
@@ -255,6 +267,23 @@ for (const spec of SPECS) {
 ok("★ 渲染里有保存按钮", text.includes("保存"), text.slice(0, 400));
 ok("★ 渲染里有还原按钮", text.includes("还原"), text.slice(0, 400));
 ok("★★ 渲染里标明了「项目清单优先」的口径（免得用户以为全局覆盖）", text.includes("优先") || text.includes("新项目"), text.slice(0, 600));
+// ★★ `choice` 控件最容易「静默失败」：选项来自宿主的 `spec.options`。
+//   若宿主忘了把取值函数展开成数组（见宿主 SETTING_SPECS 的 TDZ 注释），
+//   JSON 会把函数丢掉 ⇒ 控件渲染成**空盒子**，而且**不报错**。
+//   ⇒ 所以这里必须断言**两个选项的文案都出现了**，不能只看 spec.label。
+{
+  const modeSpec = SPECS.find((s) => s.kind === "choice");
+  if (modeSpec === undefined) {
+    ok("★★ 存在一个 choice 控件（模式选择器）", false, JSON.stringify(SPECS.map((s) => s.kind)));
+  } else {
+    const labels = (modeSpec.options ?? []).map((o) => o.label);
+    ok(
+      "★★ choice 控件的**每个选项**都渲染出来了（空选项盒子是静默失败）",
+      labels.length === 2 && labels.every((l) => text.includes(l)),
+      `labels=${JSON.stringify(labels)}`
+    );
+  }
+}
 
 console.log("\n═══ ⑥ diagnostics / globalThis 排障面 ═══");
 ok("★ 挂了 globalThis.__dshProjectLedgerSettings", globalThis.__dshProjectLedgerSettings !== undefined);

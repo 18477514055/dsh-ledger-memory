@@ -58,6 +58,21 @@ ok('⑦ 自检里有「情形 27：官方设置面板」', (st.stdout ?? "").inc
 ok('⑦ README 有设置面板一节', fs.readFileSync(path.join(DIR, "README.md"), "utf8").includes("设置面板"));
 ok('⑦ DECISIONS 有 D38', fs.readFileSync(path.join(DIR, "DECISIONS.md"), "utf8").includes("## D38"));
 
+// ⑧ ★★★ 两个模式（2026-10-10 用户拍板）
+//
+//  用户原话：*"我们把它定义为这个插件的两个模式…正常向前推进的任务就执行现在的这个
+//  模式，如果需要反复追究的话，就执行第二种模式。最好这个也能在设置面板里体现出来。"*
+//  ⇒ 逐条对他的话：① 两个模式都在；② 默认是"正常推进"；③ 面板里能看见。
+ok('⑧★ 两种模式都登记了（steady / surgical）', host.includes('const MODE_STEADY') && host.includes('const MODE_SURGICAL'));
+ok('⑧★ 默认是「正常推进」（不带配置 = 今天的行为）', /mode:\s*MODE_STEADY/.test(host), "默认值不是 steady");
+ok('⑧★ 面板里能选（SETTING_SPECS 里有一项 kind:"choice"）', /key:\s*"mode",\s*\n\s*kind:\s*"choice"/.test(host));
+ok('⑧★ 模式是**项目清单优先**（能一个仓库两种活）', /function modeOf\(info\)/.test(host) && host.includes("info?.manifest?.mode"));
+ok('⑧★ 有分流工具 ledger_triage（用户说的「划分」）', host.includes('name: "ledger_triage"'));
+ok('⑧★ 三个桶都在（留 / 落 / 丢 = keep / stash / drop）',
+  host.includes("TRIAGE_KEEP") && host.includes("TRIAGE_STASH") && host.includes("TRIAGE_DROP"));
+ok('⑧★ 客户端真的会画选择器（controlFor 认 choice）', client.includes('spec.kind === "choice"'));
+ok('⑧★★ 自检里有「情形 37：两个模式」', (st.stdout ?? "").includes("情形 37：两个模式"));
+
 // 双半声明
 ok('★ package.json 同时有 dsh.bundle 与 dsh.client', pkg.dsh?.bundle?.patch !== undefined && pkg.dsh?.client?.platform === "web");
 ok('★ exports 暴露 ./client', pkg.exports?.["./client"] === "./lib/client.js");

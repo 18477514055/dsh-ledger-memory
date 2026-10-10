@@ -608,7 +608,7 @@ section("情形 1：全新项目的检测与提示");
   mod.apply(run.ctx, {});
 
   // ★ 2026-10-10：新增 `ledger_handoff`（第③层）⇒ 11 → 12 个工具。
-  eq("注册了 12 个工具", run.registeredTools.size, 12);
+  eq("注册了 13 个工具（新增 ledger_triage）", run.registeredTools.size, 13);
   for (const n of [
     "ledger_status",
     "ledger_init",
@@ -958,7 +958,8 @@ section("情形 6b：/ledger 裸敲弹选择卡片");
   ok("卡片是选择题", Array.isArray(run.asked[0].request.questions[0].options));
   // ★ 2026-10-09：加了 `light`（手动轻量压缩）⇒ 7 项变 8 项。
   // ★ 2026-10-10：加了 `handoff`（写交接单）⇒ 8 项变 9 项。
-  eq("卡片列全九个子命令（含 compact / light / handoff）", run.asked[0].request.questions[0].options.length, 9);
+  // ★ 2026-10-10：加了 `mode`（切压缩模式）⇒ 9 项变 10 项。
+  eq("卡片列全十个子命令（含 compact / light / handoff / mode）", run.asked[0].request.questions[0].options.length, 10);
   eq("点「显示活跃台账」⇒ 真的执行 show", r1.kind, "success");
   ok("返回的是台账正文", r1.text.includes("项目台账"), r1.text.slice(0, 150));
   // ★ 关键：卡片里选出来的，与手打 `/ledger show` 必须**一模一样**
@@ -1112,7 +1113,7 @@ section("情形 7：服务缺失与容错");
     console.log(`        apply 抛了：${e.message}`);
   }
   ok("没有 commands 服务时 apply 不抛错", !threw);
-  eq("没有 commands 时工具仍注册", run.registeredTools.size, 12);
+  eq("没有 commands 时工具仍注册", run.registeredTools.size, 13);
   rmrf(initedRoot);
 }
 
@@ -4682,9 +4683,9 @@ section("情形 27：官方设置面板");
     eq("GET 状态码 200", r.status, 200);
     eq("GET ok", r.body.ok, true);
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
-    eq("★ 回报了十二项元数据（含增量压缩三项）", r.body.specs?.length, 12);
+    eq("★ 回报了十三项元数据（含模式与增量压缩）", r.body.specs?.length, 13);
     ok(
-      "★ 十二项就是用户要的那些",
+      "★ 十三项就是用户要的那些",
       JSON.stringify(r.body.specs.map((s) => s.key).sort()) ===
         JSON.stringify([
           "autoCompact",
@@ -4696,12 +4697,29 @@ section("情形 27：官方设置面板");
           "incrementalCompact",
           "logLevels",
           "maxActiveLines",
+          "mode",
           "pressureTiers",
           "requireFlushBeforeCompact",
           "turnEndOffer",
         ]),
       JSON.stringify(r.body.specs.map((s) => s.key))
     );
+    // ★★ `mode` 的 options 必须是**已展开的数组**：它是取值函数（躲 TDZ），
+    //   出站前没展开的话 JSON 会把它丢掉 ⇒ 面板上选择器是空的，而且**不报错**。
+    {
+      const m = r.body.specs.find((s) => s.key === "mode");
+      ok(
+        "★★ mode 的 options 已展开成数组（不是函数被 JSON 丢掉）",
+        Array.isArray(m?.options) && m.options.length === 2,
+        JSON.stringify(m?.options)
+      );
+      ok(
+        "★★ 两个模式的名字与值都在",
+        Array.isArray(m?.options) &&
+          m.options.map((o) => o.value).sort().join(",") === "steady,surgical",
+        JSON.stringify(m?.options?.map((o) => o.value))
+      );
+    }
     ok("★ 每项都带 label 与 hint（面板要显示）", r.body.specs.every((s) => s.label && s.hint));
     eq("★ 回报了默认值", r.body.defaults?.maxActiveLines, 300);
     eq("★ 变更登记条数的默认值也回报了", r.body.defaults?.changeRegisterMax, 12);
@@ -6256,6 +6274,391 @@ section("情形 36：交接单闭环（第③层）");
       return all.some((x) => x.includes("第一次")) && all.some((x) => x.includes("第二次"));
     })(), "两份内容应当都能找到");
     rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★ 情形 37：两个模式（2026-10-10 用户拍板）
+//
+//   用户原话：*"我们把它定义为这个插件的两个模式…正常向前推进的任务就执行现在的
+//   这个模式，如果需要反复追究的话，就执行第二种模式。最好这个也能在设置面板里
+//   体现出来。"*
+//
+//   要测的不是"有个开关"，而是：
+//     ① 默认必须是 `steady` —— 否则**静默改变所有现有项目的行为**；
+//     ② 模式**项目清单优先**（同一个仓库能"平时推进、查问题时转追究"）；
+//     ③ 清单里写错了**不许静默**退回默认（要说出来在哪看的）；
+//     ④ `surgical` 时提醒里**真的**出现分流那一步，`steady` 时**真的**不出现；
+//     ⑤ `ledger_triage` 的三个桶**各去各的地方**（keep 留、stash 落盘、drop 不写）；
+//     ⑥ keep 桶**有硬上限**（"留得太多等于没压"）且截断数**如实报出**；
+//     ⑦ 没有台账的项目**一个文件都不许写**。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 37：两个模式（正常推进 / 反复追究）");
+{
+  const mkModeProj = (tag, mode) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n做点什么\n", "utf8");
+    fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.mkdirSync(path.join(dir, "_a"), { recursive: true });
+    const man = {
+      version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+      archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+    };
+    if (mode !== undefined) man.mode = mode;
+    fs.writeFileSync(path.join(dir, ".dsh-ledger.json"), JSON.stringify(man), "utf8");
+    return dir;
+  };
+
+  // 37a：默认必须是 steady（"不带配置时 = 今天的行为"）
+  {
+    const root = mkModeProj("mode-default", undefined);
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const r = await run.registeredTools.get("ledger_status").execute({}, execFor(root, "s-mode-default"));
+    ok(
+      "★ 默认模式是 steady（不带配置 = 今天的行为）",
+      r.mode === "steady" || r.effectiveMode === "steady" || r.project?.mode === "steady",
+      JSON.stringify(r).slice(0, 300)
+    );
+    rmrf(root);
+  }
+
+  // 37b：清单优先 —— 同一份全局设置下，两个项目各走各的模式
+  {
+    const rootA = mkModeProj("mode-scope-a", "surgical");
+    const rootB = mkModeProj("mode-scope-b", "steady");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const st = run.registeredTools.get("ledger_status");
+    const a = await st.execute({}, execFor(rootA, "s-scope-a"));
+    const b = await st.execute({}, execFor(rootB, "s-scope-b"));
+    const pick = (x) => x.mode ?? x.effectiveMode ?? x.project?.mode;
+    ok("★★ 项目清单优先：A 项目 surgical", pick(a) === "surgical", JSON.stringify(pick(a)));
+    ok("★★ 项目清单优先：B 项目 steady（同一份全局设置）", pick(b) === "steady", JSON.stringify(pick(b)));
+    rmrf(rootA);
+    rmrf(rootB);
+  }
+
+  // 37c：清单里写错 ⇒ **不静默**
+  {
+    const root = mkModeProj("mode-typo", "surgcial");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const r = await run.registeredTools.get("ledger_status").execute({}, execFor(root, "s-typo"));
+    const txt = JSON.stringify(r);
+    ok("★★ 清单里写错的 mode 退回默认（仍能跑）", (r.mode ?? r.effectiveMode ?? "steady") === "steady", txt.slice(0, 200));
+    ok("★★★ 但不静默 —— 明说清单里那个值不认识", /不认识|写错|unrecogn|suspect/i.test(txt), txt.slice(0, 400));
+    rmrf(root);
+  }
+
+  // 37d：提醒文案在两种模式下**真的**不同
+  //
+  //   ★ 这里走**真实路径**：真配 tokenMeter、真跑 `agent/pre-step` 瀑布拿注入正文。
+  //     直接调 `renderPressureNotice` 会漏掉"到底有没有被注入"这一层
+  //     （本文件反复强调：能读到的字符串 ≠ 真的发出去了）。
+  {
+    const mkNoticeProj = (tag, mode) => {
+      const root = tmpProject(tag);
+      fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 目标\nY\n", "utf8");
+      fs.writeFileSync(
+        path.join(root, ".dsh-ledger.json"),
+        JSON.stringify({
+          version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+          archiveDir: "_a", maxActiveLines: 300, logDir: "_ledger-log",
+          logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+          revision: 0, mode,
+        }),
+        "utf8"
+      );
+      return root;
+    };
+    // 一条最小 agent：够 `projectRootOf` 取到 cwd，且能当 pre-step 的入参。
+    // ★★ **必须带 `requestContext`** —— 窗口是从**agent**上取的，不是从 tokenMeter 上取的
+    //    （实测：漏了它水位恒为 0，提醒一条都发不出来，而表面上"夹具跑通了"）。
+    //    这条与情形 12 的夹具保持一致，别再手搓第二种形状。
+    const mkNoticeAgent = (root, sid) => ({
+      session: {
+        header: { id: sid, cwd: root },
+        requestContext: () => ({ contextWindow: 1000 }),
+      },
+    });
+    const noticeAt = async (run, root, sid, ratio) => {
+      run.services.tokenMeter._total = 100; // 10%：先垫一个低水位
+      await runPreStep(run, { agent: mkNoticeAgent(root, sid), messages: [] });
+      run.services.tokenMeter._total = Math.round(1000 * ratio);
+      const d = await runPreStep(run, { agent: mkNoticeAgent(root, sid), messages: [] });
+      return (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+    };
+
+    {
+      const root = mkNoticeProj("mode-notice-surg", "surgical");
+      const run = makeCtx({ withTokenMeter: true });
+      mod.apply(run.ctx, {});
+      const t = await noticeAt(run, root, "s-notice", 0.72);
+      ok("★★ surgical 下真的发出了水位提醒", /上下文水位已到/.test(t), t.slice(0, 300));
+      ok("★★ surgical 下提醒里**有**分流那一步（ledger_triage）", /ledger_triage/.test(t), t.slice(0, 600));
+      ok(
+        "★★ surgical 下说了三个桶（keep / stash / drop）",
+        /keep/.test(t) && /stash/.test(t) && /drop/.test(t),
+        t.slice(0, 800)
+      );
+      ok("★★★ surgical 下**明说**「留得太多等于没压」", /留得太多|等于没压/.test(t), t.slice(0, 800));
+      rmrf(root);
+    }
+    {
+      const root = mkNoticeProj("mode-notice-std", "steady");
+      const run = makeCtx({ withTokenMeter: true });
+      mod.apply(run.ctx, {});
+      const t = await noticeAt(run, root, "s-notice2", 0.72);
+      ok("★★ steady 下同样发出了水位提醒", /上下文水位已到/.test(t), t.slice(0, 300));
+      ok("★★★ steady 下**绝不提**分流（否则等于逼它做多余功）", !/ledger_triage/.test(t), t.slice(0, 600));
+      rmrf(root);
+    }
+  }
+
+  // 37e：ledger_triage 三个桶各去各的地方
+  {
+    const root = mkModeProj("triage-buckets", "surgical");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const tool = run.registeredTools.get("ledger_triage");
+    ok("★ 有 `ledger_triage` 工具", tool !== undefined);
+    const sid = "session-tri00000-0001";
+    const res = await tool.execute(
+      {
+        keep: [{ what: "用户要求 README 必须分两份" }, { what: "正在做两个模式" }],
+        stash: [
+          { what: "试过按位置压缩，会压掉最早那条约束", why: "避免再走一遍", where: "lib/index.js:1011" },
+          { what: "内核摘要提示词不可配", why: "决定了架构只能是压缩后重注", where: "dsh-compaction-basic" },
+        ],
+        drop: [{ what: "之前那版 README" }],
+      },
+      execFor(root, sid)
+    );
+    eq("★ 分流成功", res.ok, true);
+    eq("★ keep 记了 2 条", res.kept, 2);
+    eq("★★ stash 落了 2 条", res.stashed, 2);
+    eq("★ drop 记了 1 条（但不写盘）", res.dropped, 1);
+    eq("★★★ keep 在上限内，没有被截断", res.overflow, 0);
+    ok("★★ stash 真的落到了 `_stash/`", typeof res.stashPath === "string" && res.stashPath.includes("_stash"), String(res.stashPath));
+    const stashAbs = typeof res.stashPath === "string" ? path.join(root, res.stashPath) : "";
+    ok("★★★ stash 文件真的在磁盘上", stashAbs !== "" && fs.existsSync(stashAbs), stashAbs);
+    const stashBody = stashAbs !== "" && fs.existsSync(stashAbs) ? fs.readFileSync(stashAbs, "utf8") : "";
+    ok("★★ stash 正文里有那条判断与理由", stashBody.includes("按位置压缩") && stashBody.includes("避免再走一遍"), stashBody.slice(0, 400));
+    ok("★★★ stash 正文里**没有** drop 的内容（drop 不落盘）", !stashBody.includes("之前那版 README"), stashBody.slice(0, 400));
+    ok("★★ stash 里如实记了其余两桶的条数", /留在上下文 2 条/.test(stashBody) && /丢掉 1 条/.test(stashBody), stashBody.slice(0, 500));
+    rmrf(root);
+  }
+
+  // 37f：keep 有**硬上限**，且截断数如实报出
+  {
+    const root = mkModeProj("triage-cap", "surgical");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const many = Array.from({ length: 20 }, (_, i) => ({ what: `第 ${i + 1} 件重要的事` }));
+    const res = await run.registeredTools.get("ledger_triage").execute({ keep: many }, execFor(root, "s-cap"));
+    ok("★★★ keep 被截到上限以内（不是全收）", res.kept <= 12 && res.kept > 0, String(res.kept));
+    ok("★★★ 且**如实报出**截掉几条", res.overflow === 20 - res.kept, `overflow=${res.overflow} kept=${res.kept}`);
+    ok("★★ 说明里也写了截断这件事", /截/.test(String(res.note)), String(res.note).slice(0, 300));
+    rmrf(root);
+  }
+
+  // 37g：三桶全空 ⇒ 不许假装成功
+  {
+    const root = mkModeProj("triage-empty", "surgical");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const res = await run.registeredTools.get("ledger_triage").execute({}, execFor(root, "s-empty"));
+    ok("★★ 三桶全空 ⇒ 报失败，不假装成功", res.ok === false, JSON.stringify(res).slice(0, 200));
+    rmrf(root);
+  }
+
+  // 37h：没有台账的项目 ⇒ 一个文件都不许写
+  {
+    const dir = tmpProject("triage-noledger");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const res = await run.registeredTools
+      .get("ledger_triage")
+      .execute({ stash: [{ what: "某件以后要查的事" }] }, execFor(dir, "s-nol"));
+    ok("★★★ 没有台账 ⇒ 拒绝", res.ok === false, JSON.stringify(res).slice(0, 250));
+    ok(
+      "★★★ 且真的**一个文件都没写**",
+      fs.readdirSync(dir).filter((f) => f.startsWith("_stash")).length === 0,
+      JSON.stringify(fs.readdirSync(dir))
+    );
+    rmrf(dir);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 37i：★★★ 闸门 —— 「只写了台账、没分流」**不许压缩**
+  //
+  //   ★ 这是"模式会不会**静默退化**"的唯一防线。放行了 ⇒ 压缩照跑、keep 桶空着
+  //     ⇒ 用户以为在用「反复追究」，实际是「正常推进」，而且**毫无迹象**。
+  //
+  //   ★★ 水位刻意选 **35%（< 75%）**：`FLUSH_GATE_BYPASS_RATIO = 0.75` 那条旁路
+  //      在 75% 以上**故意放行**（再拦只会让内核先压），所以 ≥75% 测不到这把闸门。
+  //      ★ 我第一版夹具用了 94% ⇒ 已被旁路 ⇒ 正反向都不动 ⇒ **尺子是坏的**。
+  //   ★★ 夹具逐条照抄自 30a（`mkDeltaAgent` / `priceNodes` / `flushLedger`）——
+  //      手搓第一版漏了 `requestContext`，压缩一次都没触发，断言却是绿的。
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    const mkGateProj = (tag, mode) => {
+      const root = tmpProject(tag);
+      fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 目标\nY\n", "utf8");
+      fs.writeFileSync(
+        path.join(root, ".dsh-ledger.json"),
+        JSON.stringify({
+          version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+          archiveDir: "_a", maxActiveLines: 300, logDir: "_ledger-log",
+          logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+          revision: 0, mode,
+        }),
+        "utf8"
+      );
+      return root;
+    };
+    const mkGateAgent = (root, sid, rounds) => {
+      const events = [];
+      let seq = 1;
+      for (let r = 0; r < rounds; r += 1) {
+        events.push({ type: "user/message", seq, data: { message: { role: "user", content: [] } } });
+        seq += 1;
+        events.push({
+          type: "assistant/message",
+          seq,
+          data: { message: { role: "assistant", content: [{ type: "tool-call", id: `c${seq}` }] } },
+        });
+        seq += 1;
+        events.push({ type: "tool/result", seq, data: { message: { role: "tool" } } });
+        seq += 1;
+      }
+      const bySeq = new Map(events.map((e) => [e.seq, e]));
+      return {
+        session: {
+          header: { id: sid, cwd: root },
+          id: sid,
+          requestContext: () => ({ contextWindow: 1000 }),
+          surface: { nodes: events.map((e) => e.seq) },
+          eventAt: (s) => bySeq.get(s),
+        },
+        steer: () => {},
+      };
+    };
+
+    // 37i-1：35% 档是「预告」，70% 档才是「要求」—— 这个区别必须钉住
+    //
+    //   ★ 实测（`_tmp-dbg-gate2`）：35% 档的文案里**会出现** `ledger_triage` 这个词，
+    //     但那是**告知它 70% 会发生什么**，不是要它现在做。
+    //     ⇒ 所以我第一版"35% 不许出现 triage 字样"的断言是**错的**（假红）。
+    //     真正该钉的是：35% 档**不立分流义务**（不写进 `triageOwedAt`），
+    //     证据就是"到 70% 时义务才起作用"。
+    {
+      const root = mkGateProj("gate-35-preview", "surgical");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-gate0000-0001";
+      const agent = mkGateAgent(root, sid, 7);
+      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 10 }));
+
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 100; // 10%
+      await runPreStep(run, { agent, messages: [] });
+      run.services.tokenMeter._total = 350; // 35% ⇒ 到 30% 档
+      const dNotice = await runPreStep(run, { agent, messages: [] });
+      const noticeText = (dNotice.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok("★★ 35% 档确实发了提醒", /上下文水位已到/.test(noticeText), noticeText.slice(0, 300));
+      // ★ 前提校验：这条夹具**能触发压缩**（与 30a 一致）—— 否则后面的断言都是假的
+      await flushLedger(run, root, sid);
+      await runPreStep(run, { agent, messages: [] });
+      eq("★★★ 前提：写了台账之后确实会压（夹具不是死的）", regionCalls.length, 1);
+      rmrf(root);
+    }
+
+    // 37i-2：★★★ 真正要钉的 —— 70% 档立了分流义务后，只写台账**不许压**
+    //
+    //   ★ 水位刻意 **< 75%**：`FLUSH_GATE_BYPASS_RATIO` 那条旁路在 75% 以上**故意放行**
+    //     （再拦只会让内核先压），所以 ≥75% 测不到这把闸门。
+    //   ★ 释放要**再来一次会注入的步**（实测：分流本身不改台账 ⇒ 指纹没变 ⇒
+    //     那一步 `text` 是 undefined ⇒ 增量压缩那段压根没被调用）。
+    //     这不是缺陷，是设计：**压缩绝不发生在"本步什么都不注入"的时候**。
+    {
+      const root = mkGateProj("gate-owed", "surgical");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-gate0000-0002";
+      const agent = mkGateAgent(root, sid, 7);
+      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 10 }));
+
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 100;
+      await runPreStep(run, { agent, messages: [] });
+
+      // 到 **70%** 档 ⇒ 提醒里要求分流 ⇒ 立下"分流义务"
+      run.services.tokenMeter._total = 720;
+      const d70 = await runPreStep(run, { agent, messages: [] });
+      const t70 = (d70.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok("★★ 70% 档确实要求了分流（义务已立）", /ledger_triage/.test(t70), t70.slice(0, 400));
+
+      // 它**只写了台账**，没分流 ⇒ 闸门必须拦住
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 740; // 仍 <75% ⇒ 不走旁路
+      const dBlocked = await runPreStep(run, { agent, messages: [] });
+      eq("★★★ 只写台账没分流 ⇒ **一次都不许压**", regionCalls.length, 0);
+      const tBlocked = (dBlocked.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok(
+        "★★★ 而且**说明白**了卡在哪（否则模型不知道该补什么）",
+        /分流/.test(tBlocked) && /ledger_triage/.test(tBlocked),
+        tBlocked.slice(0, 500)
+      );
+
+      // ★ 它补做分流 ⇒ 义务兑现；**再有一次注入**时压缩就该放行
+      const tri = await run.registeredTools
+        .get("ledger_triage")
+        .execute({ keep: [{ what: "在验证闸门行为" }] }, execFor(root, sid));
+      ok("★★ 补做分流成功", tri.ok === true, JSON.stringify(tri).slice(0, 200));
+      await flushLedger(run, root, sid); // 再写一次台账 ⇒ 本步有注入
+      run.services.tokenMeter._total = 760; // <75%，但已够触发增量
+      await runPreStep(run, { agent, messages: [] });
+      ok(
+        "★★★ 补做分流之后 ⇒ 压缩放行（闸门是「等它做」，不是「永久卡死」）",
+        regionCalls.length >= 1,
+        `regionCalls=${regionCalls.length}`
+      );
+      rmrf(root);
+    }
+
+    // 37i-3：steady 模式下**没有**分流义务 ⇒ 写了台账就能压（两种模式确实不同）
+    {
+      const root = mkGateProj("gate-steady", "steady");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-gate0000-0003";
+      const agent = mkGateAgent(root, sid, 7);
+      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 10 }));
+
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 100;
+      await runPreStep(run, { agent, messages: [] });
+      run.services.tokenMeter._total = 720; // 70% 档
+      const d70 = await runPreStep(run, { agent, messages: [] });
+      const t70 = (d70.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok("★★ steady 下 70% 档**不**要求分流", !/ledger_triage/.test(t70), t70.slice(0, 400));
+
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 740;
+      await runPreStep(run, { agent, messages: [] });
+      ok(
+        "★★★ steady 下写了台账就能压（与 surgical 形成对照）",
+        regionCalls.length >= 1,
+        `regionCalls=${regionCalls.length}`
+      );
+      rmrf(root);
+    }
   }
 }
 

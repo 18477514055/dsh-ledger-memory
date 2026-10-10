@@ -6597,6 +6597,44 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       ok("★★★ surgical 下**明说**「留得太多等于没压」", /留得太多|等于没压/.test(t), t.slice(0, 800));
       rmrf(root);
     }
+
+    // 37d-3：★★★ 2026-10-11 **强制性**（用户明确要求的那一条）
+    //
+    //   用户原话：*"我们要增强一点我们这个指令的强制性，虽然不能直接机械性的强行压缩，
+    //   但是最好让 AI 知道他有义务去做这件事，这不是建议，而是命令。"*
+    //
+    //   ★ 要钉的是**语气**，而语气不能靠"读一遍觉得对" —— 它必须是可断言的字符串事实。
+    //   ★ 但也不能钉死具体措辞（那会让每次润色都变红）。所以钉的是**语义标记**：
+    //     ① 有「义务」这个概念词（不是"建议 / 顺手 / 可以"）；
+    //     ② **说明了不做的后果**（压缩不会发生 / 会撞到官方 80%）；
+    //     ③ 仍然**把判断权留给 AI**（不做机械强压 —— 用户特意加了这条约束）。
+    {
+      const root = mkNoticeProj("mode-mandate-surg", "surgical");
+      const run = makeCtx({ withTokenMeter: true });
+      mod.apply(run.ctx, {});
+      const t = await noticeAt(run, root, "s-mandate", 0.72);
+      ok("★★★ 70% 提醒里出现「义务」——它是命令不是建议", /义务/.test(t), t.slice(0, 700));
+      ok(
+        "★★★ 而且**说清了不做的后果**（压缩不会发生 / 撞上官方 80%）",
+        /不会(发生|压缩)|不会压|内核|80%/.test(t),
+        t.slice(0, 900)
+      );
+      ok(
+        "★★★ 但仍然**把判断权留给 AI**（用户：不能机械性强行压缩）",
+        /由你(判断|定)|不是你的选项|分什么|怎么分/.test(t),
+        t.slice(0, 900)
+      );
+      rmrf(root);
+    }
+    {
+      const root = mkNoticeProj("mode-mandate-std", "steady");
+      const run = makeCtx({ withTokenMeter: true });
+      mod.apply(run.ctx, {});
+      const t = await noticeAt(run, root, "s-mandate2", 0.55);
+      ok("★★★ 30/50% 档也是义务语气（不再是「按约定」）", /义务/.test(t), t.slice(0, 700));
+      ok("★★ 并说明了不做的后果", /不会(发生|压缩)|内核|80%/.test(t), t.slice(0, 900));
+      rmrf(root);
+    }
     {
       const root = mkNoticeProj("mode-notice-std", "steady");
       const run = makeCtx({ withTokenMeter: true });
@@ -6821,6 +6859,119 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
         "★★★ 补做分流之后 ⇒ 压缩放行（闸门是「等它做」，不是「永久卡死」）",
         regionCalls.length >= 1,
         `regionCalls=${regionCalls.length}`
+      );
+      rmrf(root);
+    }
+
+    // 37i-4：★★★ 2026-10-11 修的**真缺陷**（D59）—— 分流义务的**超时兜底**。
+    //
+    //   事故原文（用户先发现的）：*"你有没有发现我们直到现在都没有进行任何一次
+    //   增量压缩，已经快70%了。"* —— 本项目 `surgical` 模式下 `triageOwedAt`
+    //   **只有 `ledger_triage` 能清**（`noteFlushed` 只清 `flushOwedAt`），
+    //   而 AI 一次都没调 ⇒ 闸门连续拦了**近 4 小时**、零次压缩。
+    //
+    //   ★ 为什么原有的两道兜底都救不了（这是本用例存在的理由）：
+    //     ① `FLUSH_BLOCK_GIVEUP = 3` 依赖"**重试真的发生**" —— 真事故里计数攒不到 3；
+    //     ② `FLUSH_GATE_BYPASS_RATIO = 0.75` 是**更早的 return**，事故水位 ~70% 够不着。
+    //   ⇒ 新增的这条**只看墙上时间**，不依赖任何别的东西。
+    //
+    //   ★ 测法：把 `Date.now` 往前推 21 分钟（> `TRIAGE_OWED_MAX_AGE_MS` 的 20 分钟），
+    //     同一个被拦过的现场**必须放行**。这就是"时间兜底不依赖重试"的直接证据。
+    {
+      const root = mkGateProj("gate-overdue", "surgical");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-gate0000-0004";
+      const agent = mkGateAgent(root, sid, 7);
+      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 40 }));
+
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 100;
+      await runPreStep(run, { agent, messages: [] });
+
+      // 到 70% 档 ⇒ 立下分流义务（`triageOwedAt` 用的是**真实** Date.now）
+      run.services.tokenMeter._total = 720;
+      const d70 = await runPreStep(run, { agent, messages: [] });
+      const t70 = (d70.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok("★★ 70% 档立起了分流义务（前置条件）", /ledger_triage/.test(t70), t70.slice(0, 300));
+
+      // 先确认**不推时间**时它真会被拦（否则后面的断言恒真、等于没测）
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 740;
+      await runPreStep(run, { agent, messages: [] });
+      eq("★★★ 时限内仍然拦着（不是无条件放行）", regionCalls.length, 0);
+
+      // ★ 把时钟推过 20 分钟 ⇒ 同一条义务已过期 ⇒ **必须放行**
+      //
+      //   ★★★ 水位必须 **< 75%**（这里用 745 = 74.5%）：`FLUSH_GATE_BYPASS_RATIO = 0.75`
+      //     那条旁路是**更早的 return**，一到 0.75 就先放行了、根本走不到超时判断。
+      //     我第一版写了 **760**（0.76）⇒ 这条断言在**摘掉超时兜底之后依然全绿**
+      //     —— 是反向验证当场抓出来的**摆设断言**（它测的其实是那条 75% 旁路）。
+      //     ⚠️ 同一个坑 37i-2 的注释里**早就写过**「水位刻意 < 75%」，我照抄时没照做。
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + 21 * 60 * 1000;
+        await flushLedger(run, root, sid);
+        run.services.tokenMeter._total = 745; // < 75% ⇒ 够不着那条旁路，只能靠时限兜底
+        await runPreStep(run, { agent, messages: [] });
+      } finally {
+        Date.now = realNow;
+      }
+      ok(
+        "★★★ 超过 20 分钟仍未分流 ⇒ 时限兜底放行（压缩不再永久卡死）",
+        regionCalls.length >= 1,
+        `regionCalls=${regionCalls.length}`
+      );
+      rmrf(root);
+    }
+
+    // 37i-5：★★★ 2026-10-11 新增 —— **可查的压缩计数器**（D59 的核心教训）。
+    //
+    //   用户那句"一次增量压缩都没发生"之所以能戳中我，是因为我
+    //   **写了棘轮、自检全绿、还发了版，却从没核对过"压缩真的发生了"**。
+    //   ⇒ 凡是"应该会发生"的事，都要有一个**能被读出来的整数**。
+    //   ★ 这条同时防两种事故：① 功能没跑（数字不涨）；② 只统计了一条路径
+    //     （本用例**增量与全量都走一遍**，两条都必须记上）。
+    {
+      // ★ 用 `steady`：本用例要测的是**计数器**，而不是分流闸门。
+      //   用 `surgical` 会让压缩被分流义务拦住 ⇒ 断言的其实是闸门，而不是计数
+      //   （我第一版就踩了这个 —— 四个断言一起红，根因是夹具选错，不是功能坏）。
+      const root = mkGateProj("gate-counts", "steady");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-gate0000-0005";
+      const agent = mkGateAgent(root, sid, 7);
+      const exec = execFor(root, sid);
+      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 40 }));
+
+      // ★ 用**工具**那侧查（机器可校验的结构化字段），不是聊天文案。
+      const counts = async () =>
+        (await run.registeredTools.get("ledger_status").execute({}, exec))?.compactionCounts;
+
+      const c0 = await counts();
+      ok(
+        "★★★ `ledger_status` 报出本会话压缩次数（用户能自己查、脚本能断言）",
+        c0 !== undefined && c0 !== null && c0.total === 0,
+        JSON.stringify(c0)
+      );
+
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 100;
+      await runPreStep(run, { agent, messages: [] });
+      // ★ 走**增量**那条（这正是用户报的那条路径）
+      run.services.tokenMeter._total = 720;
+      await runPreStep(run, { agent, messages: [] });
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 740;
+      await runPreStep(run, { agent, messages: [] });
+      ok("★★ 增量压缩真的跑了（否则计数无从谈起）", regionCalls.length >= 1, `regionCalls=${regionCalls.length}`);
+      const c1 = await counts();
+      ok(
+        "★★★ 增量压缩**记进了计数器**（第一版只统计全量 ⇒ 会误报 0）",
+        c1 !== null && c1 !== undefined && c1.total >= 1 && c1.delta >= 1,
+        JSON.stringify(c1)
       );
       rmrf(root);
     }

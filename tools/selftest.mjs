@@ -6038,6 +6038,75 @@ section("情形 27：官方设置面板");
     for (const fn of ["parseTiers", "formatTiers", "valueToPatch", "settingsToUi", "sameValue", "diffPatch"]) {
       ok(`★ 客户端露出了纯函数 ${fn}`, new RegExp(`\\b${fn}\\b`).test(cfgSrc));
     }
+
+    // ★★★ 2026-10-11 新增（第三方报告点出来的真缺陷，实测确认过）：
+    //   **界面文案里的 markdown 星号会被原样显示**。
+    //   客户端是把字符串直接交给 React 渲染的 —— **没有 markdown 渲染器**
+    //   ⇒ 写 `**台账功能不受影响**` 用户看到的就是带星号的原句（观感像"语法没写完"）。
+    //   ★ 判据：剥掉注释后，**字符串字面量**里不许再出现 `**`。
+    //     ⚠️ 不能整份搜 `**` —— 那会把 66 行文档注释全误判（注释里星号无害）。
+    const cfgNoComment = cfgSrc
+      .split("\n")
+      .map((l) => l.replace(/^\s*(\/\/|\*|\/\*).*$/, "")) // 丢掉整行注释
+      .join("\n");
+    const starLines = cfgNoComment
+      .split("\n")
+      .map((l, i) => ({ n: i + 1, t: l.split("//")[0] })) // 丢掉行尾注释
+      .filter((x) => x.t.includes("**"));
+    ok(
+      "★★★ 界面文案里没有 markdown 星号（无渲染器 ⇒ 会原样显示给用户）",
+      starLines.length === 0,
+      starLines.map((x) => `L${x.n}`).join(", ")
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 27p：**打包契约**（2026-10-11 新增，第三方报告点出的真缺陷）
+//
+//   报告说：`files` 只列了 lib / cordis.patch.yml / README.md，
+//   而 `scripts.test` 指向 `tools/selftest.mjs` ⇒ **别人装上后 `npm test` 就是
+//   MODULE_NOT_FOUND**。实测确认属实（`files` 里确实没有 tools）。
+//
+//   ★ 为什么这条必须进自检：它**在本机永远测不出来** ——
+//     我在仓库里跑 `npm test` 当然能过（tools/ 就在旁边）。
+//     只有"从 npm 装出来的那份"才会坏。⇒ 判据必须直接盯**打包清单**。
+//
+//   ★ 为什么只放 `tools/selftest.mjs` 而不是整个 `tools/`：
+//     `tools/` 里有一条会**改写 lib/index.js** 的探针
+//     （`_probe-assertion-can-fail.mjs` 会 writeFileSync 源码再恢复）。
+//     把它打进用户的包里是**危险**的 —— 一个测试依赖不该带改源码的能力。
+//     ⇒ 只放自包含的那个（已实测：selftest 只用 node: 内建，不 import 别的探针）。
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const pkgPath = path.join(HERE, "..", "package.json");
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const files = pkg.files ?? [];
+  const testScript = pkg.scripts?.test ?? "";
+
+  ok("★★★ package.json 有 files 白名单（否则会把整个仓库发出去）", files.length > 0, JSON.stringify(files));
+
+  // ① scripts.test 指向的文件，必须在 files 白名单覆盖范围内
+  const testTarget = (testScript.match(/([\w./-]+\.mjs|[\w./-]+\.js)/) ?? [])[1];
+  if (testTarget !== undefined) {
+    const covered = files.some((f) => testTarget === f || testTarget.startsWith(f.replace(/\/$/, "") + "/"));
+    ok(
+      `★★★ scripts.test 指向的 ${testTarget} 确实在 files 白名单里（否则装上即坏）`,
+      covered,
+      `files = ${JSON.stringify(files)}`
+    );
+  }
+
+  // ② 会**改写源码**的探针绝不能被发出去
+  const dangerous = ["_probe-assertion-can-fail.mjs"];
+  for (const d of dangerous) {
+    const shipped = files.some((f) => f.includes(d));
+    ok(`★★★ 会改写源码的探针 ${d} **不在**打包清单里`, !shipped, `files = ${JSON.stringify(files)}`);
+  }
+
+  // ③ 运行时真正需要的三样必须在
+  for (const need of ["lib", "cordis.patch.yml"]) {
+    ok(`★ 运行时必需的 ${need} 在 files 里`, files.includes(need), JSON.stringify(files));
   }
 }
 

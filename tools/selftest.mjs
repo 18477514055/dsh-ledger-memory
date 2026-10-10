@@ -7643,6 +7643,112 @@ section("情形 39：审计报告点出的 A1 / A4 高危缺陷（先写会红�
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 情形 40：★★★ **度量口径不一致** ⇒ 增量压缩在真实机器上永不发生
+//
+//   用户 2026-10-11 第二次先发现：*"你有没有发现，你直到现在还没有增量压缩？"*
+//   实测：1.1.0 之后 `compaction/start` **0 次**；`anchors.json` **不存在**
+//   （而成功压缩必写它）⇒ **从未成功过一次**。
+//
+//   ★★★ 根因（内核源码**逐字**对照，不是猜）：
+//     内核 `dsh-token-meter` 的 `measure()` 返回：
+//       totalTokens = baseline.tokens + surfaceDeltaTokens
+//                   = estimateToolsTokens(header) + surfaceTokens   ← **含工具头**
+//       nodes       = surface.nodes                                  ← **只有 surface**
+//     而本插件：
+//       · `measurePressure` 用 **totalTokens**（含工具头）算 ratio；
+//       · `retainTokens = floor((ratio − deltaRemovePoints/100) × window)` —— **同一尺度**；
+//       · `selectIncrementalRange` 却在 **nodes（只有 surface）** 上从后往前累加。
+//     ⇒ 只要 **工具头 > deltaRemovePoints% × window**，就有
+//         `retainTokens > Σnodes` ⇒ 攒满全部节点仍不够 ⇒ `keepFromIdx` 退到 `firstIdx`
+//         ⇒ **返回 null** ⇒ 压缩永不发生，**且该返回不带 blocked/requeued ⇒ 静默**。
+//
+//   ★ 本机实测何以必然触发：**406 个工具**、定义 JSON 464,937 字符 ≈ **116K token**
+//     > **100K**（1M 窗口的 10% = deltaRemovePoints 默认 10）⇒ 必然失败。
+//
+//   ★★ 为什么 934 项自检全绿却没抓到：30a 的夹具注释**自己写错了前提** ——
+//      它断言"真实内核里 totalTokens 就是 surface 各节点之和"（第 5667 行的原话）。
+//      于是夹具让 `_total` 与 `_priced` **内部自洽**，而真实环境**不自洽**。
+//      ⇒ 本用例要**复现真实的不自洽**（totalTokens 明显大于 priced 之和）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 40：度量口径不一致 ⇒ 增量压缩永不发生（真实环境复现）");
+{
+  const mkU = (tag) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 目标\n做点事\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.mkdirSync(path.join(root, "_a"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    return root;
+  };
+
+  {
+    const root = mkU("unit-mismatch");
+    const regionCalls = [];
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+    mod.apply(run.ctx, {});
+    const sid = "session-unit0000-0001";
+    // 造一个像真实内核那样"含工具头"的假 agent：21 个节点
+    const events = [];
+    let seq = 1;
+    for (let r = 0; r < 7; r += 1) {
+      events.push({ type: "user/message", seq, data: { message: { role: "user", content: [] } } }); seq += 1;
+      events.push({ type: "assistant/message", seq, data: { message: { role: "assistant", content: [{ type: "tool-call", id: `c${seq}` }] } } }); seq += 1;
+      events.push({ type: "tool/result", seq, data: { message: { role: "tool" } } }); seq += 1;
+    }
+    const bySeq = new Map(events.map((e) => [e.seq, e]));
+    const agent = {
+      session: {
+        header: { id: sid, cwd: root },
+        id: sid,
+        requestContext: () => ({ contextWindow: 1000 }),
+        surface: { nodes: events.map((e) => e.seq) },
+        eventAt: (s) => bySeq.get(s),
+      },
+      steer: () => {},
+    };
+
+    // ★★★ 关键：**复现真实内核的"不自洽"** ——
+    //   `totalTokens`（含工具头）明显**大于** `priced` 各节点之和（只有 surface）。
+    //   真实比例：本机工具头 ≈ 116K token / surface ≈ 570K token ⇒ 工具头约占 17%。
+    //   这里用窗口 1000 等比缩小：工具头 170、surface 各节点合计 830。
+    const NODES = events.length;              // 21
+    const surfaceEach = Math.floor(830 / NODES); // 39 → 合计 819
+    run.services.tokenMeter._priced = events.map((e) => ({ seq: e.seq, tokens: surfaceEach }));
+    run.services.tokenMeter._total = 1000;    // 100% ⇒ 含工具头
+
+    await flushLedger(run, root, sid);
+    // 水位 100% 时：keepRatio = 1.00 − 0.10 = 0.90 ⇒ 旧口径 retainTokens = 900
+    // 而 Σnodes = 21 × 39 = 819 < 900 ⇒ **攒满全部节点仍不够** ⇒ 返回 null ⇒ 不压。
+    // ★★ 注意**必须分两步**（照 30a 的时序）：
+    //   ① 第一步在水位到线时发**提醒** ⇒ 它会立 `flushOwedAt`（"开了口就要等"），
+    //      该步**不会**压缩（这正是"先记台账、再压缩"）；
+    //   ② 然后 AI 真写台账（`flushLedger`）；
+    //   ③ 第三步才该压。
+    //   ⚠️ 我第一版把①③挤在一步里 ⇒ 测到的是**闸门**，不是本次要测的口径 —— 又是"尺子错"。
+    run.services.tokenMeter._total = 1000;
+    await runPreStep(run, { agent, messages: [] });   // ① 发提醒、立欠账
+    await flushLedger(run, root, sid);                // ② 真写台账 ⇒ 义务兑现
+    await runPreStep(run, { agent, messages: [] });   // ③ 该压了
+
+    ok(
+      "★★★ 水位 100%、涨够触发线时，增量压缩**必须真的发生**" +
+        "（否则就是「保留量按含工具头的尺度算、却用在只有 surface 的节点上」）",
+      regionCalls.length >= 1,
+      `regionCalls=${regionCalls.length}；Σnodes=${NODES * surfaceEach}（只有 surface）` +
+        ` vs 旧口径 retainTokens=900（按 totalTokens 含工具头算）`
+    );
+    rmrf(root);
+  }
+}
+
 if (CREATED_ROOTS.length > 0) {
   await new Promise((r) => setTimeout(r, 1500));
   for (const d of CREATED_ROOTS) rmrf(d);

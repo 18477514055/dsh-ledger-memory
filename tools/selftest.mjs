@@ -6880,6 +6880,66 @@ section("情形 38：项目锁（总工作区里锁定到子项目）");
     ok("★★ 并说明「不写任何文件」（用户会关心这个）", /不写|没有写任何文件|只存内存/.test(txt), txt.slice(0, 400));
     rmrf(dir);
   }
+
+  // 38i：★★★ 采集器（活动日志 / L4）也走锁吗？
+  //
+  //   ★ 这是**真缺口**的回归：用户让我把会话锁到插件目录之后，我发现
+  //     `ledger_log({view:"users"})` 一条 L4 都没有 —— 因为 `session/event`
+  //     那条链手里只有 `session`（没有 `agent`），旧代码就直取 `session.header.cwd`，
+  //     **绕过了 `projectRootOf`** ⇒ 锁对 L0–L4 全部无效。
+  //     容器根没台账 ⇒ `logDirOf` undefined ⇒ `consume` 直接 return ⇒ **一句都不记**。
+  //   ⇒ 断言必须验证"事件采集落到了**锁定目录**"，而不是"锁的工具返回值对不对"。
+  {
+    const { dir, sub } = mkContainer("lock-collector");
+    // 子项目启用日志；容器根**不建台账**（= 用户真实情形：总工作区没有台账）
+    fs.writeFileSync(path.join(sub, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.writeFileSync(
+      path.join(sub, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a",
+        logDir: "_ledger-log",
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+        revision: 0,
+      }),
+      "utf8"
+    );
+
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const sid = "s-lock-collector";
+    const agent = { session: { header: { id: sid, cwd: dir } } };
+    await run.registeredTools.get("ledger_lock").execute({ root: sub }, { agent });
+
+    // 喂一条真实的 user/message（形状照 userMessageOf 的判据：data.role + data.source.kind）
+    const session = { header: { id: sid, cwd: dir }, id: sid };
+    for (const h of run.handlers.get("session/event") ?? []) {
+      await h(session, {
+        type: "user/message",
+        time: Date.now(),
+        data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "锁定时用户说的话" }] },
+      });
+    }
+    // 日志是去抖落盘的（LOG_FLUSH_DEBOUNCE_MS = 1200）
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const hasL4 = (base) => {
+      const d = path.join(base, "_ledger-log");
+      if (!fs.existsSync(d)) return false;
+      const stack = [d];
+      while (stack.length > 0) {
+        const cur = stack.pop();
+        for (const e of fs.readdirSync(cur, { withFileTypes: true })) {
+          if (e.isDirectory()) stack.push(path.join(cur, e.name));
+          else if (/L4/.test(e.name)) return true;
+        }
+      }
+      return false;
+    };
+
+    ok("★★★ 锁生效后，L4 真的落进了**锁定目录**", hasL4(sub), `子目录 ${sub} 下没找到 L4`);
+    ok("★★★ 而且**没有**落到容器根（cwd）", !hasL4(dir), `容器根 ${dir} 下不该有 L4`);
+    rmrf(dir);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

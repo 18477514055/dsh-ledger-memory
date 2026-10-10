@@ -30,6 +30,23 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENTRY = path.join(HERE, "..", "lib", "index.js");
 
+/**
+ * ★★★ 自检**绝不能写用户真正的家**。
+ *
+ * 背景（2026-10-10）：项目锁改成"跨重启保持"之后，`ledger_lock` 会往
+ *   `$DSH_HOME\plugin-data\dsh-ledger-memory\locks.json` **落盘**。
+ *   而自检用假 ctx 直接跑 `lib/index.js` ⇒ 一旦某个用例摸到 `ledger_lock`，
+ *   就会**往用户真实的家 `C:\Users\24239\.dsh` 里写文件**。
+ *   ★ 这是"测试污染真实环境"，比测试失败严重得多（用户的家是红线区）。
+ *
+ * ⇒ 在**导入 `lib/index.js` 之前**把 `DSH_HOME` 指到一个临时目录。
+ *   ★ 必须在这里、不能在后面：`lockStorePath()` 每次调用都读 `process.env.DSH_HOME`，
+ *     所以只要在**任何一次调用之前**设好就够 —— 但放最前面最稳妥、也最容易被看懂。
+ *   ★ 收尾时删掉这个临时家（见文件末尾的清扫段）。
+ */
+const SANDBOX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-selftest-home-"));
+process.env.DSH_HOME = SANDBOX_HOME;
+
 let pass = 0;
 let failCount = 0;
 const failures = [];
@@ -6877,7 +6894,10 @@ section("情形 38：项目锁（总工作区里锁定到子项目）");
     const txt = steered[0].content[0].text;
     ok("★★★ 指示里点名了 `ledger_lock`", /ledger_lock/.test(txt), txt.slice(0, 300));
     ok("★★★ 且要求它**先问是哪个子项目**（不许自己猜）", /先问|问清/.test(txt), txt.slice(0, 300));
-    ok("★★ 并说明「不写任何文件」（用户会关心这个）", /不写|没有写任何文件|只存内存/.test(txt), txt.slice(0, 400));
+    // ★ 2026-10-10 口径变了：锁**会落盘**（跨重启保持），所以不能再断言"不写任何文件"。
+    //   现在要断言的是"它如实说明了记录放在 DSH 自己的家、不在用户工作区里"。
+    ok("★★ 并说明「记录不在用户工作区里」（用户会关心这个）",
+      /不在用户的工作区|不在你的工作区|plugin-data/.test(txt), txt.slice(0, 400));
     rmrf(dir);
   }
 
@@ -6940,6 +6960,92 @@ section("情形 38：项目锁（总工作区里锁定到子项目）");
     ok("★★★ 而且**没有**落到容器根（cwd）", !hasL4(dir), `容器根 ${dir} 下不该有 L4`);
     rmrf(dir);
   }
+
+  // 38j：★★★ 锁**跨重启保持**（2026-10-10 用户追加要求）
+  //
+  //   用户原话：*"这个锁能不能长久保留，比如说我们在这个对话锁到项目台账文件夹后，
+  //     不管重启多少次，之后都默认在那个文件夹使用工具"*
+  //   ★ 以及他纠正我的一次：*"注意是每个对话自己选锁定的目录并保持"*
+  //     ⇒ 键必须是 **sid**（每场对话各记各的），**不是 cwd**（那会让新对话也悄悄改道）。
+  //
+  //   ★ "重启"在这里怎么模拟：`sessionProjectLock` 是模块级 Map，**进程一换就没了**。
+  //     所以"新进程"= 重新 import 一次 `lib/index.js`（模块级 Map 全新），
+  //     而落盘的 `locks.json` 仍在（同一个沙箱 DSH_HOME）⇒ 正好等价于重启。
+  {
+    const { dir, sub } = mkContainer("lock-persist");
+    const sid = "s-lock-persist";
+
+    // ── 第一个"进程"：锁上 ──
+    const run1 = makeCtx({});
+    mod.apply(run1.ctx, {});
+    const agent1 = { session: { header: { id: sid, cwd: dir } } };
+    const r1 = await run1.registeredTools.get("ledger_lock").execute({ root: sub }, { agent: agent1 });
+    eq("① 锁定成功", r1.ok, true);
+    eq("★★★ 而且**确实落盘了**（persisted）", r1.persisted, true);
+
+    // 落盘位置必须在**沙箱家**里，绝不能是用户真实的家
+    const storePath = r1.storePath;
+    ok("★★★ 记录写在沙箱 DSH_HOME 里（不是用户真实的家）",
+      storePath.startsWith(SANDBOX_HOME), storePath);
+    ok("★★ 记录文件真的存在", fs.existsSync(storePath), storePath);
+    const rawStore = fs.readFileSync(storePath, "utf8");
+    ok("★★★ 记录里按 **sid** 记账（不是按 cwd）", rawStore.includes(sid), rawStore.slice(0, 200));
+    ok("★★★ 记录里**没有**把这个 cwd 当成键（否则新对话会被悄悄改道）",
+      !rawStore.includes(`"${path.resolve(dir)}":`), rawStore.slice(0, 300));
+
+    // ── 模拟"重启"：换一个全新的模块实例（内存 Map 归零，磁盘还在）──
+    const mod2 = await import(`${pathToFileURL(ENTRY).href}?restart=${Date.now()}`);
+    const run2 = makeCtx({});
+    mod2.apply(run2.ctx, {});
+    const agent2 = { session: { header: { id: sid, cwd: dir } } };
+    const st2 = await run2.registeredTools.get("ledger_status").execute({}, { agent: agent2 });
+    eq("★★★ **重启后**同一场对话仍然落在锁定目录上", path.resolve(st2.projectRoot), path.resolve(sub));
+
+    // ── 另一场对话**不受影响**（"每个对话自己选"）──
+    const agentOther = { session: { header: { id: "s-lock-persist-OTHER", cwd: dir } } };
+    const stOther = await run2.registeredTools.get("ledger_status").execute({}, { agent: agentOther });
+    eq("★★★ 换一场对话**不受影响**（回到 cwd）", path.resolve(stOther.projectRoot), path.resolve(dir));
+
+    // ── 解除必须**连记录一起删**（否则"我解除了，重启又回来"）──
+    await run2.registeredTools.get("ledger_lock").execute({ release: true }, { agent: agent2 });
+    const mod3 = await import(`${pathToFileURL(ENTRY).href}?restart=${Date.now()}b`);
+    const run3 = makeCtx({});
+    mod3.apply(run3.ctx, {});
+    const st3 = await run3.registeredTools.get("ledger_status").execute({}, { agent: agent2 });
+    eq("★★★ 解除后**再重启**也不会回来（记录已删）", path.resolve(st3.projectRoot), path.resolve(dir));
+
+    rmrf(dir);
+  }
+
+  // 38k：★ 锁记录坏了 / 目标没了，都不许让插件崩
+  {
+    const { dir, sub } = mkContainer("lock-robust");
+    const sid = "s-lock-robust";
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const agent = { session: { header: { id: sid, cwd: dir } } };
+    const r = await run.registeredTools.get("ledger_lock").execute({ root: sub }, { agent });
+    const storePath = r.storePath;
+
+    // ① 坏 JSON ⇒ 当没锁，不抛
+    fs.writeFileSync(storePath, "{ 这不是合法 JSON", "utf8");
+    let threw = false;
+    try {
+      await run.registeredTools.get("ledger_status").execute({}, { agent });
+    } catch (e) {
+      threw = true;
+    }
+    ok("★★ 记录文件坏掉时**不许抛错**（当没锁即可）", !threw);
+
+    // ② 目标目录被删 ⇒ 锁自动失效（不能指向一个不存在的根）
+    fs.writeFileSync(storePath, JSON.stringify({ version: 1, bySession: { [sid]: { root: sub } } }), "utf8");
+    const gone = path.join(dir, "20-子项目");
+    rmrf(gone);
+    const st = await run.registeredTools.get("ledger_status").execute({}, { agent });
+    eq("★★ 目标目录被删后，锁**自动失效**回到 cwd", path.resolve(st.projectRoot), path.resolve(dir));
+
+    rmrf(dir);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6954,6 +7060,15 @@ for (const d of CREATED_ROOTS) rmrf(d);
 if (CREATED_ROOTS.length > 0) {
   await new Promise((r) => setTimeout(r, 1500));
   for (const d of CREATED_ROOTS) rmrf(d);
+}
+
+// ★★ 收尾：删掉自检用的那个**沙箱家**（见文件头的 `SANDBOX_HOME`）。
+//   它里面有项目锁的记录文件。不删的话每跑一次自检就在 %TEMP% 留一个空壳。
+//   ★ 断言一下"沙箱家确实不在用户真实家里" —— 这是本次新增落盘功能后最该守的一条。
+if (SANDBOX_HOME.startsWith(os.homedir()) && !SANDBOX_HOME.startsWith(os.tmpdir())) {
+  console.log(`  ★ 沙箱家落在真实 home 里了，拒绝删除：${SANDBOX_HOME}`);
+} else {
+  rmrf(SANDBOX_HOME);
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

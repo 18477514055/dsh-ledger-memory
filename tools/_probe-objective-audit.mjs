@@ -81,11 +81,26 @@ ok('⑧★★ 自检里有「情形 37：两个模式」', (st.stdout ?? "").inc
 //  以及他否决落注册表时的：*"而不是去动工作区的东西。不应该有这个权利。
 //  最开始的提示卡片就可以有这样的选择。"*
 ok('⑨★ 有 `ledger_lock` 工具', host.includes('name: "ledger_lock"'));
-ok('⑨★ 锁**只在内存**（不是落盘的注册表）', host.includes("const sessionProjectLock = new Map()"));
-ok('⑨★ 锁的键是**会话编号**（只在本场对话内有效）', /sessionProjectLock\.get\(sid\)/.test(host));
-ok('⑨★ 工具描述里**明说**不写盘（免得 AI 以为会留痕不敢用）', /In memory ONLY for the current conversation/.test(host));
+// ★ 2026-10-10 用户追加要求后，这里从"只在内存"改成了"会落盘、但落在插件自己的家"。
+ok('⑨★ 内存里有一份（本会话立刻生效的覆盖层）', host.includes("const sessionProjectLock = new Map()"));
+// ★★★ 落盘位置必须在 **DSH 自己的家**（不碰用户工作区）—— 这是用户那条红线的落点。
+ok('⑨★★ 锁**会落盘**（跨重启保持），且存在 `plugin-data` 下',
+  host.includes('LOCK_STORE_DIRNAME = "plugin-data"') && host.includes("function lockStorePath"));
+ok('⑨★★ 落盘路径来自 `DSH_HOME` / `~/.dsh`，**没有硬编码本机路径**',
+  /process\.env\.DSH_HOME/.test(host) && /os\.homedir\(\)/.test(host));
+ok('⑨★★ 锁按 **sid** 记（"每个对话自己选并保持"），不是按 cwd',
+  host.includes("bySession") && !host.includes("byDir"));
+ok('⑨★★ **唯一的取锁出口** `activeLockFor`（内存优先 + 落盘兜底 + 存在性校验）',
+  host.includes("function activeLockFor(sid)") &&
+    /sessionProjectLock\.get\(sid\) \?\? persistentLockFor\(sid\)/.test(host));
+ok('⑨★ 工具描述里说明了"跨重启保持"，且说明记录不在用户工作区',
+  /The lock PERSISTS across restarts/.test(host));
 ok('⑨★ 优先级：cwd 自己有台账 ⇒ 以 cwd 为准（锁只接管没台账的）',
   /readManifest\(here\) !== undefined\) return here/.test(host));
+// ★ 解除必须连记录一起删（否则"我解除了，重启又回来"）。
+ok('⑨★★ 解锁时**连持久记录一起删**', /delete store\.bySession\[sid\]/.test(host));
+ok('⑨★★ 自检把 `DSH_HOME` 指到沙箱（**绝不写用户真正的家**）',
+  fs.readFileSync(path.join(DIR, "tools", "selftest.mjs"), "utf8").includes("SANDBOX_HOME"));
 ok('⑨★ 首轮卡片里有「锁定」那一项（用户："最开始的提示卡片就可以有这样的选择"）',
   /label: "锁定到某个子项目"/.test(host));
 ok('⑨★ 选完给出的指示里要求**先问用户**是哪个子项目（不许自己猜）',

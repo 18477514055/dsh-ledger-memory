@@ -73,6 +73,25 @@ ok('⑧★ 三个桶都在（留 / 落 / 丢 = keep / stash / drop）',
 ok('⑧★ 客户端真的会画选择器（controlFor 认 choice）', client.includes('spec.kind === "choice"'));
 ok('⑧★★ 自检里有「情形 37：两个模式」', (st.stdout ?? "").includes("情形 37：两个模式"));
 
+// ⑨ ★★★ 项目锁（2026-10-10 用户拍板）
+//
+//  用户原话：*"因为总的工作区是有需要读的东西的，所以有时候会把对话建在总的工作区
+//  下面，这种时候的话，这个项目的锁定就应该考虑到可以让用户和AI说之后AI调用，
+//  或者说把项目注册到对应的文件夹上，以后各种工具的使用都在那个文件夹上。"*
+//  以及他否决落注册表时的：*"而不是去动工作区的东西。不应该有这个权利。
+//  最开始的提示卡片就可以有这样的选择。"*
+ok('⑨★ 有 `ledger_lock` 工具', host.includes('name: "ledger_lock"'));
+ok('⑨★ 锁**只在内存**（不是落盘的注册表）', host.includes("const sessionProjectLock = new Map()"));
+ok('⑨★ 锁的键是**会话编号**（只在本场对话内有效）', /sessionProjectLock\.get\(sid\)/.test(host));
+ok('⑨★ 工具描述里**明说**不写盘（免得 AI 以为会留痕不敢用）', /In memory ONLY for the current conversation/.test(host));
+ok('⑨★ 优先级：cwd 自己有台账 ⇒ 以 cwd 为准（锁只接管没台账的）',
+  /readManifest\(here\) !== undefined\) return here/.test(host));
+ok('⑨★ 首轮卡片里有「锁定」那一项（用户："最开始的提示卡片就可以有这样的选择"）',
+  /label: "锁定到某个子项目"/.test(host));
+ok('⑨★ 选完给出的指示里要求**先问用户**是哪个子项目（不许自己猜）',
+  /先问清是哪个子文件夹/.test(host));
+ok('⑨★★ 自检里有「情形 38：项目锁」', (st.stdout ?? "").includes("情形 38：项目锁"));
+
 // 双半声明
 ok('★ package.json 同时有 dsh.bundle 与 dsh.client', pkg.dsh?.bundle?.patch !== undefined && pkg.dsh?.client?.platform === "web");
 ok('★ exports 暴露 ./client', pkg.exports?.["./client"] === "./lib/client.js");

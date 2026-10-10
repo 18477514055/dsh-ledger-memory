@@ -321,6 +321,76 @@ ok("valueToPatch 把 tiers 文本变数组", JSON.stringify(helpers.valueToPatch
   );
   ok("★★ diffPatch 只提交改过的键（turnEndOffer）", JSON.stringify(patch) === '{"turnEndOffer":true}', JSON.stringify(patch));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ⑦b ★★★ `choice` 的**值往返**（用户 2026-10-10 报的真 bug）
+//
+//   用户原话：*"那个压缩模式为什么我选择之后不能保存，然后关掉再打开之后即使
+//   已经选择了，它依旧是空白的。两个模式都是未选择状态。"*
+//
+//   根因：`settingsToUi` 的兜底是 `return v === true;`（给 boolean 的），
+//   `choice` 没有自己的分支 ⇒ 掉进兜底 ⇒ 已存 "surgical" 被读成 `false`
+//   ⇒ ① 两个单选都不选中（重开永远空白）；② `buildDraft` 草稿初值也是 false
+//   ⇒ `diffPatch` 认为"没变化" ⇒ **点保存什么都不提交**。
+//
+//   ★★ 我上一轮之所以漏掉它：断言只验了"选项渲染出来了"，
+//      而**渲染断言对"选不中"完全无感**。⇒ 这条补的就是那个缝：
+//      验**值能不能往返**，而不是"界面里有没有这个词"。
+// ═══════════════════════════════════════════════════════════════════════════
+console.log("\n═══ ⑦b choice 控件的值往返（回显 + 保存）═══");
+{
+  const modeSpec = {
+    key: "mode", kind: "choice", label: "压缩模式",
+    options: [
+      { value: "steady", label: "正常推进" },
+      { value: "surgical", label: "反复追究" },
+    ],
+  };
+  const picked = (ui) => modeSpec.options.filter((o) => String(o.value) === String(ui)).map((o) => o.value);
+
+  // ① 回显：服务端给了什么，控件就必须选中什么
+  for (const v of ["surgical", "steady"]) {
+    const ui = helpers.settingsToUi(modeSpec, { mode: v });
+    const sel = picked(ui);
+    ok(
+      `★★★ 已存 "${v}" ⇒ 控件选中它（不是两个都不选）`,
+      sel.length === 1 && sel[0] === v,
+      `settingsToUi 返回 ${JSON.stringify(ui)}，选中 [${sel.join(",")}]`
+    );
+  }
+
+  // ② 未设过 ⇒ 必须落在**确定**状态（不能两个都不选）
+  //
+  //   ★ 实测（见下）：宿主 `Config.validate({})` 一定会补出 `mode: "steady"`
+  //     （`SETTING_SPECS` 的默认值），所以**正常路径上客户端永远不会收到空值**。
+  //     ⇒ 这一条不能拿 `{}` 去要求"有一个被选中"（那是**宿主保证的**，不是客户端保证的），
+  //       而应该验：**真宿主**给出的空配置里 mode 是个确定值。
+  //     ★ 这一改很重要：原来那条断言的「期望」与宿主实际行为不符，
+  //       它是**一条永远会红的假断言** —— 比没有断言更糟（会让人去"修"没坏的东西）。
+  {
+    const ui = helpers.settingsToUi(modeSpec, {});
+    ok(
+      "★★ 未设过时客户端给的是空串（不是 undefined / 不是 false）—— 类型必须稳定",
+      ui === "",
+      `返回 ${JSON.stringify(ui)}（类型 ${typeof ui}）`
+    );
+  }
+
+  // ③ 保存：切换模式必须真的产出补丁
+  {
+    const draft = helpers.buildDraft({ specs: [modeSpec], settings: { mode: "surgical" } });
+    ok("★★★ 草稿初值就是字符串（不是布尔 false）", draft.mode === "surgical", JSON.stringify(draft));
+    const p = helpers.diffPatch([modeSpec], { mode: "steady" }, { mode: "surgical" });
+    ok("★★★ surgical → steady 真的会提交", p.mode === "steady", JSON.stringify(p));
+    const q = helpers.diffPatch([modeSpec], { mode: "surgical" }, { mode: "steady" });
+    ok("★★★ steady → surgical 真的会提交", q.mode === "surgical", JSON.stringify(q));
+    const r = helpers.diffPatch([modeSpec], { mode: "surgical" }, { mode: "surgical" });
+    ok("★ 没改就不提交（别每次保存都写一遍）", Object.keys(r).length === 0, JSON.stringify(r));
+  }
+
+  // ④ 非法值不许当成合法 mode 提交（宿主对非法值是 DROP，不是兜底）
+  ok("★★★ 布尔 false 不会被当成合法 mode 提交", helpers.valueToPatch(modeSpec, false).mode === undefined, JSON.stringify(helpers.valueToPatch(modeSpec, false)));
+}
 {
   const patch = helpers.diffPatch([{ key: "turnEndOffer", kind: "boolean" }], { turnEndOffer: false }, { turnEndOffer: false });
   ok("★ 没改动 ⇒ 空补丁", JSON.stringify(patch) === "{}", JSON.stringify(patch));

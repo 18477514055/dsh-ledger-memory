@@ -608,7 +608,9 @@ section("情形 1：全新项目的检测与提示");
   mod.apply(run.ctx, {});
 
   // ★ 2026-10-10：新增 `ledger_handoff`（第③层）⇒ 11 → 12 个工具。
-  eq("注册了 13 个工具（新增 ledger_triage）", run.registeredTools.size, 13);
+  // ★ 2026-10-10：新增 `ledger_triage`（分流单）⇒ 12 → 13 个工具。
+  // ★ 2026-10-10：新增 `ledger_lock`（把会话锁到某个项目目录）⇒ 13 → 14 个工具。
+  eq("注册了 14 个工具（新增 ledger_triage 与 ledger_lock）", run.registeredTools.size, 14);
   for (const n of [
     "ledger_status",
     "ledger_init",
@@ -959,7 +961,8 @@ section("情形 6b：/ledger 裸敲弹选择卡片");
   // ★ 2026-10-09：加了 `light`（手动轻量压缩）⇒ 7 项变 8 项。
   // ★ 2026-10-10：加了 `handoff`（写交接单）⇒ 8 项变 9 项。
   // ★ 2026-10-10：加了 `mode`（切压缩模式）⇒ 9 项变 10 项。
-  eq("卡片列全十个子命令（含 compact / light / handoff / mode）", run.asked[0].request.questions[0].options.length, 10);
+  // ★ 2026-10-10：加了 `lock`（把会话锁到某个项目目录）⇒ 10 项变 11 项。
+  eq("卡片列全十一个子命令（含 compact / light / handoff / mode / lock）", run.asked[0].request.questions[0].options.length, 11);
   eq("点「显示活跃台账」⇒ 真的执行 show", r1.kind, "success");
   ok("返回的是台账正文", r1.text.includes("项目台账"), r1.text.slice(0, 150));
   // ★ 关键：卡片里选出来的，与手打 `/ledger show` 必须**一模一样**
@@ -1113,7 +1116,7 @@ section("情形 7：服务缺失与容错");
     console.log(`        apply 抛了：${e.message}`);
   }
   ok("没有 commands 服务时 apply 不抛错", !threw);
-  eq("没有 commands 时工具仍注册", run.registeredTools.size, 13);
+  eq("没有 commands 时工具仍注册", run.registeredTools.size, 14);
   rmrf(initedRoot);
 }
 
@@ -2694,9 +2697,11 @@ section("情形 19：第一轮先问「建项目 or 不建」");
     eq("第一轮弹了一张卡", run.asked.length, 1);
     eq("★ 卡片是 first-turn 而不是四选一", run.asked[0].request.questions[0].id, "ledger-first-turn");
     const opts = run.asked[0].request.questions[0].options.map((o) => o.label);
-    eq("三个选项", opts.length, 3);
+    // ★ 2026-10-10：加了第四项「锁定到某个子项目」（用户拍板：首轮卡片就该有这个选择）。
+    eq("四个选项（含锁定到子项目）", opts.length, 4);
     ok("有「建项目」", opts.some((o) => o.includes("建项目")), opts.join("|"));
     ok("有「不建」那条", opts.some((o) => o.includes("不建")), opts.join("|"));
+    ok("★★ 有「锁定」那条（对话建在总工作区时用）", opts.some((o) => o.includes("锁定")), opts.join("|"));
     // ★ 这一问出去以后，那一轮不该再叠一张四选一
     eq("★ 只问了一张（没有同时弹四选一）", run.asked.length, 1);
     eq("steer 唤醒 AI 去执行", steered.length, 1);
@@ -6659,6 +6664,221 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       );
       rmrf(root);
     }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★ 情形 38：项目锁（2026-10-10 用户拍板）
+//
+//   用户原话：*"因为总的工作区是有需要读的东西的，所以有时候会把对话建在总的
+//   工作区下面，这种时候的话，这个项目的锁定就应该考虑到可以让用户和AI说之后
+//   AI调用，或者说把项目注册到对应的文件夹上，以后各种工具的使用都在那个文件夹上。"*
+//
+//   以及他**否决**落注册表文件时说的：*"让模型拥有把插件锁定在对应或者说本次项目
+//   新建的文件夹中。而不是去动工作区的东西。不应该有这个权利。
+//   最开始的提示卡片就可以有这样的选择。"*
+//
+//   ⇒ 这个情形钉的就是他那三句话，逐条：
+//     ① 锁生效后**所有**工具都落在锁定目录上（不是只有一两个）；
+//     ② **一个文件都不写**（工作区里不多出任何东西）；
+//     ③ 只在本场对话内（换 sid 就没了）；
+//     ④ 首轮卡片里有这个选项；
+//     ⑤ 优先级：cwd 自己有台账 ⇒ 以 cwd 为准（锁只接管"没有台账"的目录）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 38：项目锁（总工作区里锁定到子项目）");
+{
+  /** 造成"总工作区 + 一个子项目"的样子。 */
+  const mkContainer = (tag) => {
+    const dir = tmpProject(tag);
+    // 容器标志：有 AGENTS.md 且**不是** git 仓库（`isContainerWorkspace` 的判据）
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), "# 工作区指令\n", "utf8");
+    const sub = path.join(dir, "20-子项目");
+    fs.mkdirSync(sub, { recursive: true });
+    return { dir, sub };
+  };
+
+  const execOn = (agent, root) => ({
+    agent,
+    ...(root === undefined ? {} : {}),
+  });
+
+  // 38a：锁定一个子项目 ⇒ 所有工具都落到它上面
+  {
+    const { dir, sub } = mkContainer("lock-basic");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const sid = "session-lock0000-0001";
+    const agent = { session: { header: { id: sid, cwd: dir } } };
+
+    const lock = run.registeredTools.get("ledger_lock");
+    ok("★ 有 `ledger_lock` 工具", lock !== undefined);
+
+    const r = await lock.execute({ root: sub }, { agent });
+    eq("★ 锁定成功", r.ok, true);
+    eq("★ 锁定的就是那个子目录", r.root, path.resolve(sub));
+
+    // ★★ 关键：**别的不相干工具**也必须跟着落到锁定目录上
+    //    （"以后各种工具的使用都在那个文件夹上"是用户的原话）
+    const st = await run.registeredTools.get("ledger_status").execute({}, { agent });
+    eq("★★★ ledger_status 落在锁定目录上（不是 cwd）", path.resolve(st.projectRoot), path.resolve(sub));
+    eq("★★ 那个子目录还没台账 ⇒ 如实报未初始化", st.initialized, false);
+
+    // 换个工具再验一次（证明不是只有 status 走了这条链）
+    const init = await run.registeredTools.get("ledger_init").execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", initialActive: "# 台账\n\n- 起头\n" },
+      { agent }
+    );
+    eq("★★★ ledger_init 也落在锁定目录上", init.ok, true);
+    eq("★★ 它自报的项目根就是锁定目录", path.resolve(init.projectRoot), path.resolve(sub));
+    // ★ 断言要落在**它真的会做的事**上：`ledger_init` 写的是**清单**（`.dsh-ledger.json`），
+    //   活跃台账只有传了 `initialActive` 才建。
+    //   ★ 我第一版断言的是"LedGER.md 存在" → 假红（那条不是它的职责）。
+    //     ⇒ 判据要跟着被测对象的**真实语义**走，不能跟着我的印象走。
+    ok("★★★ 清单真的写进了锁定目录", fs.existsSync(path.join(sub, ".dsh-ledger.json")), sub);
+    ok("★★★ 台账正文也真的建在锁定目录里", fs.existsSync(path.join(sub, "LEDGER.md")), sub);
+    ok("★★ 而 cwd（容器根）里**没有**台账", !fs.existsSync(path.join(dir, "LEDGER.md")), dir);
+    ok("★★★ cwd 里也没有清单（没有误写到总工作区）", !fs.existsSync(path.join(dir, ".dsh-ledger.json")), dir);
+    rmrf(dir);
+  }
+
+  // 38b：★★★ 锁**一个文件都不写**（用户明确要求"不要去动工作区的东西"）
+  {
+    const { dir, sub } = mkContainer("lock-nowrite");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const agent = { session: { header: { id: "s-lock-nowrite", cwd: dir } } };
+
+    const before = (d) => {
+      const out = [];
+      (function walk(x, pre) {
+        for (const e of fs.readdirSync(x, { withFileTypes: true })) {
+          if (e.isDirectory()) walk(path.join(x, e.name), pre + e.name + "/");
+          else out.push(pre + e.name);
+        }
+      })(d, "");
+      return out.sort();
+    };
+    const dirBefore = before(dir);
+    const subBefore = before(sub);
+
+    await run.registeredTools.get("ledger_lock").execute({ root: sub }, { agent });
+
+    eq("★★★ 容器根里没有多出任何文件", JSON.stringify(before(dir)), JSON.stringify(dirBefore));
+    eq("★★★ 被锁的子目录里也没有多出任何文件", JSON.stringify(before(sub)), JSON.stringify(subBefore));
+    // 也不许在别处偷偷落个注册表
+    ok(
+      "★★★ 没有在工作区里建注册表/清单之类的东西",
+      fs.readdirSync(dir).every((f) => !/ledger.*(project|registry|lock)/i.test(f)),
+      fs.readdirSync(dir).join("|")
+    );
+    rmrf(dir);
+  }
+
+  // 38c：★ 只在本场对话内 —— 换一个 sid 就没有锁
+  {
+    const { dir, sub } = mkContainer("lock-scope");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const a1 = { session: { header: { id: "s-lock-a", cwd: dir } } };
+    await run.registeredTools.get("ledger_lock").execute({ root: sub }, { agent: a1 });
+    const stA = await run.registeredTools.get("ledger_status").execute({}, { agent: a1 });
+    eq("★ 锁了的会话落在子目录", path.resolve(stA.projectRoot), path.resolve(sub));
+
+    const a2 = { session: { header: { id: "s-lock-b", cwd: dir } } };
+    const stB = await run.registeredTools.get("ledger_status").execute({}, { agent: a2 });
+    eq("★★★ 另一场对话**不受影响**（回到 cwd）", path.resolve(stB.projectRoot), path.resolve(dir));
+    rmrf(dir);
+  }
+
+  // 38d：★★ 优先级 —— cwd 自己有台账 ⇒ 以 cwd 为准（锁只接管"没有台账"的）
+  {
+    const { dir, sub } = mkContainer("lock-priority");
+    // 让 cwd 自己**有**一个台账
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 容器自己的台账\n", "utf8");
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", revision: 0 }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const agent = { session: { header: { id: "s-lock-pri", cwd: dir } } };
+    await run.registeredTools.get("ledger_lock").execute({ root: sub }, { agent });
+    const st = await run.registeredTools.get("ledger_status").execute({}, { agent });
+    eq("★★★ cwd 自己有台账 ⇒ 以 cwd 为准（锁不越权）", path.resolve(st.projectRoot), path.resolve(dir));
+    rmrf(dir);
+  }
+
+  // 38e：★ 锁到不存在的目录 ⇒ 拒绝，且说清理由（不替用户创建）
+  {
+    const { dir } = mkContainer("lock-missing");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const agent = { session: { header: { id: "s-lock-miss", cwd: dir } } };
+    const r = await run.registeredTools.get("ledger_lock").execute({ root: "根本没有这个目录" }, { agent });
+    eq("★★ 锁到不存在的目录 ⇒ 拒绝", r.ok, false);
+    ok("★★ 理由里说清「必须已经存在」", /不是一个存在的目录/.test(String(r.reason)), String(r.reason).slice(0, 200));
+    ok("★★★ 而且**没有**把它创建出来", !fs.existsSync(path.join(dir, "根本没有这个目录")));
+    rmrf(dir);
+  }
+
+  // 38f：★ 解锁 ⇒ 回到 cwd
+  {
+    const { dir, sub } = mkContainer("lock-release");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const agent = { session: { header: { id: "s-lock-rel", cwd: dir } } };
+    const lock = run.registeredTools.get("ledger_lock");
+    await lock.execute({ root: sub }, { agent });
+    const rel = await lock.execute({ release: true }, { agent });
+    eq("★ 解锁成功", rel.locked, false);
+    eq("★ 解的是刚才那把", rel.wasLocked, path.resolve(sub));
+    const st = await run.registeredTools.get("ledger_status").execute({}, { agent });
+    eq("★★★ 解锁后回到按 cwd 解析", path.resolve(st.projectRoot), path.resolve(dir));
+    rmrf(dir);
+  }
+
+  // 38g：★★★ 没有锁时，行为与以前**逐字节相同**（新能力不许悄悄改旧行为）
+  {
+    const dir = tmpProject("lock-noop");
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", revision: 0 }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const agent = { session: { header: { id: "s-lock-noop", cwd: dir } } };
+    const st = await run.registeredTools.get("ledger_status").execute({}, { agent });
+    eq("★★★ 没锁 ⇒ 就是 cwd（与加锁之前一致）", path.resolve(st.projectRoot), path.resolve(dir));
+    rmrf(dir);
+  }
+
+  // 38h：★★ 首轮卡片的「锁定」那一项，选完要给出**可执行**的指示
+  {
+    const { dir } = mkContainer("lock-card");
+    const run = makeCtx({ withUserQuestions: true });
+    mod.apply(run.ctx, {});
+    run.setAnswer(() => ({ answers: [{ id: "ledger-first-turn", selected: ["锁定到某个子项目"] }] }));
+    const steered = [];
+    const agent = {
+      session: { header: { id: "s-lock-card", cwd: dir } },
+      steer: (m) => steered.push(m),
+    };
+    // ★ `fireStopping` / `settle` 都是别的情形块内的**局部** helper，这里取不到
+    //   ⇒ 就地把它们展开。（第一版直接调 ⇒ `fireStopping is not defined`。）
+    for (const h of run.handlers.get("agent/turn-stopping") ?? []) await h({ agent, turn: 1 });
+    for (let i = 0; i < 4; i += 1) await new Promise((r) => setTimeout(r, 0));
+    const opts = run.asked[0].request.questions[0].options.map((o) => o.label);
+    ok("★★ 首轮卡片里有「锁定」这一项", opts.some((o) => o.includes("锁定")), opts.join("|"));
+    eq("★ steer 唤醒了 AI", steered.length, 1);
+    const txt = steered[0].content[0].text;
+    ok("★★★ 指示里点名了 `ledger_lock`", /ledger_lock/.test(txt), txt.slice(0, 300));
+    ok("★★★ 且要求它**先问是哪个子项目**（不许自己猜）", /先问|问清/.test(txt), txt.slice(0, 300));
+    ok("★★ 并说明「不写任何文件」（用户会关心这个）", /不写|没有写任何文件|只存内存/.test(txt), txt.slice(0, 400));
+    rmrf(dir);
   }
 }
 

@@ -7759,6 +7759,162 @@ section("情形 40：度量口径不一致 ⇒ 增量压缩永不发生（真实
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 情形 41：★★★ 审计报告点出的 A2 / A3（数据完整性，先写会红的用例）
+//
+//   A2：`ledger_archive` **不是原子的** —— 它**先写归档文件**（L6982），行数超限的
+//       失败判断在**之后**（L7012）。⇒ 失败返回时**归档已落盘**，
+//       重试就**重复追加**同一批（归档是只追加的，重复即永久污染）。
+//       且它**没有 `ifRevision`** ⇒ 旧快照可覆盖并发新增的条目。
+//   A3：重复 `ledger_init` 重建**固定字段**对象 ⇒ `mode` / `handoffDir` / `notesDir`
+//       及**未知扩展字段**被静默丢弃；且 `manifest.revision = manifestRevision(prev)`
+//       **沿用旧值**（L6448）⇒ 其他会话持有的旧 revision 看起来仍是最新。
+//
+//   ★ 为什么先写会红的用例：A1/A4 的教训 —— 926 项全绿**不为这些失败路径背书**
+//     （它们全在"正常路径"上覆盖，失败路径一条都没测）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 41：审计报告点出的 A2 / A3 数据完整性缺陷（先写会红的用例）");
+{
+  const mkB = (tag, extra) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n做点事\n", "utf8");
+    fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n\n## D1\n- 早期\n", "utf8");
+    fs.mkdirSync(path.join(dir, "_a"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 7,
+        ...(extra ?? {}),
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+  const archFiles = (root) => {
+    const out = [];
+    const walk = (d) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else out.push(p);
+      }
+    };
+    const base = path.join(root, "_a");
+    if (fs.existsSync(base)) walk(base);
+    return out;
+  };
+
+  // ── A2-1：行数超限时，**归档文件不许被写**（先验证、后落盘）──────────────
+  {
+    const root = mkB("a2-atomic");
+    const run = makeCtx();
+    mod.apply(run.ctx, {});
+    const A = execFor(root, "session-a2a2a2a2-a2a2");
+    const T = run.registeredTools;
+
+    // newActive 故意超限（上限 300 ⇒ 给 305 行）
+    const huge = "# 台账\n\n" + Array.from({ length: 305 }, (_, i) => `- 行 ${i}`).join("\n") + "\n";
+    const r = await T.get("ledger_archive").execute(
+      { entries: "## 旧条目\n- 要归档的东西\n", newActive: huge },
+      A
+    );
+    const files = archFiles(root);
+    ok("A2 前置：行数超限时确实返回失败", r.ok === false, `ok=${r.ok} reason=${String(r.reason).slice(0, 60)}`);
+    ok(
+      "★★★ A2：失败时**不许留下归档文件**（否则重试会重复追加，永久污染只追加的归档）",
+      files.length === 0,
+      `归档目录里出现了 ${files.length} 个文件：${files.map((f) => path.basename(f)).join(", ")}`
+    );
+    rmrf(root);
+  }
+
+  // ── A2-2：成功后**重试同一批**（模拟"客户端没收到回执就重发"）─────────────
+  {
+    const root = mkB("a2-retry");
+    const run = makeCtx();
+    mod.apply(run.ctx, {});
+    const A = execFor(root, "session-a2b2b2b2-a2b2");
+    const T = run.registeredTools;
+    const small = "# 台账\n\n## 目标\n留着\n";
+    const batch = "## 这一批\n- 只该出现一次\n";
+
+    await T.get("ledger_archive").execute({ entries: batch, newActive: small }, A);
+    const files1 = archFiles(root);
+    const firstLen = files1.length === 0 ? 0 : fs.readFileSync(files1[0], "utf8").length;
+    await T.get("ledger_archive").execute({ entries: batch, newActive: small }, A);
+    const files2 = archFiles(root);
+    const secondText = files2.length === 0 ? "" : fs.readFileSync(files2[0], "utf8");
+    const occurrences = (secondText.match(/只该出现一次/g) ?? []).length;
+
+    ok("A2-2 前置：第一次归档确实写成", firstLen > 0, `firstLen=${firstLen}`);
+    ok(
+      "★★★ A2：同一批重发 ⇒ 归档里**只能有一份**（要能识别重复 / 或有 idempotency 依据）",
+      occurrences <= 1,
+      `「只该出现一次」在归档里出现了 ${occurrences} 次`
+    );
+    rmrf(root);
+  }
+
+  // ── A3-1：重复 init **不许丢** mode / handoffDir / notesDir / 未知字段 ────
+  {
+    const root = mkB("a3-fields", {
+      mode: "surgical",
+      handoffDir: "_handoff",
+      notesDir: "_notes",
+      myUnknownExtension: { keep: "me" },
+    });
+    const run = makeCtx();
+    mod.apply(run.ctx, {});
+    const A = execFor(root, "session-a3a3a3a3-a3a3");
+    const T = run.registeredTools;
+
+    await T.get("ledger_init").execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", logDir: "_ledger-log" },
+      A
+    );
+    const mf = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+    ok(
+      "★★★ A3：重复 init 之后，`mode` 必须还在（它决定压缩模式）",
+      mf.mode === "surgical",
+      `mode=${JSON.stringify(mf.mode)}`
+    );
+    ok(
+      "★★★ A3：重复 init 之后，`handoffDir` / `notesDir` 必须还在",
+      mf.handoffDir === "_handoff" && mf.notesDir === "_notes",
+      `handoffDir=${JSON.stringify(mf.handoffDir)} notesDir=${JSON.stringify(mf.notesDir)}`
+    );
+    ok(
+      "★★★ A3：重复 init 之后，**未知扩展字段**必须还在（前向兼容）",
+      mf.myUnknownExtension?.keep === "me",
+      `myUnknownExtension=${JSON.stringify(mf.myUnknownExtension)}`
+    );
+    rmrf(root);
+  }
+
+  // ── A3-2：重复 init **必须涨 revision** ─────────────────────────────────
+  {
+    const root = mkB("a3-revision");
+    const run = makeCtx();
+    mod.apply(run.ctx, {});
+    const A = execFor(root, "session-a3b3b3b3-a3b3");
+    const T = run.registeredTools;
+    const before = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+
+    await T.get("ledger_init").execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", logDir: "_ledger-log" },
+      A
+    );
+    const after = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+    ok(
+      "★★★ A3：重复 init 之后 revision **必须递增**（否则别的会话手里的旧号看起来仍是最新）",
+      after.revision > before.revision,
+      `before=${before.revision} after=${after.revision}`
+    );
+    rmrf(root);
+  }
+}
+
 if (CREATED_ROOTS.length > 0) {
   await new Promise((r) => setTimeout(r, 1500));
   for (const d of CREATED_ROOTS) rmrf(d);

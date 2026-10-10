@@ -6449,6 +6449,62 @@ section("情形 35：逐字胶囊落盘（可回溯 + 抗压缩链失真）");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 43：**口径自检** —— 台账/README 里写的数字必须与代码一致（2026-10-11）
+//
+//   为什么要有它：审计员 002 发现台账写「9 子命令 / 12 设置项 / 36 情形组」，
+//   而代码实际是别的数。**文档与代码分叉**是慢性病：改了代码没人回来改文档，
+//   读者（下一个会话、下一位审计员）就会照着错的数核对，白费一轮。
+//   ⇒ 让**自检自己去数**，数字对不上就红。
+//
+//   ★ 数 `section(` 必须用**括号配对扫描**，不能用正则 ——
+//     我第一版正则只数到 37，真实是 38（漏掉标题带拼接的那一个）⇒ 已记为尺子错。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 43：口径自检（文档写的数字必须与代码一致）");
+{
+  const libSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+
+  // ── ① 工具数：注册循环里的 ledger_* + ledger_checkpoint ──────────────────
+  const regStart = libSrc.indexOf("for (const [label, factory] of [");
+  const regSeg = libSrc.slice(regStart, regStart + 4000);
+  const toolNames = [...regSeg.matchAll(/\["(ledger_[a-z_]+)"/g)].map((m) => m[1]);
+  const hasCheckpoint = /"ledger_checkpoint"/.test(libSrc);
+  const toolCount = toolNames.length + (hasCheckpoint ? 1 : 0);
+  eq("★ 口径：工具数 = 14", toolCount, 14);
+
+  // ── ② 设置项数：SETTING_SPECS 的 key ─────────────────────────────────────
+  const ssStart = libSrc.indexOf("const SETTING_SPECS = [");
+  const ssEnd = libSrc.indexOf("\n];", ssStart);
+  const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
+  const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
+  eq("★ 口径：设置项数 = 13", settingKeys.length, 13);
+
+  // ── ③ 子命令数 ───────────────────────────────────────────────────────────
+  const SUBS = ["status", "show", "init", "update", "archive", "compact", "light", "log", "mode", "lock", "handoff", "triage"];
+  const present = SUBS.filter((k) => new RegExp(`"${k}"`).test(libSrc));
+  eq("★ 口径：子命令数 = 11", present.length, 11);
+
+  // ── ④ 情形组数：数**行首**的 section 调用 ────────────────────────────────
+  //   ★★ 这个判据我连错两次，都记下来（因为它就是本节要防的那类错）：
+  //     ① 第一版数全文件的 `section(` ⇒ 把**注释里提到的**也算进去（38 真调用 + 3 提及 = 41）⇒ 红。
+  //     ② 改用 `\bsection\s*\(` ⇒ 又把**函数定义** `function section(title)` 算进去（39）⇒ 又红。
+  //   ⇒ 锚**行首** `^section\(` 才准：真实调用一律顶格，定义那句以 `function` 开头、
+  //     注释提及不顶格。**判据必须只吃"被测对象自己"的那部分文本**（第 2 条纪律的同一形状）。
+  //   ★ 口径写明：**含「模块契约」那一个**（它在语义上也是一节，只是没编号）。
+  const selfSrc = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const sectionCalls = (selfSrc.match(/^section\(/gm) ?? []).length;
+  const numbered = (selfSrc.match(/^section\("情形\s*[0-9]/gm) ?? []).length;
+  eq("★ 口径：section 总数 = 38（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 38);
+  eq("★ 口径：其中带「情形 N」编号的 = 37", numbered, 37);
+
+  // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
+  ok(
+    "★ 口径：所有工具名都是 ledger_* 形态",
+    toolNames.every((n) => n.startsWith("ledger_")),
+    toolNames.join(", ")
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ★★★ 情形 42：D61 —— 胶囊素材**跨重启**必须还在（2026-10-11）
 //
 //   病因：`createCapsuleMemory()` 的 `bySid` 是**进程内 Map** ⇒ 内核一重启就清空

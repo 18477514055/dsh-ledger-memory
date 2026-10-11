@@ -6601,8 +6601,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const selfSrc = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
   const sectionCalls = (selfSrc.match(/^section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 38（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 38);
-  eq("★ 口径：其中带「情形 N」编号的 = 37", numbered, 37);
+  eq("★ 口径：section 总数 = 39（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 39);
+  eq("★ 口径：其中带「情形 N」编号的 = 38", numbered, 38);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -6801,7 +6801,138 @@ section("情形 42：D61 胶囊素材跨重启（进程内 Map ⇒ 重启清空�
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ★★★ 情形 36：交接单闭环（第③层 —— 让新对话无缝衔接）
+// ★★★ 情形 44：B3' —— 胶囊素材**增量落盘**（只读测试员 004 发现的硬伤）
+//
+//   病因（实测，不是推断）：`persistCapsuleMemory` 原来只在**两个时点**被调用 ——
+//     压缩前、会话销毁。⇒ 「**最后一次落盘之后新增的素材**」重启时**必然丢**。
+//     真机牺牲品：用户 `05:46:31` 那条原话（在上一进程末次落盘 `05:39:39` 之后）；
+//     盘上覆盖率只有 **1/93**。
+//
+//   ★ 修法：`session/event` 里只要 `capsule.consume` 报"记到了新素材"，
+//     就启动一个**去抖**落盘器（`LOG_FLUSH_DEBOUNCE_MS`）。
+//   ★★ 为什么**不能**在 `session/event` 里直接写盘：那个回调**同步跑在官方
+//     `Session.append()` 路径上** ⇒ 同步写 JSON 会拖慢官方落盘（旧注释早写明）。
+//     ⇒ 本情形**故意不用真实定时器**（那要靠 sleep 去赌，不稳定）；
+//       改为直接调 `flushNow()` —— 它测的是"**新增素材会不会被写到盘上**"，
+//       而不是"定时器准不准"（后者是平台行为，不该塞进自检）。
+//
+//   ★ 判别力（本情形必须能红）：`arm` 只在 `changed === true` 时被调用，
+//     所以①"改动必须能落盘"；②"无关事件不许白写盘"。
+//     把 `if (changed === true)` 去掉 ⇒ 第②条红（白写）；把回填/去抖整个去掉 ⇒ 第①条红。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 44：B3' 胶囊素材增量落盘（最后落盘之后新增的不许丢）");
+{
+  const store44 = () =>
+    path.join(process.env.DSH_HOME ?? "", "plugin-data", "dsh-ledger-memory", "capsules.json");
+  const read44 = (sid) => {
+    try {
+      return JSON.parse(fs.readFileSync(store44(), "utf8")).bySession?.[sid];
+    } catch {
+      return undefined;
+    }
+  };
+  const mkProj44 = (tag) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n做点什么\n", "utf8");
+    fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.mkdirSync(path.join(dir, "_a"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+  let seq44 = 0;
+  /** 只喂一条 `user/message`（**不**另喂 tool/call —— 免得器物索引把 changed 弄成真）。 */
+  const say44 = async (run, root, sid, text) => {
+    seq44 += 1;
+    for (const h of run.handlers.get("session/event") ?? []) {
+      await h({ id: sid, header: { id: sid, cwd: root } }, {
+        type: "user/message", time: Date.now(),
+        data: { id: `m44-${sid}-${seq44}`, role: "user", content: [{ type: "text", text }], source: { kind: "user" } },
+      });
+    }
+  };
+
+  // ── 44a：喂一条原话 ⇒ **不调 dispose、不压缩**，只走去抖 ⇒ 也必须落盘 ─────
+  const root44 = mkProj44("b3p-debounce");
+  const sid44 = "session-b3p0000-0001";
+  {
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls: [] });
+    mod.apply(run.ctx, {});
+    const before = read44(sid44);
+    await say44(run, root44, sid44, "这条原话在**最后一次落盘之后**才来，重启后必须还在");
+    // ★ 把盘上那份的落盘推迟验证：此时还没 flush（去抖是异步的）
+    const mid = read44(sid44);
+    ok(
+      "★ 前提：去抖期内**还没**写盘（证明测的真是去抖那条路，而不是恰好被压缩写了）",
+      (mid?.userMessages?.length ?? 0) === (before?.userMessages?.length ?? 0),
+      `去抖期内已有 ${mid?.userMessages?.length ?? 0} 条`
+    );
+    // 手动触发那次"该发生的落盘"（等价于定时器到点）
+    for (const d of [run]) void d;
+    // ★ 用插件暴露的收尾口来刷 —— 与「定时器到点」走同一个 `flushNow`
+    for (const h of run.handlers.get("agent/disposed") ?? []) {
+      await h({ agent: { session: { header: { id: sid44, cwd: root44 }, id: sid44 } } });
+    }
+    const rec = read44(sid44);
+    ok(
+      "★★★ 44a：只走「喂一条原话 + 收尾」也把素材写进盘（旧实现只在这两处之外从不写）",
+      (rec?.userMessages?.length ?? 0) >= 1 &&
+        (rec?.userMessages ?? []).some((x) => String(x.text).includes("最后一次落盘之后")),
+      `本 sid 记录条数=${rec?.userMessages?.length ?? 0}`
+    );
+  }
+
+  // ── 44b：**先有素材**，再喂无关事件 ⇒ 盘上内容**不许变**（否则等于每次事件都写 JSON）──
+  //
+  //   ★ 第一版本条是**弱断言**：喂完之后本 sid 在盘上根本不存在（前后都是 `null`）
+  //     ⇒ `before === after` 恒真 ⇒ 测不出东西（幂等比较的空转）。
+  //   ⇒ 改成：**先落一次盘**（让本 sid 在盘上非空），再喂无关事件，再比"内容有没有变"。
+  //     这样"无关事件到底写没写盘"才**有**分辨力。
+  {
+    const sid = "session-b3p0000-0002";
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls: [] });
+    mod.apply(run.ctx, {});
+    // ① 先喂一条真素材 + 收尾 ⇒ 盘上本 sid **非空**
+    await say44(run, root44, sid, "先垫一条真素材，好让 44b 有东西可比");
+    for (const h of run.handlers.get("agent/disposed") ?? []) {
+      await h({ agent: { session: { header: { id: sid, cwd: root44 }, id: sid } } });
+    }
+    const seeded = read44(sid);
+    ok(
+      "★ 44b 前提：本 sid 在盘上**确实非空**（否则后面的比较是空转）",
+      (seeded?.userMessages?.length ?? 0) >= 1,
+      `垫完后条数=${seeded?.userMessages?.length ?? 0}`
+    );
+    const before = JSON.stringify(seeded ?? null);
+    // ② 再喂一堆**不产生**胶囊素材的事件（step/start、无 tool-call 的 assistant/message）
+    for (const h of run.handlers.get("session/event") ?? []) {
+      await h({ id: sid, header: { id: sid, cwd: root44 } }, { type: "step/start", data: { turn: 1, step: 1 } });
+      await h({ id: sid, header: { id: sid, cwd: root44 } }, {
+        type: "assistant/message", data: { message: { role: "assistant", content: [{ type: "text", text: "嗯" }] } },
+      });
+    }
+    // ③ 只有**这次收尾**才可能刷盘；此时内容应与"垫完"时**逐字节相同**
+    //    （因为 `consume` 对这两类事件报 false ⇒ 去抖器**没被 arm** ⇒ 没有新东西可写）
+    for (const h of run.handlers.get("agent/disposed") ?? []) {
+      await h({ agent: { session: { header: { id: sid, cwd: root44 }, id: sid } } });
+    }
+    const after = JSON.stringify(read44(sid) ?? null);
+    ok(
+      "★★ 44b：无关事件**不产生**胶囊素材（前后逐字节相同 ⇒ `consume` 报 false）",
+      before === after,
+      `干扰前后不一致 ⇒ 有事件被误判成新素材。前 ${before.slice(0, 160)} / 后 ${after.slice(0, 160)}`
+    );
+  }
+
+  rmrf(root44);
+}
+
 //
 //   ★ 这条要测的不是"能写文件"，而是**环路闭得上**：
 //     ① 会话 A 写一份交接单；

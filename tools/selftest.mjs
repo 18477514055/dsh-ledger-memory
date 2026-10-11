@@ -6502,6 +6502,61 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
     toolNames.every((n) => n.startsWith("ledger_")),
     toolNames.join(", ")
   );
+
+  // ── ⑥ ★★★ 引用必达：台账/归档引用的每个 D<n> 都必须在 DECISIONS 里有正文 ──
+  //
+  //   为什么加它（**零背景模型发现的**，2026-10-11）：只读测试员 004 复查时发现
+  //   台账 §3 写「详见 D58 / D57」，而 `DECISIONS.md` 里**根本没有 D58**；
+  //   归档文件还反过来自己写着「另见 DECISIONS D58」⇒ **归档反向指向了不存在的目标**。
+  //   实测断链 **5** 个（D44/D48/D56/D58/D59）。
+  //
+  //   ★ 为什么这条最值得自动守：它就是"条目搬走了、正文没留"这类**慢性病**，
+  //     而**长期在同一项目里工作的人最容易视而不见** —— 我记得 D58 的内容，
+  //     就默认它写下来了。**零背景的读法反而照得出这个盲区。**
+  //   ★ 判据两侧都取自各自文件、不引用本文件 ⇒ 不会被"描述它的文字"污染（纪律第 2 条）：
+  //     引用方 = LEDGER.md + `_ledger-archive/` + `_stash/`；被引方 = DECISIONS.md 的标题。
+  {
+    const docsRoot = path.join(HERE, "..");
+    const cited = new Set();
+    const collect = (p) => {
+      if (!fs.existsSync(p)) return;
+      for (const m of fs.readFileSync(p, "utf8").matchAll(/\bD(\d{1,3})\b/g)) cited.add(Number(m[1]));
+    };
+    const walk = (d) => {
+      if (!fs.existsSync(d)) return;
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const q = path.join(d, e.name);
+        if (e.isDirectory()) walk(q);
+        else collect(q);
+      }
+    };
+    collect(path.join(docsRoot, "LEDGER.md"));
+    walk(path.join(docsRoot, "_ledger-archive"));
+    walk(path.join(docsRoot, "_stash"));
+
+    const headings = new Set();
+    const decPath = path.join(docsRoot, "DECISIONS.md");
+    if (fs.existsSync(decPath)) {
+      for (const m of fs.readFileSync(decPath, "utf8").matchAll(/^##\s+D(\d+)\b/gm)) headings.add(Number(m[1]));
+    }
+
+    if (cited.size === 0 || headings.size === 0) {
+      // ★ 发布出去的包里**不含** DECISIONS.md / LEDGER.md（`files` 白名单没有它们）
+      //   ⇒ 外部环境读不到 ⇒ **如实标注"跳过"，绝不假装通过**。
+      ok(
+        "★ 口径：引用必达（⏭ 跳过：DECISIONS.md/台账不在本包内，外部环境无法校验）",
+        true,
+        `cited=${cited.size} headings=${headings.size}`
+      );
+    } else {
+      const dangling = [...cited].filter((n) => !headings.has(n)).sort((a, b) => a - b);
+      ok(
+        "★ 口径：台账/归档引用的每个 D<n> 都有正文（引用必达）",
+        dangling.length === 0,
+        "★ 断链（被引用但无正文）：" + (dangling.map((n) => "D" + n).join(" ") || "（无）")
+      );
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

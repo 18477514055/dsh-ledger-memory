@@ -91,8 +91,11 @@ function ols(xs, ys) {
 }
 
 const ys = S.map((s) => s.d);
-const A = ols(S.map((s) => (s.r + s.o) / 4), ys);
-const B = ols(S.map((s) => s.o / 4), ys);
+// ★★★ 尺子错第 20 次（本文件上一版）：`s.r`/`s.o` **已经是启发式 token**（`heurBetween` 里已 `ceil(len/4)+4`），
+//   我却在这里又写 `/4` ⇒ 把兑现率**放大了 4 倍**（低推理桶被算成 4.001 而不是 ≈1.00）。
+//   修法：直接用 `s.r + s.o` 作为"内核口径的全部启发式量"。
+const A = ols(S.map((s) => s.r + s.o), ys);
+const B = ols(S.map((s) => s.o), ys);
 
 console.log(`样本（不含压缩的纯增长窗口）：${S.length}\n`);
 console.log("═══ 模型 A：内核假设 —— 推理与非推理**同价**（都用 4 字符/token）═══");
@@ -112,7 +115,7 @@ for (const [lo, hi] of buckets) {
   const g = S.filter((s) => { const sh = s.r / (s.r + s.o); return sh >= lo && sh < hi; });
   if (g.length === 0) continue;
   const avgShare = g.reduce((s, x) => s + x.r / (x.r + x.o), 0) / g.length;
-  const avgRatio = g.reduce((s, x) => s + x.d / ((x.r + x.o) / 4), 0) / g.length;
+  const avgRatio = g.reduce((s, x) => s + x.d / (x.r + x.o), 0) / g.length;
   console.log(`  ${(lo * 100).toFixed(0).padStart(3)}~${(hi * 100).toFixed(0).padStart(3)}%  ` +
     `${String(g.length).padStart(9)}  ${(avgShare * 100).toFixed(1).padStart(15)}%  ${avgRatio.toFixed(3).padStart(11)}`);
 }

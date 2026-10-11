@@ -627,7 +627,9 @@ section("情形 1：全新项目的检测与提示");
   // ★ 2026-10-10：新增 `ledger_handoff`（第③层）⇒ 11 → 12 个工具。
   // ★ 2026-10-10：新增 `ledger_triage`（分流单）⇒ 12 → 13 个工具。
   // ★ 2026-10-10：新增 `ledger_lock`（把会话锁到某个项目目录）⇒ 13 → 14 个工具。
-  eq("注册了 14 个工具（新增 ledger_triage 与 ledger_lock）", run.registeredTools.size, 14);
+  // ★ 2026-10-11：新增 `ledger_recall`（把被压段的逐字原文按需读回，含 reasoning）
+  //   ⇒ 14 → 15 个工具（承 D79：压缩后要能回溯原文，而不只是摘要）。
+  eq("注册了 15 个工具（新增 ledger_recall）", run.registeredTools.size, 15);
   for (const n of [
     "ledger_status",
     "ledger_init",
@@ -1150,7 +1152,7 @@ section("情形 7：服务缺失与容错");
     console.log(`        apply 抛了：${e.message}`);
   }
   ok("没有 commands 服务时 apply 不抛错", !threw);
-  eq("没有 commands 时工具仍注册", run.registeredTools.size, 14);
+  eq("没有 commands 时工具仍注册", run.registeredTools.size, 15);
   rmrf(initedRoot);
 }
 
@@ -6577,7 +6579,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const toolNames = [...regSeg.matchAll(/\["(ledger_[a-z_]+)"/g)].map((m) => m[1]);
   const hasCheckpoint = /"ledger_checkpoint"/.test(libSrc);
   const toolCount = toolNames.length + (hasCheckpoint ? 1 : 0);
-  eq("★ 口径：工具数 = 14", toolCount, 14);
+  eq("★ 口径：工具数 = 15", toolCount, 15);
 
   // ── ② 设置项数：SETTING_SPECS 的 key ─────────────────────────────────────
   const ssStart = libSrc.indexOf("const SETTING_SPECS = [");
@@ -6601,8 +6603,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const selfSrc = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
   const sectionCalls = (selfSrc.match(/^section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 39（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 39);
-  eq("★ 口径：其中带「情形 N」编号的 = 38", numbered, 38);
+  eq("★ 口径：section 总数 = 40（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 40);
+  eq("★ 口径：其中带「情形 N」编号的 = 39", numbered, 39);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -6942,6 +6944,179 @@ section("情形 44：B3' 胶囊素材增量落盘（最后落盘之后新增的�
 //     `opts?.handoffRel` —— 一个**没有任何地方传**的参数 ⇒ **死代码**，
 //     从来没显示过。写得出文件、却没人被告诉去读，等于没做。
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 45：**压缩掉的历史可以按需读回逐字原文**（承 D79 / D80）
+//
+//   要测的不是"能读文件"，而是一条**闭环**：
+//     ① 压缩把一段历史换成摘要 ⇒ 索引里记下那段的 seq 区间；
+//     ② 模型据索引调 `ledger_recall({from,to})` ⇒ **拿到逐字原文**（含 reasoning）；
+//     ③ 索引被**推**进注入（D46：恢复必须是「推」给模型的）。
+//
+//   ★ 为什么三条都得测：只测①= 记了但拿不到；只测②= 拿得到但不知去哪拿；
+//     不测③= 索引本身变成新的上下文负担。
+//
+//   ★ 判别力（已实测能红，见 DECISIONS D81）：
+//     · 删 `recordShadowedIndex` 调用 ⇒ ③红；
+//     · 删 `renderInjection` 里的 `idxBlock` ⇒ ③红；
+//     · 删 `readSessionRange` 的 reasoning 分支 ⇒ ②"含推理"那半红；
+//     · 把 `reasoning:false` 分支去掉 ⇒ ②b 红。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 45：被压段可回读（索引推行 + 逐字原文 + 含推理）");
+{
+  const mkProj45 = (tag) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n可回读\n", "utf8");
+    fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+  // ★ 依据内核源码（`dsh-session/lib/index.js` L516 `this.log = log`、L1363 `eventAt`）
+  //   复刻**最小**接口：只追加日志 + 按 seq 取。刻意不引入真内核对象 ——
+  //   这里要测"我们按 seq 读得对不对"，不是内核的存储实现。
+  const mkSession45 = (events) => ({ log: events, eventAt: (seq) => events[seq] });
+  const evt45 = (seq, type, data, extra) => ({
+    seq, time: 1791700000000 + seq * 1000, type, data, ...(extra ?? {}),
+  });
+
+  const root45 = mkProj45("d45");
+  const sid45 = "session-d45-0001";
+  const run45 = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls: [] });
+  mod.apply(run45.ctx, {});
+
+  // ★★ 关键：内核的 `eventAt(seq)` 就是 `this.log[seq]` —— **数组下标 = seq**。
+  //   ⇒ 夹具必须让下标对齐 seq（前面填 10 个占位），否则是**夹具错导致的假红**。
+  const events45 = new Array(16).fill(undefined);
+  events45[10] = evt45(10, "user/message", { content: [{ type: "text", text: "把那段历史读回来" }] });
+  // ★ 11 特意放一段**够长**的正文：`readSessionRange` 的 `maxChars` 有 200 的**下限**
+  //   （见 lib/index.js L780）⇒ 夹具若不超 200，截断**永远不会发生**，
+  //   那条断言就成了"空转"（纪律：夹具走不通时不许当成被测对象的问题）。
+  const filler45 = "这一段正文故意写长一点，好让字符闸门真的有机会触发。".repeat(8);
+  events45[11] = evt45(11, "assistant/message", { message: { role: "assistant", content: [{ type: "text", text: `好的，我先看。${filler45}` }] } });
+  events45[12] = evt45(12, "assistant/message", {
+    message: {
+      role: "assistant",
+      content: [
+        { type: "reasoning", text: "推理：这一段推理必须能被读回来，否则等于没保存" },
+        { type: "tool-call", name: "pwsh", arguments: "{\"command\":\"Get-Date\"}" },
+      ],
+    },
+  });
+  events45[13] = evt45(13, "tool/result", { message: { role: "tool", content: [{ type: "text", text: "2026-10-11" }] } });
+  // ★ 压缩事件：内核就写这两个字段
+  events45[14] = evt45(14, "compaction/summary", {
+    shadowedRange: { start: 10, end: 13 },
+    shadowedSeqs: [10, 11, 12, 13],
+    shadowedTokenCount: 12345,
+    summary: [{ type: "text", text: "## 摘要\n把该说的说了" }],
+  });
+  events45[15] = evt45(15, "user/message", { content: [{ type: "text", text: "checkpoint" }] },
+    { surfaceOp: { op: "replace", startSeq: 10, endSeq: 13 } });
+  const session45 = mkSession45(events45);
+  const agent45 = {
+    session: {
+      ...session45,
+      header: { id: sid45, cwd: root45 },
+      id: sid45,
+      // ★ 注入那条路要用水位/窗口（`measurePressure` 读 `requestContext().contextWindow`）
+      //   ⇒ 不给它，注入会**静默不发**，③ 就成了空转（夹具没走通，不是被测对象的问题）。
+      requestContext: () => ({ contextWindow: 1000000 }),
+    },
+  };
+
+  const tools45 = run45.registeredTools;
+  ok("★ 45 前提：`ledger_recall` 已注册", tools45.has("ledger_recall"));
+  const recall45 = tools45.get("ledger_recall");
+
+  // ① 索引必须被记下（**先走真实入口**，失败再走钩子直调 —— 这样若"推行"那条路断了，
+  //    本情形会**红**，而不是被直调掩盖掉）。
+  const pre45 = run45.handlers.get("agent/pre-step") ?? [];
+  ok("★ 45 前提：有 `agent/pre-step` handler（官方压缩那条路靠它补记索引）", pre45.length > 0);
+  for (const h of run45.handlers.get("session/event") ?? []) {
+    await h({ id: sid45, header: { id: sid45, cwd: root45 } }, { type: "compaction/end", seq: 16, data: {} });
+  }
+  // ★★★ 让注入**真的**发生：注入是经 `agent.steer` 发出去的（既有范式，见情形 19）。
+  //   ⇒ 这里捕获它，③ 的判据才落在**真实注入文本**上，而不是内部函数上 ——
+  //     ★ 这一点很关键：我第一版把③写成"断言那个纯函数返回的字符串"，
+  //       结果**把 `renderInjection` 里的推行摘掉，自检依然全绿** ⇒ 断言太弱。
+  //       （纪律第 10 条：反向验证必须摘到能看见红，摘一处不红就是断言太弱。）
+  // ★★★ 注入**不是**走 `agent.steer`，而是走 `agent/pre-step` 的**返回值**：
+  //   handler 末尾 `return { ...decision, messages: entered }`（见 lib/index.js L10852）。
+  //   ⇒ 必须**接住它的返回值**才能在真实注入文本上做断言。
+  //   ★ 我第一版按情形 19 的 `steer` 范式去抓 ⇒ 抓到 0 条，是**取法错**（纪律第 3 条）。
+  const steered45 = [];
+  const agent45steer = { ...agent45, steer: (m) => steered45.push(m) };
+  const run45Pre = async () => {
+    let decided;
+    for (const h of pre45) {
+      try {
+        // ★★ 签名是 `({agent, messages}, next)`，**`next` 必传**（handler 第一句 `await next()`）。
+        decided = await h({ agent: agent45steer, messages: [] }, async () => ({ messages: [] }));
+      } catch { /* 注入失败不该影响本情形 */ }
+    }
+    return (decided?.messages ?? [])
+      .map((m) => (m?.content ?? []).map((c) => c.text ?? "").join("\n"))
+      .join("\n");
+  };
+  // ★★★ 第一次：走**压缩后重注**那条路（它内部会以 "official" 补记索引 —— 官方 80% 压缩的真路）。
+  const injAfter45 = await run45Pre();
+  // ★★★ 第二次：`armed` 旗子已被上面那次消费 ⇒ 这次走**常规注入**路。
+  //   ★ 为什么必须单独测这条路：我第一版只测了第一次，结果**把常规路径的推行摘掉，
+  //     自检依然全绿**（摘一处不红 ⇒ 断言太弱，纪律第 10 条）。而常规路才是常态
+  //     —— 压缩后那一次注入很快会被后续回合覆盖掉，索引要**常驻**才符合 D46。
+  const injText45 = await run45Pre();
+  // 再看钩子（纯渲染）—— 它是"索引长什么样"的**辅助**判据，不是主判据。
+  const st45 = { shadowedIndex: new Map() };
+  mod.__test.recordShadowedIndex(st45, sid45, agent45, "test");
+
+  // ② 按 seq 区间读回：逐字原文 + 推理 + 工具调用/结果
+  const r45 = await recall45.execute({ from: 10, to: 13 }, { agent: agent45 });
+  ok("★★ 45②：回读成功", r45.ok === true, JSON.stringify(r45).slice(0, 200));
+  eq("★★ 45②：返回了 4 条事件", r45.returned, 4);
+  const all45 = (r45.events ?? []).map((e) => e.text).join("\n");
+  ok("★★★ 45②：**逐字原文**读回来了（不是摘要）",
+    all45.includes("把那段历史读回来") && all45.includes("我先看"), all45.slice(0, 200));
+  ok("★★★ 45②：**推理块**也读回来了（「思考过程要能存盘」那条要求）",
+    all45.includes("推理：这一段推理必须能被读回来"), all45.slice(0, 300));
+  ok("★ 45②：工具调用与工具结果也在（「上面那个模型做了什么」）",
+    all45.includes("[调用 pwsh]") && all45.includes("2026-10-11"), all45.slice(0, 300));
+
+  // ②b 关掉 reasoning ⇒ 推理块必须**不出现**（否则开关是装饰）
+  const r45b = await recall45.execute({ from: 12, to: 12, reasoning: false }, { agent: agent45 });
+  const txt45b = (r45b.events ?? []).map((e) => e.text).join("\n");
+  ok("★★ 45②b：`reasoning:false` 确实剔除推理块",
+    !txt45b.includes("推理：这一段推理必须能被读回来") && txt45b.includes("[调用 pwsh]"),
+    txt45b.slice(0, 200));
+
+  // ②c 字符闸门：超限必须在**事件边界**截断，并如实标 nextFrom
+  const r45c = await recall45.execute({ from: 10, to: 13, maxChars: 20 }, { agent: agent45 });
+  ok("★★ 45②c：超闸门 ⇒ `truncated:true` 且给出 `nextFrom`（不许悄悄截半个事件）",
+    r45c.truncated === true && typeof r45c.nextFrom === "number" && (r45c.events ?? []).length < 4,
+    JSON.stringify({ truncated: r45c.truncated, nextFrom: r45c.nextFrom, got: (r45c.events ?? []).length }));
+
+  // ③ 索引必须被**推行**进**真实注入**（这是 D46 那条硬约束的判据）
+  ok("★ 45 前提：**压缩后重注**那条路的注入确实发出去了", injAfter45.length > 0, `长度=${injAfter45.length}`);
+  ok("★★★ 45③a：压缩后重注里推行了被压段 seq 与 `ledger_recall`",
+    injAfter45.includes("10") && injAfter45.includes("13") && /ledger_recall/.test(injAfter45),
+    injAfter45.slice(-600));
+  ok("★ 45 前提：**常规注入**那条路也发出去了（索引要常驻，不能只在压缩后出现一次）",
+    injText45.length > 0, `长度=${injText45.length}`);
+  ok("★★★ 45③：**常规注入**里也推行了被压段的 seq 区间与 `ledger_recall`（D46：恢复必须是「推」给模型的）",
+    injText45.includes("10") && injText45.includes("13") && /ledger_recall/.test(injText45),
+    injText45.slice(-600));
+  const idx45 = mod.__test.renderShadowedIndex(st45, sid45);
+  const idxText45 = typeof idx45 === "string" ? idx45 : "";
+  ok("★★ 45③：索引**很小**（要常驻上下文 ⇒ 单次压缩一行）",
+    idxText45.length > 0 && idxText45.length < 4000, `长度=${idxText45.length}`);
+  rmrf(root45);
+}
+
 section("情形 36：交接单闭环（第③层）");
 {
   const mkProj = (tag) => {

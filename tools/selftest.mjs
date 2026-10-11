@@ -6144,6 +6144,114 @@ section("情形 27：官方设置面板");
       );
       rmrf(root);
     }
+
+    // 30x：★★★ **目标与实绩必须分开报**（用户 2026-10-11 的明确要求）
+    //
+    //   ★ 用户原话：*"把我的目标和实际完成度分开，这样子的话，既能朝我的目标努力，
+    //     也不会误导模型"*。
+    //
+    //   ★ 病因（本用例要钉死的就是它）：旧注入写「压掉约 10 点」——
+    //     那个 10 是**设置里的目标**（`deltaRemovePoints`），
+    //     而实测实绩只有 **~4.4 点**（根因见 DECISIONS D70）。
+    //     ⇒ 模型会以为自己刚腾出 10 点空间 ⇒ **高估剩余预算**。
+    //
+    //   ★★ 夹具**照真实情形造**（实绩 < 目标，这正是 D70/D72 实测到的样子）：
+    //     压前 **35%**、压后 **30.6%** ⇒ 实绩 **4.4 点**，而目标仍是 **10 点**。
+    //     ⇒ 两个数必然不同 ⇒ "只报目标"的旧写法必然红。
+    //   ★ 判别力检查：若实现只报目标（旧写法），`/实绩/` 与 `/4\.4/` 都找不到 ⇒ 红；
+    //     若只报实绩、不报目标，`/目标/` 找不到 ⇒ 红。**两个都要在**，这正是"分开"。
+    {
+      const root = mkDeltaProj("delta-target-vs-actual");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-delta000-0010";
+      const agent = mkDeltaAgent(root, sid, 10);
+      priceNodes(run, agent, 20);
+      // 压前 35%、压后 30.6% ⇒ 实绩恰好 4.4 点（= D72 实测的均值）
+      run.services.compaction.onCompacted = () => {
+        run.services.tokenMeter._total = 306;
+      };
+
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 100;
+      await runPreStep(run, { agent, messages: [] });
+      run.services.tokenMeter._total = 350;
+      await runPreStep(run, { agent, messages: [] });
+      await flushLedger(run, root, sid);
+      const d = await runPreStep(run, { agent, messages: [] });
+      eq("★ 前提：确实压了一次（否则后面全是空测）", regionCalls.length, 1);
+
+      const t = (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok("★ 前提：注入里有本次压缩的回执", /刚做了一次增量压缩/.test(t), t.slice(0, 400));
+      ok(
+        "★★★ 报**目标**（= 设置里的 deltaRemovePoints = 10）",
+        /目标/.test(t) && /10\s*点/.test(t),
+        "没找到目标那一行：" + t.slice(0, 400)
+      );
+      ok(
+        "★★★ 且**实绩**也要报（压前 35% → 压后 30.6% ⇒ 4.4 点）",
+        /实绩/.test(t) && /4\.4\s*点/.test(t),
+        "没找到实绩那一行：" + t.slice(0, 400)
+      );
+      ok(
+        "★★★ 目标要**标明身份**（不许把目标说成实绩）",
+        /这是打算，不是结果/.test(t),
+        "缺『这是打算，不是结果』的标注 —— 那正是旧文案误导模型的写法"
+      );
+      ok(
+        "★★ 实绩低于目标时要**如实指出**（免得读的人以为插件坏了）",
+        /低于目标/.test(t),
+        "实绩 4.4 < 目标 10，本夹具应出现这句：" + t.slice(0, 400)
+      );
+      rmrf(root);
+    }
+
+    // 30y：★★★ 量不到压后水位时，**不许报假实绩**（宁可不报）
+    //
+    //   ★ 与 `measurePressure` 的既有原则一致：拿不到值就返回 undefined，
+    //     **绝不报一个看着像真的假数**（别的地方也栽过：报"目标"当"实绩"）。
+    //   ★ 夹具：让 `measure()` 在压缩之后返回 undefined（模拟计量服务不可用）。
+    {
+      const root = mkDeltaProj("delta-actual-unknown");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-delta000-0011";
+      const agent = mkDeltaAgent(root, sid, 10);
+      priceNodes(run, agent, 20);
+      let compacted = false;
+      run.services.compaction.onCompacted = () => {
+        compacted = true;
+      };
+      // 压完之后让计量服务失灵 ⇒ `measurePressure` 返回 undefined
+      const realMeasure = run.services.tokenMeter.measure.bind(run.services.tokenMeter);
+      run.services.tokenMeter.measure = function () {
+        if (compacted) return { totalTokens: Number.NaN, nodes: [], surfaceTokens: 0 };
+        return realMeasure();
+      };
+
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 100;
+      await runPreStep(run, { agent, messages: [] });
+      run.services.tokenMeter._total = 350;
+      await runPreStep(run, { agent, messages: [] });
+      await flushLedger(run, root, sid);
+      const d = await runPreStep(run, { agent, messages: [] });
+      eq("★ 前提：确实压了一次", regionCalls.length, 1);
+      const t = (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok(
+        "★★★ 量不到压后水位 ⇒ 如实说『量不到』，而**不是**拿目标充数",
+        /量不到压后水位/.test(t),
+        t.slice(0, 400)
+      );
+      ok(
+        "★★★ 且此时不许出现一个具体的『实际压掉 N 点』",
+        !/实际压掉\s*[\d.]+\s*点/.test(t),
+        "报了一个假的实绩：" + t.slice(0, 400)
+      );
+      rmrf(root);
+    }
   }
 
   // 27o：客户端半边的静态契约（不必真 React 就能钉死）

@@ -107,7 +107,25 @@ try {
     ok("★ 真 HTTP：content-type 是 JSON", /application\/json/.test(r.headers.get("content-type") ?? ""), r.headers.get("content-type"));
     ok("★ 真 HTTP：cache-control 是 no-store", /no-store/.test(r.headers.get("cache-control") ?? ""), r.headers.get("cache-control"));
     // ★ 2026-10-10：加了 `mode`（两个模式）⇒ 12 项变 13 项。
-    eq2("★ 真 HTTP：回报了十三项元数据（含模式与增量压缩）", j.specs?.length, 13);
+    // ★★★ 2026-10-12（D124）：这条断言原来**写死 13** —— D115 加 deltaFallbackPoints 之后
+    //   实际已是 **14**，而它没人同步 ⇒ **这条探针漂了很久没人发现**（自检全绿）。
+    //   ⇒ 根治：**从宿主源码数**（与情形 43 那条口径断言同一个做法），不写死。
+    //     ★ 这样以后加/删设置项**不必改这里**，它自己会跟上。
+    //   ★★ 这是 D122 那条教训的**第三处实例**（前两处：台账 §7 表、头部 D 范围）：
+    //      「把期望值写死在别处」⇒ 数字漂了没人管。**凡口径必有单一真源。**
+    const libSrcForCount = fs.readFileSync(ENTRY, "utf8");
+    const ssStart = libSrcForCount.indexOf("const SETTING_SPECS = [");
+    const ssEnd = libSrcForCount.indexOf("\\n];", ssStart);
+    const settingKeyCount = [
+      ...libSrcForCount
+        .slice(ssStart, ssEnd < 0 ? ssStart + 40000 : ssEnd)
+        .matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g),
+    ].length;
+    eq2(
+      "★ 真 HTTP：回报的设置项数量 = 宿主实际声明的 " + settingKeyCount + " 项（从源码数，不写死）",
+      j.specs?.length,
+      settingKeyCount
+    );
     // ★★ 同样经真 HTTP 验一遍 `mode.options` 是**数组**：宿主那边它是取值函数
     //    （躲 TDZ），出站前没展开的话 JSON 会把它丢掉 ⇒ 面板上选择器是空的、
     //   而且**不报错**。自检里已有一条，这里再从 HTTP 这一层验一次。

@@ -207,6 +207,10 @@ const SPECS = [
   {
     key: "mode",
     kind: "choice",
+    // ★ D124：加上 group / groups —— 与**真宿主**出站形状一致。
+    //   ⚠️ 原来这里没有 group，于是渲染走的是"未分组兜底"那条路，
+    //      `renderGroups` 的**分组分支根本没被测到**（那是"没测到"而不是"测过了"）。
+    group: "mode",
     label: "压缩模式",
     hint: "h",
     // ★ 与宿主出站形状一致：**已展开的数组**（宿主那边是取值函数，为躲 TDZ）。
@@ -215,13 +219,39 @@ const SPECS = [
       { value: "surgical", label: "反复追究", hint: "按内容分流" },
     ],
   },
-  { key: "turnEndOffer", kind: "boolean", label: "回合末弹四选一卡片", hint: "h" },
-  { key: "highFidelityCompact", kind: "boolean", label: "高保真压缩", hint: "h" },
-  { key: "highFidelityCompactRatio", kind: "number", label: "压缩水位", hint: "h", min: 0.5, max: 0.79, step: 0.01 },
-  { key: "autoCompact", kind: "boolean", label: "允许代压", hint: "h" },
-  { key: "logLevels", kind: "levels", label: "日志各档", hint: "h" },
-  { key: "maxActiveLines", kind: "number", label: "行数上限", hint: "h", min: 50, max: 2000, step: 10 },
-  { key: "pressureTiers", kind: "tiers", label: "水位档位", hint: "h" },
+  { key: "turnEndOffer", kind: "boolean", group: "ledger", label: "回合末弹四选一卡片", hint: "h" },
+  { key: "highFidelityCompact", kind: "boolean", group: "how", label: "高保真压缩", hint: "h" },
+  {
+    key: "highFidelityCompactRatio",
+    kind: "number",
+    group: "when",
+    label: "压缩水位",
+    hint: "h",
+    min: 0.5,
+    max: 0.79,
+    step: 0.01,
+  },
+  { key: "autoCompact", kind: "boolean", group: "how", label: "允许代压", hint: "h" },
+  { key: "logLevels", kind: "levels", group: "ledger", scopeNote: "project-first", label: "日志各档", hint: "h" },
+  {
+    key: "maxActiveLines",
+    kind: "number",
+    group: "ledger",
+    unit: "行",
+    label: "行数上限",
+    hint: "h",
+    min: 50,
+    max: 2000,
+    step: 10,
+  },
+  { key: "pressureTiers", kind: "tiers", group: "when", label: "水位档位", hint: "h" },
+];
+/** 分组声明 —— 与宿主 SETTING_GROUPS 同形状（探针也要喂真形状）。 */
+const GROUPS = [
+  { key: "mode", label: "工作模式", hint: "压缩时怎么挑内容。" },
+  { key: "when", label: "什么时候压缩", hint: "按什么节奏触发压缩。" },
+  { key: "how", label: "压缩时做什么", hint: "压缩前后由插件负责的部分。" },
+  { key: "ledger", label: "台账与日志", hint: "台账本身的尺寸与记录规则。" },
 ];
 const SETTINGS = {
   mode: "steady",
@@ -237,7 +267,14 @@ globalThis.fetch = async () => ({
   ok: true,
   status: 200,
   async text() {
-    return JSON.stringify({ ok: true, settings: SETTINGS, specs: SPECS, defaults: SETTINGS, writable: true });
+    return JSON.stringify({
+      ok: true,
+      settings: SETTINGS,
+      specs: SPECS,
+      groups: GROUPS,
+      defaults: SETTINGS,
+      writable: true,
+    });
   },
 });
 
@@ -265,6 +302,24 @@ for (const spec of SPECS) {
   ok(`★ 渲染里出现了「${spec.label}」`, text.includes(spec.label), text.slice(0, 400));
 }
 ok("★ 渲染里有保存按钮", text.includes("保存"), text.slice(0, 400));
+
+// ── ★★★ D124：分组渲染真的生效吗（**真跑**，不是看源码）──────────────────
+//
+//   ★ 为什么单列这一段：探针原来没喂 `group` ⇒ 渲染走"未分组兜底"那条路，
+//     `renderGroups` 的**分组分支根本没被执行**。那是"没测到"而不是"测过了" ——
+//     两者看起来都是绿的。⇒ 必须喂真形状 + 断言标题真的出现。
+for (const g of GROUPS) {
+  ok(`★★ 渲染里出现了分组标题「${g.label}」`, text.includes(g.label), text.slice(0, 500));
+}
+ok("★★ 分组标题按声明顺序出现", (() => {
+  const idx = GROUPS.map((g) => text.indexOf(g.label));
+  return idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1]));
+})(), GROUPS.map((g) => `${g.label}@${text.indexOf(g.label)}`).join(" "));
+// ★ 单位与范围要显示出来（数字项的可读性改进）
+ok("★★ 数值项显示了单位「行」", text.includes("行"), text.slice(0, 500));
+ok("★★ 数值项显示了合法范围 0.5 – 0.79", text.includes("0.5 – 0.79"), text.slice(0, 500));
+// ★「项目文件优先」标记
+ok("★★ 「项目文件优先」标记出现了", text.includes("项目文件优先"), text.slice(0, 500));
 ok("★ 渲染里有还原按钮", text.includes("还原"), text.slice(0, 400));
 ok("★★ 渲染里标明了「项目清单优先」的口径（免得用户以为全局覆盖）", text.includes("优先") || text.includes("新项目"), text.slice(0, 600));
 // ★★ `choice` 控件最容易「静默失败」：选项来自宿主的 `spec.options`。

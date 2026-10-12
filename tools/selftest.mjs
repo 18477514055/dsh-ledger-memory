@@ -7742,8 +7742,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const selfSrc = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
   const sectionCalls = (selfSrc.match(/^section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 44（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 44);
-  eq("★ 口径：其中带「情形 N」编号的 = 43", numbered, 43);
+  eq("★ 口径：section 总数 = 45（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 45);
+  eq("★ 口径：其中带「情形 N」编号的 = 44", numbered, 44);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -10679,6 +10679,99 @@ console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);
 if (failCount > 0) {
   console.log(`  失败清单：`);
   for (const f of failures) console.log(`    - ${f}`);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★ 情形 50：设置面板的文案与分组契约（D124）
+//
+//   病（用户原话）：*"它的文本现在是 markdown，而不是纯文本，看着不太舒服"*。
+//   ★ 根因**不在客户端**（它自己一直用「」），而在宿主 SETTING_SPECS 的 label/hint
+//     里满是 `**加粗**`；面板把它们**当纯文本渲染** ⇒ 星号直接显示成"没写完的语法"。
+//
+//   ⇒ 本情形守两件事（**都是"防复发"，不是"只是测今天"**）：
+//     ① label/hint/单位/范围里**不许**再出现 markdown 标记；
+//     ② 每项都必须有 group，且所有 group 都在 SETTING_GROUPS 里登记过
+//        —— 否则面板上会出现一个"没有标题"的孤组（或整项不显示）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 50：设置面板的文案与分组契约（D124）");
+{
+  const libSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+
+  /** 取一个顶层数组字面量的**源码段**（从 `const X = [` 到对应的 `\n];`）。 */
+  const segOf = (name) => {
+    const a = libSrc.indexOf("const " + name + " = [");
+    if (a < 0) return "";
+    const b = libSrc.indexOf("\n];", a);
+    return b < 0 ? libSrc.slice(a, a + 60000) : libSrc.slice(a, b + 3);
+  };
+
+  // ── ① 面板会把它们当**纯文本**渲染 ⇒ 不许有 markdown 标记 ──────────────
+  //
+  //   ★ 判据只吃 specs 段里**承载文案的那几个字段**的行（label/hint/unit），
+  //     不扫整段 —— 否则会把注释里为了说明"不许写 **"而引用的反例也算进去
+  //     （那正是本项目"尺子错"的老毛病：判据的输入混进了描述它的文字）。
+  {
+    const specs = segOf("SETTING_SPECS");
+    const offenders = [];
+    for (const raw of specs.split("\n")) {
+      const line = raw.trim();
+      // 只吃字段行；跳过注释行（本项目注释里会引用反例）
+      if (!/^(label|hint|unit|scopeNote):/.test(line)) continue;
+      if (line.startsWith("//") || line.startsWith("*")) continue;
+      if (/\*\*/.test(line)) offenders.push("粗体星号：" + line.slice(0, 80));
+      else if (line.indexOf("`") >= 0) offenders.push("反引号：" + line.slice(0, 80));
+      else if (/\[[^\]]+\]\([^)]+\)/.test(line)) offenders.push("markdown 链接：" + line.slice(0, 80));
+    }
+    ok(
+      "★★★ 设置项的 label/hint 里**没有 markdown 标记**（面板按纯文本渲染，标记会原样显示）",
+      offenders.length === 0,
+      offenders.join(" ｜ ")
+    );
+  }
+
+  // ── ② 每项都有 group，且都在 SETTING_GROUPS 里登记过 ────────────────────
+  {
+    const specsSeg = segOf("SETTING_SPECS");
+    const groupsSeg = segOf("SETTING_GROUPS");
+    const keys = [...specsSeg.matchAll(/\n    key: "([a-zA-Z]+)"/g)].map((m) => m[1]);
+    const used = [...specsSeg.matchAll(/\n    group: "([a-z]+)"/g)].map((m) => m[1]);
+    const declared = [...groupsSeg.matchAll(/\{\s*key: "([a-z]+)"/g)].map((m) => m[1]);
+
+    eq("★★ 每个设置项都声明了 group", used.length, keys.length);
+    const undeclared = [...new Set(used)].filter((g) => !declared.includes(g));
+    ok(
+      "★★ 用到的 group 都在 SETTING_GROUPS 里登记过（否则面板上会出现没有标题的孤组）",
+      undeclared.length === 0,
+      "用到但未登记：" + (undeclared.join(", ") || "（无）") + "；已登记：" + declared.join(", ")
+    );
+    const unused = declared.filter((g) => !used.includes(g));
+    ok(
+      "★ 没有登记了却没人用的空组（否则面板上会出现一个空标题）",
+      unused.length === 0,
+      "已登记但没用到：" + (unused.join(", ") || "（无）")
+    );
+  }
+
+  // ── ③ 客户端**不认任何设置项 key**（分组是数据驱动的，不是写死的）────────
+  //
+  //   ★ 这条守的是"以后加一个设置项 / 一个组，不用改客户端"这个契约。
+  //     判据：客户端里**不许**出现任何设置项的 key 字面量。
+  //   ⚠️ `maxActiveLines` / `logLevels` 在旧版 intro 文案里出现过 ——
+  //      D124 已把那句改成不点名，所以现在应当是 0 命中。
+  {
+    const clientSrc = fs.readFileSync(path.join(HERE, "..", "lib", "client.js"), "utf8");
+    const specsSeg = segOf("SETTING_SPECS");
+    const keys = [...specsSeg.matchAll(/\n    key: "([a-zA-Z]+)"/g)].map((m) => m[1]);
+    const hit = keys.filter((k) =>
+      new RegExp('["\'\\s]' + k + '["\'\\s,;)]').test(clientSrc)
+    );
+    ok(
+      "★★ 客户端**不认任何设置项 key**（分组与渲染完全由宿主数据驱动）",
+      hit.length === 0,
+      hit.length === 0 ? "" : "客户端里出现了：" + hit.join(", ")
+    );
+  }
+}
+
 }
 console.log(`${"═".repeat(64)}\n`);
 process.exit(failCount === 0 ? 0 : 1);

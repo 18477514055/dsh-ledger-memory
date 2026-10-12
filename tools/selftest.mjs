@@ -5313,9 +5313,9 @@ section("情形 27：官方设置面板");
     eq("GET 状态码 200", r.status, 200);
     eq("GET ok", r.body.ok, true);
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
-    eq("★ 回报了三十五项元数据（D138 面板重置：把能修改的都放进去）", r.body.specs?.length, 35);
+    eq("★ 回报了三十六项元数据（D141 新增 minCompressPoints）", r.body.specs?.length, 36);
     ok(
-      "★★ 三十五项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
+      "★★ 三十六项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
       JSON.stringify([...r.body.specs.map((s) => s.key)].sort()) ===
         JSON.stringify([
           "autoCompact", "blockHistoryMax", "blockInjection", "capsuleArtifactMax",
@@ -5323,7 +5323,7 @@ section("情形 27：官方设置面板");
           "capsuleUserMsgChars", "capsuleUserMsgMax", "changeRegisterMax", "deltaRemovePoints",
           "deltaTriggerPoints", "highFidelityCompact", "highFidelityCompactRatio",
           "incrementalCompact", "logBriefChars", "logDefaultLimit", "logLevels",
-          "maxActiveLines", "maxArchiveList", "maxReadChars", "mode", "nudgeMinRatio",
+          "maxActiveLines", "maxArchiveList", "maxReadChars", "minCompressPoints", "mode", "nudgeMinRatio",
           "pressureTiers", "recallMaxChars", "requireFlushBeforeCompact", "shadowedIndexMax",
           "triageKeepMax", "triageOwedMaxAgeMs", "turnEndOffer", "userMsgMaxChars",
           "weightDoneCap", "weightMustInject", "weightPrincipleScore",
@@ -7824,7 +7824,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 35（D138 面板重置）", settingKeys.length, 35);
+  eq("★ 口径：设置项数 = 36（D141 新增 minCompressPoints）", settingKeys.length, 36);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
   const SUBS = ["status", "show", "init", "update", "archive", "compact", "light", "log", "mode", "lock", "handoff", "triage"];
@@ -7849,8 +7849,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 55（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 55);
-  eq("★ 口径：其中带「情形 N」编号的 = 54", numbered, 54);
+  eq("★ 口径：section 总数 = 56（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 56);
+  eq("★ 口径：其中带「情形 N」编号的 = 55", numbered, 55);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -12196,6 +12196,148 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       const r = W.normalizeSettingsForTest({ triageOwedMaxAgeMs: 30 });
       eq("★★★★ 面板填 30（分钟）⇒ 内部存 1800000（毫秒）",
         r.value?.triageOwedMaxAgeMs, 30 * 60000);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // ★★★★ 情形 61：D141 **空转闸门** —— "这一段够不够大"
+  //
+  //   ★ 实测动机（D139）：今天 38 次压缩里 **7 次（18%）压掉 < 1 点**，昨天 0 次；
+  //     每次压缩直接代价 = 重注 **16,484 字符 ≈ 10,303 tok** ⇒ 白付约 7.2 万 tok。
+  //   ★ 外部佐证（D140）：billion v0.1.195 的 `minCompressRange = 5000` 字符闸门，
+  //     且**连提醒都用同一把尺子**。
+  //
+  //   ★★★★ 我在这里**栽过一次，必须留档**（第一版 61① 是**假绿**）：
+  //     第一版断言写成"可压内容太小 ⇒ `regionCalls.length === 0`"。
+  //     它**通过了** —— 但不是体量闸门拦的，而是**分流闸门**拦的（夹具没走三步）。
+  //     ⇒ ★ 两个闸门都会让压缩次数为 0 ⇒ **光数压缩次数，分不出是谁拦的**。
+  //     这正是本机纪律第 2 条（判据输入必须是被测对象自己的那部分）。
+  //     ⇒ **正解：直接断言估算器返回的值**（`estimateCompressibleForTest`），
+  //       把"体量不够"与"别的闸门"彻底分开。
+  // ═══════════════════════════════════════════════════════════════════════════
+  section("情形 61：D141 空转闸门（够不够大 + 量不到就放行 + 手动豁免）");
+  {
+    const W = mod.__test;
+
+    // ── ① ★★★★★ 估算器**直接**分得清"大"与"小" ──
+    {
+      const mk = (each) => {
+        const root = tmpProject(`d141-${each}`);
+        const events = [];
+        let seq = 1;
+        for (let r = 0; r < 7; r += 1) {
+          events.push({ type: "user/message", seq, data: { message: { role: "user", content: [] } } });
+          seq += 1;
+          events.push({
+            type: "assistant/message", seq,
+            data: { message: { role: "assistant", content: [{ type: "text", text: "x" }] } },
+          });
+          seq += 1;
+        }
+        const agent = {
+          session: {
+            header: { id: `s-${each}`, cwd: root }, id: `s-${each}`,
+            surface: { nodes: events.map((e) => e.seq) },
+            eventAt: (s) => events.find((e) => e.seq === s),
+            requestContext: () => ({ contextWindow: 1000 }),
+          },
+          steer: () => {},
+        };
+        const run = makeCtx({ withCompaction: true, withTokenMeter: true });
+        mod.apply(run.ctx, {});
+        run.services.tokenMeter._priced = agent.session.surface.nodes.map((s) => ({ seq: s, tokens: each }));
+        return { root, agent, run };
+      };
+
+      const small = mk(1); // 每节点 1 token ⇒ 14 节点 = 14 token
+      const pressure = { ratio: 0.7, window: 1000, total: 700 };
+      const sVal = W.estimateCompressibleForTest(small.run.ctx, small.agent, pressure, 0.5, undefined);
+      rmrf(small.root);
+
+      const big = mk(200); // 每节点 200 token ⇒ 14 节点 = 2800 token
+      const bVal = W.estimateCompressibleForTest(big.run.ctx, big.agent, pressure, 0.5, undefined);
+      rmrf(big.root);
+
+      ok("★★★★★ 61① 估算器**直接**给出可压 token 数（不靠数压缩次数）",
+        typeof sVal === "number" && typeof bVal === "number", `小=${sVal} 大=${bVal}`);
+      ok("★★★★★ 61① 估算器**真的在区分体量**（大的 > 小的）",
+        Number.isFinite(bVal) && Number.isFinite(sVal) && bVal > sVal,
+        `小=${sVal} 大=${bVal}`);
+      ok("★★★★ 61① 默认门槛是 1 点（= 窗口的 1%）",
+        W.minCompressPointsForTest() === 1, String(W.minCompressPointsForTest()));
+    }
+
+    // ── ② ★★★★★ 闸门**那一步判断**（纯函数，四种情形全覆盖）──
+    //
+    //   ★★★ 这一组是**反向验证逼出来的**：第一版只断言估算器，于是
+    //     "删掉闸门 / 量不到判成太小 / 手动豁免失效 / 设置没接上"**四种坏法全绿**
+    //     ⇒ 那时**没有任何断言在管闸门**。现在直接钉住它的输入输出。
+    {
+      const W2 = mod.__test;
+      // ★ 窗口 1000、门槛 1 点 ⇒ 门槛 = 10 token。
+      eq("★★★★★ 61② 可压 5 token < 门槛 10 ⇒ **拦下**",
+        W2.compGateForTest(5, 1, 1000, false).pass, false);
+      eq("★★★★★ 61② 可压 10 token = 门槛 ⇒ **放行**（边界是 ≥，不是 >）",
+        W2.compGateForTest(10, 1, 1000, false).pass, true);
+      eq("★★★★★ 61② 量不到（undefined）⇒ **放行**，不是拦下（防 D59 式「永远不压」）",
+        W2.compGateForTest(undefined, 1, 1000, false).pass, true);
+      eq("★★★★★ 61② 人手动（forced）⇒ **豁免**，哪怕它小得离谱",
+        W2.compGateForTest(0, 1, 1000, true).pass, true);
+      eq("★★★★ 61② 门槛设 0 ⇒ 一律放行（旋钮真的接在判断上）",
+        W2.compGateForTest(0, 0, 1000, false).pass, true);
+      eq("★★★★ 61② 门槛设 5 点 ⇒ 50 token 才够（门槛变了，判断跟着变）",
+        W2.compGateForTest(30, 5, 1000, false).pass, false);
+      // ★ 理由字段也要对（否则"为什么拦"无从查证）。
+      eq("★★★ 61② 拦截理由如实标成 tooSmall",
+        W2.compGateForTest(1, 1, 1000, false).why, "tooSmall");
+      eq("★★★ 61② 放行理由如实标成 unmeasurable（不是假装够大）",
+        W2.compGateForTest(undefined, 1, 1000, false).why, "unmeasurable");
+    }
+
+    // ── ③ ★★★★ 量不到 ⇒ 放行（防"D59 式永远不压"）──
+    {
+      const root = tmpProject("d141-nometer");
+      const run = makeCtx({ withCompaction: true, withTokenMeter: false });
+      mod.apply(run.ctx, {});
+      const agent = { session: { header: { id: "s-nm", cwd: root }, id: "s-nm", requestContext: () => ({ contextWindow: 1000 }) }, steer: () => {} };
+      const v = W.estimateCompressibleForTest(run.ctx, agent, { ratio: 0.7, window: 1000, total: 700 }, 0.5, undefined);
+      eq("★★★★★ 61③ 没有 tokenMeter ⇒ 返回 undefined（**放行**，不是判成太小）", v, undefined);
+      rmrf(root);
+    }
+
+    // ── ④ ★★★★ 设置项**真的接上了**（面板改了 ⇒ 闸门跟着变）──
+    //
+    //   ★ 这条守的是"空承诺"：面板上有个旋钮，但它没接到闸门上。
+    {
+      const spec = W.settingSpecsForTest().find((s) => s.key === "minCompressPoints");
+      ok("★★★★ 61④ 面板里有 `minCompressPoints` 这一项（单位=点）",
+        spec !== undefined && spec.unit === "点", JSON.stringify(spec?.label));
+      const r = W.normalizeSettingsForTest({ minCompressPoints: 5 });
+      eq("★★★★ 61④ 面板填 5 ⇒ 内部存 5（数值项接上了校验）", r.value?.minCompressPoints, 5);
+      const r2 = W.normalizeSettingsForTest({ minCompressPoints: 999 });
+      eq("★★★ 61④ 越界被夹到 spec.max（不是静默接受）", r2.value?.minCompressPoints, spec.max);
+    }
+
+    // ── ⑤ ★★★★★ **接线**：真压与轻推两条路**都**必须调用那个纯函数 ──
+    //
+    //   ★★★★ 这条是**反向验证第三次逼出来的**（同一个病，D136 同型）：
+    //     我把判断抽成纯函数、又用输入输出钉住了它 —— 但反向验证显示
+    //     **"真压那条不再调用纯函数（改回手写判断）" ⇒ 一条都不红**。
+    //     ⇒ 说明"**函数对**"与"**真的在用这个函数**"是两件事，
+    //       而上一轮（D136）刚栽过同一个坑（`recordBlockHistory` 有函数没调用点）。
+    //   ★ 判据用**源码里真的出现调用**（静态、可证伪），并**数够两处**：
+    //     真压 1 处 + 轻推 1 处 = 至少 2 处（少一处就说明有一条路绕过了闸门）。
+    {
+      const src = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+      const calls = src.split("compGateDecision(").length - 1;
+      // 1 处定义 + 2 处调用 = 3；+1 处 `compGateForTest` 包装里的调用。
+      ok("★★★★★ 61⑤ `compGateDecision` **真的被两条路调用**（真压 + 轻推），不是摆设",
+        calls >= 3, `源码里出现 ${calls} 次（定义 1 + 真压 1 + 轻推 1 + 测试口 1 = 期望 ≥3）`);
+      ok("★★★★ 61⑤ 真压那条**用它做判断**（不是自己手写一遍）",
+        /const gate = compGateDecision\(compressible, minPoints, pressure\.window, forced\)/.test(src));
+      ok("★★★★ 61⑤ 轻推那条**用它做判断**（两个开口一把尺子）",
+        /compGateDecision\(nudgeCompressible, nudgeMinPoints, pressure\.window, false\)/.test(src));
     }
   }
 }

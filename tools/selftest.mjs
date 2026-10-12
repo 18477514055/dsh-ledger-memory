@@ -2807,7 +2807,17 @@ section("情形 19：第一轮先问「建项目 or 不建」");
     rmrf(root);
   }
 
-  // 19d：选「暂时不用记」⇒ 什么都不写
+  // 19d：★★★ 选「暂时不用记」⇒ **一条注入都不许发**（2026-10-12 用户要求的小优化）
+  //
+  //   ★ 用户原话：*"暂时不用记这一条选项，完全不用返回给模型。他既然都不用记了，
+  //     那么就不用知道我们插件的存在，这只是一个普通的过程。现在的情况是，
+  //     即使我选第三个模型也要白白花一点 tokens"*
+  //
+  //   ★ 旧断言是 `ok("说了什么都不要写", /什么都不要写/.test(steered[0]…))` ——
+  //     它**测的是"注入的内容对不对"**，而新口径是"**根本不该有这条注入**"。
+  //     ⇒ 断言必须换成 `steered.length === 0`，否则它测的是**已经被删掉的行为**：
+  //       改完代码后若不同步改它，`steered[0]` 会是 undefined ⇒ **抛错**（不是变红），
+  //       那比变红更糟 —— 报错会把"我改了行为"伪装成"自检坏了"。
   {
     const root = tmpProject("first-d");
     const run = makeCtx({ withUserQuestions: true });
@@ -2816,7 +2826,11 @@ section("情形 19：第一轮先问「建项目 or 不建」");
     const steered = [];
     await fireStopping(run, agentAt(root, "s19d", steered), 1);
     await settle();
-    ok("说了什么都不要写", /什么都不要写/.test(steered[0].content[0].text), steered[0].content[0].text);
+    eq(
+      "★★★ 选「暂时不用记」⇒ **零注入**（连「插件存在」都不该让模型知道）",
+      steered.length,
+      0
+    );
     rmrf(root);
   }
 

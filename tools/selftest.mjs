@@ -7898,8 +7898,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 56（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 56);
-  eq("★ 口径：其中带「情形 N」编号的 = 55", numbered, 55);
+  eq("★ 口径：section 总数 = 57（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 57);
+  eq("★ 口径：其中带「情形 N」编号的 = 56", numbered, 56);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -12388,6 +12388,86 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       ok("★★★★ 61⑤ 轻推那条**用它做判断**（两个开口一把尺子）",
         /compGateDecision\(nudgeCompressible, nudgeMinPoints, pressure\.window, false\)/.test(src));
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ★★★★★ 情形 62（D151）：**静默出口**必须有人说话
+  //
+  //   ★★★ 要守的病（本机第 4 次复发，同型）：
+  //     `runIncrementalCompact` 会带着几个**专用标记**返回（`yieldedToFull` /
+  //     `tooSmall` / `noRange` / `requeued` / `blocked`），调用点**逐个分支**渲染文案。
+  //     我原来只生产了 `yieldedToFull` 与 `tooSmall`，**没有写任何消费分支** ⇒
+  //     让路/闸门拦下时**一条注入都不发** ⇒ 模型看到「调了工具、什么都没发生」。
+  //
+  //   ★ 为什么不能只测「标记被生产」：那正是我上一次犯的错 ——
+  //     `grep yieldedToFull` 只有 1 命中（生产点），当时它在文件里也「看得见」。
+  //     ⇒ ★ **判据必须同时管住两端**：① 每个出口标记都被生产
+  //       ② **每个出口标记都有对应的消费分支**（这才是我漏掉的那一半）。
+  //
+  //   ★ 做法刻意做成**自发现**：不是我写死「这两个要检查」，
+  //     而是从源码里**扫出所有出口标记**，再逐个要求它有消费点。
+  //     这样**下次新增出口忘了消费，当场变红**（而不是等用户发现）。
+  // ═══════════════════════════════════════════════════════════════════════════
+  section("情形 62：D151 静默出口必须有人说话（每个出口标记都要有消费分支）");
+  {
+    const src = readLibSource();
+    // ① 从 `runIncrementalCompact` 的返回值里扫出所有「出口标记」（`xxx: true` 这种）
+    const producer = src.match(/function runIncrementalCompact\([\s\S]*?\n\}/);
+    ok("★★★★★ 62① 能定位到 `runIncrementalCompact` 本体", producer !== null);
+    if (producer !== null) {
+      const body = producer[0];
+      // ★ 只认**出口标记**，不认输入选项 —— 第一版扫太宽，把 `{ dryRun: true }`
+      //   （那是**调用方传进来的选项**）也算成了出口 ⇒ 假红。
+      //   ★ 判据：只看 `return { … }` 里的键（出口），且排除通用的 ok/compacted 等。
+      const exitFlags = new Set();
+      // ★★ 不能按 `return {…}` 配对大括号 —— 模板串里 `${…}` 自带 `}`，
+      //   **第一个 `}` 会把匹配截断** ⇒ 漏掉写在模板串后面的标记
+      //   （实测：`yieldedToFull` 与 `requeued` 正好排在含 `${…}` 的 `reason` 之后 ⇒ 双双漏检）。
+      //   ⇒ 改成：**先剥掉注释**，再在整段函数体里扫 `名字: true`。
+      const noComment = body
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+      for (const km of noComment.matchAll(/(\w+):\s*true\b/g)) exitFlags.add(km[1]);
+      // ★★ 排除「**输入选项的回显**」：若同一个名字在函数体里以 `opts?.<名字>` 出现过，
+      //   那它是**调用方传进来的选项**（如 `dryRun`），不是"出口信号"。
+      //   ★ 这条同样**自发现**（从源码里查 opts，而不是我写死一个 dryRun）——
+      //     否则下次新增选项又会假红，而假红会让人去改判据（更坏）。
+      const uniq = [...exitFlags]
+        .filter((f) => !["ok", "compacted", "wouldAct", "nudge", "forced"].includes(f))
+        .filter((f) => !new RegExp(`opts\\?\\.${f}\\b`).test(body));
+      ok("★★★★★ 62② 扫到了出口标记（**自发现**，不看写死的名单）", uniq.length >= 4,
+        `扫到：${uniq.join(", ")}（期望 ≥4）`);
+
+      // ② 逐个要求：调用点必须有 `r.<flag> === true` 的消费分支
+      const missing = [];
+      for (const f of uniq) {
+        if (!new RegExp(`r\\.${f}\\s*===\\s*true`).test(src)) missing.push(f);
+      }
+      ok("★★★★★ 62③ **每个**出口标记都有消费分支（`r.<标记> === true`）", missing.length === 0,
+        missing.length === 0 ? `全部 ${uniq.length} 个都有消费点` : `★ 这些只被生产、没人渲染：${missing.join(", ")}`);
+
+      // ③ 消费分支里必须真的往注入里写东西（防「加了个空 if」）
+      for (const f of uniq) {
+        const m = src.match(new RegExp(`\\} else if \\(r\\.${f}\\s*===\\s*true\\) \\{([\\s\\S]{0,1800}?)\\n            \\} else if`));
+        if (m !== null) {
+          ok(`★★★★ 62④ \`${f}\` 的消费分支**真的渲染了注入**（不是空分支）`,
+            /text\s*=\s*text\s*===\s*undefined/.test(m[1]));
+        }
+      }
+    }
+
+    // ⑤ 让路/太小的通知必须**能重新武装**（否则本会话只报一次 = 同 hfCompacted 那个病灶）
+    ok("★★★★★ 62⑤ 让路通知在水位掉回线下时会**重新武装**（不是一辈子只报一次）",
+      /state\.deltaYieldNotified\.delete\(key0\)/.test(src));
+    ok("★★★★ 62⑥ 让路通知有生产点（真的会被设上）",
+      /state\.deltaYieldNotified\.set\(yk,\s*true\)/.test(src));
+    ok("★★★★ 62⑦ 「太小」通知按**可压量增长**重新武装（涨 50% 再报，不是每步刷屏）",
+      /cur >= seen \* 1\.5/.test(src));
+    ok("★★★★★ 62⑧ 两处新注入都只**追加** text（不覆盖台账全文 —— 不触准确性底线）",
+      /text = text === undefined \? line\.trimStart\(\) : text \+ line;/.test(src) &&
+      !/^\s*text = line\.trimStart\(\);\s*$/m.test(src),
+      "★ 判据是**双向**的：① 追加写法存在 ② **裸覆盖写法一处都不许有**" +
+        "（反向验证 G 就是靠第②条才变红的 —— 只测①的话，改掉一处仍有另一处兜着 ⇒ 假绿）");
   }
 }
 

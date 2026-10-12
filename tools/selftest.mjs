@@ -7853,8 +7853,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 52（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 52);
-  eq("★ 口径：其中带「情形 N」编号的 = 51", numbered, 51);
+  eq("★ 口径：section 总数 = 53（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 53);
+  eq("★ 口径：其中带「情形 N」编号的 = 52", numbered, 52);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -11779,6 +11779,188 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
     ok("★★★★ 57⑥：**全表都没有变更史 ⇒ 分只由「模型 + 星」定**（若把缺值当 0，分母变大 ⇒ 被拉低）",
       nh[0].weight.score >= 70,
       `甲 = ${nh[0].weight.score}（跳过缺值的实现 ≈88；把缺值当 0 的实现 ≈56）乙 = ${nh[1].weight.score}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // ★★★★ 情形 58：D136 **接线**（块变更史进写入路径 / 模型判分进 triage）
+  //
+  //   ★ 为什么单列一个情形（而不是并进 57）：57 测的是**纯函数**，
+  //     本情形测的是**生产链路真的把那些函数用上了**。
+  //     ★★ 这个区分有前科：57 全绿时，`recordBlockHistory` **一个调用点都没有**
+  //        ⇒ 时间/稳定两维在生产里恒缺值 ⇒ "权重可变"是**空话**，
+  //        而纯函数断言照样全绿。**函数对 ≠ 接线对**。
+  // ═══════════════════════════════════════════════════════════════════════════
+  section("情形 58：D136 接线（变更史进写入路径 / 判分进 triage）");
+  {
+    const W = mod.__test;
+    // ★ 本情形要的是**有台账的项目**（`ledger_write` 才认路）。
+    //   ⚠️ `mkModeProj` 是**别的 section 内的局部** helper，这里够不着 ⇒ 自带一个
+    //     （★ 第一版直接调它 ⇒ `ReferenceError`，夹具当场崩，红得很清楚）。
+    const mkProj = (tag) => {
+      const dir = tmpProject(tag);
+      fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n做点什么\n", "utf8");
+      fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n", "utf8");
+      fs.mkdirSync(path.join(dir, "_a"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, ".dsh-ledger.json"),
+        JSON.stringify({
+          version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+          archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, mode: "surgical", revision: 0,
+        }),
+        "utf8"
+      );
+      return dir;
+    };
+
+    // ── ① 写台账 ⇒ 变更史**真的**记下来了（不是"函数存在"）──
+    {
+      const root = mkProj("bh-write");
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const sid = "session-bh000000-0001";
+      const tool = run.registeredTools.get("ledger_write");
+      const written = "# 台账\n\n## 甲\n甲的内容\n\n## 乙\n乙的内容\n";
+      const r1 = await tool.execute({ target: "active", mode: "replace", content: written }, execFor(root, sid));
+      eq("★★ 58① 前提：第一次写入成功", r1.ok, true);
+      const hist1 = W.blockHistoryFor(root);
+      ok("★★★★ 58① 写台账**真的**记下了区块变更史（函数存在但没接线时，这里会是空的）",
+        hist1.size >= 2, `记录 ${hist1.size} 块`);
+      const anyNew = [...hist1.values()].some((h) => h.newest === true);
+      ok("★★★ 58① 且标出了「最近新增」（时间维就靠它）", anyNew,
+        JSON.stringify([...hist1.values()].map((h) => h.newest)));
+
+      // ── ② 再写一次同样内容 ⇒ 普通块**没变** ──
+      //   ⚠️ 必须**排除「变更登记」块**：插件每次写入都会给它追加一行 ⇒
+      //      它**按设计每写必变**（★ 那正是 `mechanicalWeight` 给它强制 0 的理由）。
+      //      ★ 第一版把全表一起比 ⇒ 假红。这条细节反过来**证实了**"元数据每轮必变"。
+      const before = [...hist1.entries()]
+        .filter(([h]) => hist1.get(h)?.writes === 1)
+        .map(([h, v]) => [h, v.lastChangedAt]);
+      await tool.execute({ target: "active", mode: "replace", content: written }, execFor(root, sid));
+      const hist2 = W.blockHistoryFor(root);
+      // ★ 只挑"变化前就已存在、且不是元数据"的那些块来比（元数据必然前移，是设计）
+      const stablePairs = before.filter(([h]) => !/变更登记/.test("") && hist2.has(h));
+      const moved = stablePairs.filter(([h, t]) => hist2.get(h).lastChangedAt !== t);
+      ok("★★★ 58② 内容一字未改的块 ⇒ `lastChangedAt` **没有前移**（前移了的话「多久没变」永远是 0）",
+        moved.length === 0,
+        `前移的块数 = ${moved.length}（✓ 元数据块不在其中：它的哈希每次都换）`);
+      // ★ 反过来也要守：**元数据块每写必变**（★ 那是它被强制 0 分的实测依据）。
+      //   ⚠️ 判据不能用 `changed`：元数据每次写入都是**全新哈希**
+      //      ⇒ 每个哈希的 `first === last` ⇒ `changed` 恒 false（永远不会累加）。
+      //      ★ 正解看 **`writes` 是否累积**：普通块 `writes` 会涨到 2、3；元数据块永远停在 1。
+      const metaRows = [...hist2.values()].filter((h) => h.writes === 1);
+      const grown = [...hist2.values()].filter((h) => h.writes >= 2);
+      ok("★★★ 58② 普通块的 `writes` **真的在累积**（≥2）—— 这才叫「见过多次」",
+        grown.length > 0, `writes≥2 的块 = ${grown.length}`);
+      ok("★★★ 58② 而元数据那种每写必换哈希的块 **`writes` 停在 1**（它没法累积，只能每次换新）",
+        metaRows.length > 0, `writes==1 的块 = ${metaRows.length}`);
+
+      // ── ③ 改掉其中一块 ⇒ 哈希变了 ⇒ 新条目 ──
+      const n2 = hist2.size;
+      await tool.execute({
+        target: "active", mode: "replace",
+        content: "# 台账\n\n## 甲\n甲的内容**改了**\n\n## 乙\n乙的内容\n",
+      }, execFor(root, sid));
+      const hist3 = W.blockHistoryFor(root);
+      ok("★★★★ 58③ 改了内容 ⇒ 变更史里多出一个哈希（内容地址变了就是新块）",
+        hist3.size > n2 || [...hist3.keys()].some((k) => !hist2.has(k)),
+        `${n2} → ${hist3.size}`);
+      rmrf(root);
+    }
+
+    // ── ④ 归档也改活跃台账 ⇒ 同样要记 ──
+    {
+      const root = mkProj("bh-archive");
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const sid = "session-bh000000-0002";
+      await callTool(run, "ledger_write", {
+        target: "active", mode: "replace",
+        content: "# 台账\n\n## 甲\n甲\n\n## 乙\n乙\n\n## 丙\n丙\n",
+      }, execFor(root, sid));
+      const beforeN = W.blockHistoryFor(root).size;
+      const arch = await callTool(run, "ledger_archive", {
+        entries: "## 甲\n甲", newActive: "# 台账\n\n## 乙\n乙\n\n## 丙\n丙\n",
+      }, execFor(root, sid));
+      eq("★★ 58④ 前提：归档成功", arch.ok, true);
+      const afterH = W.blockHistoryFor(root);
+      ok("★★★ 58④ 归档后变更史仍有记录（归档也走 `recordBlockHistory`）",
+        afterH.size > 0 && beforeN > 0, `${beforeN} → ${afterH.size}`);
+      // ★★★★ 反向验证抓到：上面那条**测不出归档那一次调用** ——
+      //    `ledger_write` 已经让 size > 0，摘掉归档里的 `recordBlockHistory` 也照样绿。
+      //   ⇒ 真正的判据是 **`writes` 计数在归档后必须 +1**（那是"归档也记了一笔"的唯一痕迹）。
+      const wMax = (m) => Math.max(0, ...[...m.values()].map((h) => h.writes));
+      ok("★★★★ 58④ 归档**确实又记了一笔**（`writes` 最大值必须比归档前 +1）",
+        wMax(afterH) >= 2,
+        `归档后 writes 最大 = ${wMax(afterH)}（若归档没记账，它会停在 1）`);
+      rmrf(root);
+    }
+
+    // ── ⑤ 模型判分：只认布尔 + 只认哈希（生产链路上的同一条底线）──
+    {
+      const root = mkProj("bw-triage");
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const sid = "session-bw000000-0001";
+      const res = await callTool(run, "ledger_triage", {
+        keep: [{ what: "某件下一轮必须知道的事" }],
+        weights: [
+          { hash: "abc12345", q1: true, q2: false, q3: true, q4: false },
+          { hash: "#DEF67890", q1: true, q2: true, q3: true, q4: true },
+          { hash: "bbb22222", q1: "是", q2: 1, q3: true, q4: false },
+          { hash: "ccc33333", score: 999, q1: true },
+          { hash: "", q1: true },
+          { q1: true },
+        ],
+      }, execFor(root, sid));
+      eq("★★ 58⑤ 前提：分流成功", res.ok, true);
+      // ★ 逐条数清**为什么**是 4 条（这不是"期望值抄错"，是把规则说清楚）：
+      //   ① `abc12345`  全布尔 ⇒ 收
+      //   ② `#DEF67890` 带 `#` 前缀 + 大写 ⇒ **归一化后收**（目录里就是 `#xxxxxxxx` 形态）
+      //   ③ `bbb22222`  q1="是" / q2=1 **不算**，但 q3=true q4=false **是布尔** ⇒ 收
+      //      ★ 这正是"只认布尔"的准确含义：**逐字段**过滤，不是"整条有脏数据就丢"
+      //   ④ `ccc33333` 多塞了 `score:999` ⇒ **q1 仍是合法布尔** ⇒ 收；★ 而那个 score **必须无效**
+      //   ⑤ `""`        空哈希 ⇒ 丢
+      //   ⑥ 无 hash      ⇒ 丢
+      eq("★★★★ 58⑤ 只收下合法的（空哈希 / 无哈希 ⇒ 丢；带 `#`/大写 ⇒ 归一化收）", res.weightsScored, 4);
+
+      // ★★★★ 反向验证抓到：光看 `weightsScored` **测不出"有没有真存进去"** ——
+      //   把 `state.blockWeights.set(...)` 整行摘掉，上面那条照样绿（它只数循环次数）。
+      //   ⇒ 必须**直接查存下来的东西**（这才是"接线对了"的证据）。
+      const stored = W.blockWeightsForTest(sid);
+      ok("★★★★ 58⑤ 判分**真的存下来了**（摘掉 `state.blockWeights.set` 时这里会是 undefined）",
+        stored !== undefined && Array.isArray(stored.byHash), JSON.stringify(stored)?.slice(0, 200));
+      const byHash = new Map(stored?.byHash ?? []);
+      ok("★★★ 58⑤ 存下来的哈希**已归一化**（去 `#`、转小写）—— 目录里给的就是这个形态",
+        byHash.has("def67890") && byHash.has("abc12345"),
+        JSON.stringify([...byHash.keys()]));
+      // ★★★★ 本设计的核心主张：**模型塞的分必须无效**（分数只能由插件算）
+      const cheat = byHash.get("ccc33333");
+      ok("★★★★ 58⑤ 模型自己塞的 `score:999` **没有被记录**（只留 q1）—— 分数只能由插件算",
+        cheat !== undefined && cheat.score === undefined && cheat.q1 === true,
+        JSON.stringify(cheat));
+      // ★ 字符串/数字**不许**被当成 true
+      const dirty = byHash.get("bbb22222");
+      ok("★★★★ 58⑤ 字符串「是」/ 数字 1 **不算 true**（只保留真布尔 q3/q4）",
+        dirty !== undefined && dirty.q1 === undefined && dirty.q2 === undefined && dirty.q3 === true,
+        JSON.stringify(dirty));
+      rmrf(root);
+    }
+
+    // ── ⑥ 判分**不传** ⇒ 照样成功（不是错误，只是那一维跳过）──
+    {
+      const root = mkProj("bw-none");
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const res = await callTool(run, "ledger_triage", {
+        keep: [{ what: "只有 keep，不判分" }],
+      }, execFor(root, "session-bw000000-0002"));
+      eq("★★★ 58⑥ 不传判分 ⇒ 仍然成功（退化成「只看星与结构」，不伤准确性）", res.ok, true);
+      eq("★★★ 58⑥ 且如实回报收了 0 块（不是假装有）", res.weightsScored, 0);
+      ok("★★ 58⑥ 说明里讲清了「未判分」这件事", /未判分|没传/.test(String(res.note)), String(res.note).slice(0, 200));
+      rmrf(root);
+    }
   }
 }
 

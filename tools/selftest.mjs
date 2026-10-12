@@ -7509,13 +7509,37 @@ section("情形 27：官方设置面板");
 
   ok("★★★ package.json 有 files 白名单（否则会把整个仓库发出去）", files.length > 0, JSON.stringify(files));
 
-  // ① scripts.test 指向的文件，必须在 files 白名单覆盖范围内
+  // ① scripts.test 指向的文件与 files 白名单的关系
+  //
+  // ★★★ 2026-10-12（D145）**判据反转** —— 用户拍板：
+  //   *"用户确实不需要跑我们的质检，出 bug 了直接推送 issue 给我就可以了。"*
+  //
+  //   ★ 旧判据（`testTarget` 必须在 `files` 里）背后是一条**旧假设**：
+  //     *"用户也会跑我们的自检 ⇒ 自检必须随包发布"*。用户否掉了它。
+  //   ★★ 而且**必须**否掉它：`tools/selftest.mjs` = **674 KB**，
+  //     而 **DSH STORE 的单文件上限 = 262144 B** ⇒ 光它自己就超标。
+  //
+  //   ★ 新判据要守的是**另一种坏法**：不是"漏发了一个文件"，而是
+  //     **"脚本指向一个发不出去的文件"这种半坏状态**要能被识别。
+  //     ⇒ 判据：**要么 `testTarget` 被白名单覆盖，要么 `files` 里整个 `tools/` 都不在**
+  //       （= **有意排除整个目录**）。后者是明确决定，前者是"忘了排除"——
+  //       两者**必须区分开**，否则"漏了一个危险探针"会看起来和"有意排除"一样。
   const testTarget = (testScript.match(/([\w./-]+\.mjs|[\w./-]+\.js)/) ?? [])[1];
   if (testTarget !== undefined) {
     const covered = files.some((f) => testTarget === f || testTarget.startsWith(f.replace(/\/$/, "") + "/"));
+    // ★ `tools/` 里**一个条目都没有** ⇒ 整目录被有意排除（自检是**开发用**，不进包）。
+    const toolsWhollyExcluded = !files.some((f) => f === "tools" || String(f).startsWith("tools/"));
     ok(
-      `★★★ scripts.test 指向的 ${testTarget} 确实在 files 白名单里（否则装上即坏）`,
-      covered,
+      `★★★ scripts.test 指向的 ${testTarget}：**要么在包里、要么整目录被有意排除**` +
+        `（不许「漏了一个文件」冒充「有意排除」）`,
+      covered || toolsWhollyExcluded,
+      `covered=${covered} · toolsWhollyExcluded=${toolsWhollyExcluded} · files = ${JSON.stringify(files)}`
+    );
+    // ★★ 并把"自检是开发用"这件事**说清楚**（用户装到的包里没有它 ⇒ `npm test` 会失败，
+    //    那是**设计**，不是坏掉）。这条断言把设计意图钉住，免得后人当成 bug 去"修"。
+    ok(
+      "★★★ 自检**不进发布包**（用户不需要跑我们的质检；★ 且它 674 KB 会撞 DSH STORE 单文件上限）",
+      toolsWhollyExcluded,
       `files = ${JSON.stringify(files)}`
     );
   }

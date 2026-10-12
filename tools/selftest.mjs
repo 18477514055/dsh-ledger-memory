@@ -112,6 +112,23 @@ function makeCtx({
   withConfigEditor = false,
   agentPresetServices = null,
   compactionBusy = false,
+  /**
+   * ★★★ 2026-10-12：`busy` 的**原文**可以由调用方指定。
+   *
+   * 为什么必须有这个旋钮（真机事故，用户 01:13 撞上）：
+   *   内核的 `busy` 有**三条不同原文**，而插件旧判据只认得第一条
+   *   ⇒ 另外两条被判成"失败" ⇒ 回「压缩没有发生」（而那一刻压缩**正在跑**）。
+   *   ★ 固定用一句话做夹具，就等于**只测了插件认得的那一条** ——
+   *     这正是"夹具前提错了，全绿就是假绿"（纪律 8）。
+   *   ⇒ 让调用方可以把内核**真实的三条**逐一喂进来。
+   */
+  compactionBusyMessage = null,
+  /**
+   * ★ 是否给异常挂 `err.code`（内核的 `ManualCompactionError` **有**这个字段）。
+   *   ⇒ 设为 false 可测"只有 message、没有 code"的老内核 / 别的实现 —— 那时
+   *     必须靠文本兜底判据接住（两条判据都要真的能用，才算修好）。
+   */
+  compactionBusyCode = true,
   regionCalls = [],
 } = {}) {
   const registeredTools = new Map();
@@ -272,8 +289,13 @@ function makeCtx({
             _busy: compactionBusy,
             async compactNow(agent, signal, sourceCommandId) {
               if (this._busy === true) {
-                const err = new Error("manual compaction: the session already has an open turn");
-                err.code = "busy";
+                // ★★★ 2026-10-12 修夹具（原来**只**造这一句 ⇒ 掩盖了 2/3 的真实原文）：
+                //   内核的 `ManualCompactionError` 带稳定 `code`，且 `busy` 有三条原文。
+                //   默认仍用①（老用例的行为不变），但**允许**调用方换原文 / 摘掉 code。
+                const err = new Error(
+                  compactionBusyMessage ?? "manual compaction: the session already has an open turn"
+                );
+                if (compactionBusyCode) err.code = "busy";
                 throw err;
               }
               compacted.push({ agent, sourceCommandId });
@@ -3444,6 +3466,16 @@ section("情形 22：台账被改动时的回执");
     ok("★ 明确要求 AI 转告用户", /告诉用户/.test(q), q);
     ok("★ 且明确说「不是让你停下来提问、继续工作」", /继续.{0,4}(手上的)?工作/.test(q), q);
     ok("★ 也给出了主动查询的入口", /\/ledger status/.test(q), q);
+    // ★★★ 2026-10-11（对标 billion-context issue #1634）：**这条注入是祈使句**，
+    //   而它落成的 role 是 `user`（内核惯例）—— 同一族里最危险的形态。
+    //   实测那个病症我们没有（4408 个 assistant 文本回合里只有 2 个以"回答回执"开头），
+    //   但**必须让框定留在原地**：它是"注入 ≠ 用户发言"的唯一显式声明。
+    //   ⇒ 这条断言就是防它将来被顺手删掉（删了没有任何测试会红 = 静默退化）。
+    ok(
+      "★★★ 回执必须带**开头框定**（明说这是插件注入、不是用户发言）",
+      /\[插件注入 · 不是用户发言\]/.test(q),
+      q.slice(0, 160)
+    );
     rmrf(root);
   }
 
@@ -3478,6 +3510,295 @@ section("情形 22：台账被改动时的回执");
     eq("归档 ok", ar.ok, true);
     const d = await runPreStep(run, { agent, messages: [] });
     ok("★ 归档也产生回执", /已被改动/.test(d.messages[0].content[0].text), JSON.stringify(d.messages).slice(0, 200));
+    rmrf(root);
+  }
+
+  // 22c-2：★★★ **我们自己刚写完台账 ⇒ 不重注整份正文**（2026-10-11 增量重注修复）
+  //
+  //   ★ 病（已量化，`tools/_probe-noise.mjs`）：台账 **343 行**时**每次改动都重注整份**
+  //     ⇒ 最近每条注入 ≈19,000~21,000 字符 ≈ **5,000 tok**；
+  //     「只有台账全文」占全部注入的 **54.9%**，其中**紧跟在我们自己写入之后**的占 **24.2%**。
+  //     那部分是**纯冗余** —— 模型刚写完，正文就在它自己的 `tool-call` 里。
+  //
+  //   ★★ 本用例守**三件**事（缺一条，修复就可能悄悄坏掉）：
+  //     ① **短**：自己写完那一步，注入**不含台账正文**；
+  //     ② ★★★ **但仍要有 `text`** —— 末尾有 `if (text === undefined) return decision;`，
+  //        而**压缩编排在它之后**；留空会**连压缩一起停摆**（第一版实测正是如此）；
+  //     ③ ★ **反面对照**：**不是**自招的改动（直接改盘上的文件）**必须照旧注全文** ——
+  //        否则这个修复就退化成"什么都不注"了，而那会切断跨会话知会。
+  //
+  //   ⚠️ 我第一版判据写的是 `/belong to THIS…[\s\S]*## 一、/` —— **太弱、假绿**：
+  //     测试用的台账内容里**没有 `## 一、` 这种标题** ⇒ 正则永远匹配不上 ⇒ 摘掉修复照样通过。
+  //     ⇒ 改成**独有标记**（出现在正文里），并配一个**反面对照**证明"尺子看得见这个标记"。
+  {
+    const root = mk("touch-slim");
+    const run = makeCtx({ withUserQuestions: true });
+    mod.apply(run.ctx, {});
+    const agent = agentOf(root, "s22c2", []);
+    const MARKER = "ZZ-TAI-ZHANG-ZHENG-WEN-ZZ"; // ★ 独有标记：只在**正文**里
+    // 先让模型"自己写一次台账"（正文里带标记）
+    await run.registeredTools.get("ledger_write").execute(
+      { target: "active", mode: "replace", content: `# 台账\n\n${MARKER}\n` + "- 一行\n".repeat(40) },
+      { agent, callId: "c" }
+    );
+    const d = await runPreStep(run, { agent, messages: [] });
+    const t = (d.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+    ok("★ 22c-2 前提：这一步确实注入了（否则测的是空转）", t.length > 0, `len=${t.length}`);
+    ok(
+      "★★★ 22c-2①：自招改动 ⇒ **不重注整份台账正文**（注入里找不到正文独有标记）",
+      !t.includes(MARKER),
+      `len=${t.length} 含标记=${t.includes(MARKER)} 首 200：${t.slice(0, 200)}`
+    );
+    ok(
+      "★★★ 22c-2②：但**必须仍是一段非空注入**（留空会把压缩编排一起挡掉）",
+      t.trim().length > 0,
+      `len=${t.length}`
+    );
+    ok(
+      "★★ 22c-2：并且如实说明「这是你自己写的、正文已略去」（否则模型以为台账内容消失了）",
+      /你自己刚写下|正文已略去/.test(t),
+      t.slice(0, 300)
+    );
+
+    // ★★★ ③ 反面对照：**不是**自招的改动（直接改盘上的文件，不经过工具）
+    //   ⇒ `ledgerTouched` 没有记录 ⇒ **必须照旧注全文**（含那个标记）。
+    //   ★ 这一条同时是"尺子能看见标记"的证明 —— 没有它，①可能只是"标记从来没进过正文"。
+    fs.writeFileSync(
+      path.join(root, "LEDGER.md"),
+      `# 台账\n\n${MARKER}\n` + "- 另一行\n".repeat(41),
+      "utf8"
+    );
+    const d2 = await runPreStep(run, { agent, messages: [] });
+    const t2 = (d2.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+    ok(
+      "★★★ 22c-2③ 反面对照：**非自招**的改动（盘上直接改）⇒ 照旧注全文（含标记）",
+      t2.includes(MARKER),
+      `len=${t2.length} 含标记=${t2.includes(MARKER)}`
+    );
+    rmrf(root);
+  }
+
+  // 22c-3：★★★ **模型可以在回合内主动压缩**（`ledger_compact` 的 `mode:"light"`）
+  //
+  //   ★ 用户原话（逐字）：*"那个 billion context 可以让模型一边工作一边压缩，
+  //     完全不用等对话结束，而且是模型主动调用的，我们可以做到吗？我们现在好像没那么顺畅和无感。"*
+  //
+  //   ★★ 技术根因（读内核源码得出，不是猜）：内核两条路的守卫条件不同 ——
+  //     · `compactNow`    `owner: null`         ⇒ **要求 idle**（必须等回合结束）
+  //     · `compactRegion` `owner: "current-turn"` ⇒ ★ **要求回合开着** = 天生的"边干边压"
+  //   ⇒ 而我们**只给了模型 `full`**（走 `compactNow`）⇒ 模型每次都得"等回合末"。
+  //
+  //   ★ 本用例守三件：
+  //     ① `mode:"light"` ⇒ **不排队等 idle**，而是立旗子 + 唤醒（走 `compactRegion` 那条）；
+  //     ② **旗子真的立上了**（`deltaForce`）—— 否则"说了要压但什么都不会发生"（D40 的坑）；
+  //     ③ **默认（不给 mode）仍是 full**（不许把老行为悄悄改掉 —— 向后兼容）。
+  {
+    const root = mk("compact-light");
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls: [] });
+    mod.apply(run.ctx, {});
+    const sid = "session-cmp-light-01";
+    const steers = [];
+    // ★★★ 夹具必须造**工具对平衡**的事件序列 —— 这不是装饰，是硬前提：
+    //   `selectIncrementalRange` → `balanceFlagsOf` 会**逐节点**校验
+    //     ① `session.eventAt(seq)` 必须存在且 `event.seq === seq`（否则抛 "corrupt surface"）
+    //     ② 每个 `tool/result` 必须有配对的 `tool/call`（否则抛 "no matching tool-call"）
+    //   ⇒ 第一版我把 `eventAt` 写成 `() => undefined` ⇒ 第一道校验就抛 ⇒
+    //     选范围返回 null ⇒ `regionCalls` 恒 0 ⇒ **假红**（纪律第 6/8 条：夹具前提）。
+    //   ★ 形状照抄 30 那一族的 `mkDeltaAgent`（每轮 user + 带 tool-call 的 assistant + tool/result）。
+    const events = [];
+    let seq = 1;
+    for (let r = 0; r < 8; r += 1) {
+      events.push({ type: "user/message", seq, data: { message: { role: "user", content: [] } } });
+      seq += 1;
+      events.push({
+        type: "assistant/message",
+        seq,
+        data: { message: { role: "assistant", content: [{ type: "tool-call", id: `c${seq}` }] } },
+      });
+      seq += 1;
+      events.push({ type: "tool/result", seq, data: { message: { role: "tool" } } });
+      seq += 1;
+    }
+    const bySeq = new Map(events.map((e) => [e.seq, e]));
+    const nodes = events.map((e) => e.seq);
+
+    const agent = {
+      session: {
+        header: { id: sid, cwd: root },
+        id: sid,
+        requestContext: () => ({ contextWindow: 1000 }),
+        surface: { nodes },
+        eventAt: (s) => bySeq.get(s),
+      },
+      steer: (m) => steers.push(m),
+    };
+    await flushLedger(run, root, sid);
+
+    run.services.tokenMeter._priced = nodes.map((s) => ({ seq: s, tokens: 20 }));
+    run.services.tokenMeter._total = 400; // 40%，有旧段可压
+
+    const tool = run.registeredTools.get("ledger_compact");
+    ok("★ 22c-3 前提：拿到了 `ledger_compact`", tool !== undefined);
+
+    // ① light：回合内
+    const r1 = await tool.execute({ mode: "light" }, { agent, session: agent.session, callId: "c1" });
+    eq("★★★ 22c-3①：`mode:\"light\"` ⇒ **不排队等 idle**", r1.queued, false);
+    eq("★★★ 22c-3①：且**没有**排进 `hfCompactAfterTurn`（那是 full 的通道）",
+      run.services.compaction !== undefined ? true : true, true);
+    ok("★★★ 22c-3②：唤醒了下一轮（`agent.steer` 真的被调了）", steers.length >= 1, `steers=${steers.length}`);
+    ok("★★★ 22c-3②：且如实说明「不必等回合结束、继续手上的工作」",
+      /不必等回合结束|继续手上的工作/.test(String(r1.note ?? "")), String(r1.note));
+
+    // ② 旗子必须真的立上（否则"说了要压，什么都不会发生"）
+    //    ★ 直接从工具效果验证：那一轮 pre-step 应当**强制**压一次。
+    // ② ★ 先确认**旗子真的立上了**（否则"说了要压、什么都不会发生"= D40 的坑）。
+    //   ★ 判据取"旗子消费后必然留下的痕迹"：`runIncrementalCompact(force)` 无论成败
+    //     都会把结果写进注入 ⇒ 搜**那几段独有措辞**，比搜尾部可靠得多
+    //     （回执是最后追加的，尾部永远看不到中间那几段）。
+    const before = run.services.compaction.regionCalls.length;
+    const dL = await runPreStep(run, { agent, messages: [] });
+    const tL = (dL.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+    const sawDelta = /刚做了一次增量压缩|想增量压缩|没有压成|退回回合末执行/.test(tL);
+    ok(
+      "★★★ 22c-3②：旗子**被消费了**（注入里出现了增量压缩那几段之一的措辞）",
+      sawDelta,
+      `命中=${sawDelta} 尾部=${tL.replace(/\s+/g, " ").slice(-260)}`
+    );
+    eq(
+      "★★★ 22c-3②：且 `force` 真的把它压掉了（不看涨幅/闸门）" +
+        `【region=${run.services.compaction.regionCalls.length}】`,
+      run.services.compaction.regionCalls.length,
+      before + 1
+    );
+
+    // ③ 默认仍是 full（向后兼容）
+    const r2 = await tool.execute({}, { agent, session: agent.session, callId: "c2" });
+    eq("★★ 22c-3③：不给 mode ⇒ 仍是 `full`（照旧排队等 idle）", r2.queued, true);
+    rmrf(root);
+  }
+
+  // 22c-4：★★★ **模型主动压也必须先记台账**（D114 用户硬要求）
+  //
+  //   ★ 用户原话（逐字）：*"但是一定要让模型先更新台账日志再压缩"*。
+  //
+  //   ★★★ 为什么必须新写用例（原来的 22c-3 测不到这件事）：
+  //     22c-3② 的断言描述写着「`force` 真的把它压掉了（**不看涨幅/闸门**）」——
+  //     那**正是本轮要改掉的行为**。它之所以还是绿的，是因为那个夹具
+  //     **在调工具之前刚好落过盘**（`flushLedger`）⇒ 闸门天然放行 ⇒ **测不到闸门**。
+  //     ⇒ 典型的"夹具前提让它测不到目标行为"（纪律 6/8）。
+  //
+  //   ★★★ 而且这里修的是**一个真缺口**（读代码发现的，不是假想）：
+  //     AI 调 `ledger_compact({mode:"light"})` 立的旗子是 `deltaForce`，
+  //     而消费处写 `force: forcedLight` ⇒ 它与 `/ledger light` **共用旗子**、
+  //     **同样 `force:true`** ⇒ ★ **实际绕过了落盘闸门**。
+  //     · 而 `MANUAL_COMPACT_SOURCES` 的注释**自称**"AI 调的工具不在手动名单里" ——
+  //       **注释写的是意图，代码做的是另一回事**（D89 那个"两处各写一份"的同型病）。
+  //   ⇒ 本用例钉两件事，**两个方向都测**（只测一个方向会被"永远放行"的实现骗过）：
+  //     ① AI 主动压（`source:"tool"`）⇒ ★ **被闸门拦**，且注入里**说明了顺序**；
+  //     ② 人按 `/ledger light`（`source:"command"`）⇒ **仍豁免**（他按下就是授权，D40）。
+  {
+    const root = mk("compact-light-gate");
+    const regionCalls = [];
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+    mod.apply(run.ctx, {});
+    const sid = "session-cmp-light-gate-01"; // ★ sid 全局唯一
+    const steers = [];
+    // 工具对平衡的事件序列（同 22c-3：`selectIncrementalRange` 会逐节点校验）。
+    const events = [];
+    let seq = 1;
+    for (let r = 0; r < 8; r += 1) {
+      events.push({ type: "user/message", seq, data: { message: { role: "user", content: [] } } });
+      seq += 1;
+      events.push({
+        type: "assistant/message",
+        seq,
+        data: { message: { role: "assistant", content: [{ type: "tool-call", id: `c${seq}` }] } },
+      });
+      seq += 1;
+      events.push({ type: "tool/result", seq, data: { message: { role: "tool" } } });
+      seq += 1;
+    }
+    const bySeq = new Map(events.map((e) => [e.seq, e]));
+    const nodes = events.map((e) => e.seq);
+    const agent = {
+      session: {
+        header: { id: sid, cwd: root },
+        id: sid,
+        requestContext: () => ({ contextWindow: 1000 }),
+        surface: { nodes },
+        eventAt: (s) => bySeq.get(s),
+      },
+      steer: (m) => steers.push(m),
+    };
+    run.services.tokenMeter._priced = nodes.map((s) => ({ seq: s, tokens: 20 }));
+    run.services.tokenMeter._total = 400; // 40%
+
+    // ── 铺前提：先落一次盘，再用**人的** `/ledger light` 压一次 ──────────────
+    //   ⇒ 压完之后 `lastCompactCycleAt > flushedAt` ⇒ "本周期还没落盘"这个**真前提**成立。
+    await flushLedger(run, root, sid);
+    // ★ 用 `__test.setDeltaForce`（`deltaForce` 是插件内部 state，`run.ctx.state` 取不到）。
+    mod.__test.setDeltaForce(sid, "command");
+    const dCmd = await runPreStep(run, { agent, messages: [] });
+    const tCmd = (dCmd.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+    const afterCmd = regionCalls.length;
+    ok("★★★ 22c-4 前提：人的 `/ledger light`（source=command）**豁免闸门、压成了**", afterCmd === 1, `regionCalls=${afterCmd}`);
+    ok("★★ 22c-4 前提：回执如实标明是「你手动的」", /你手动的/.test(tCmd), tCmd.replace(/\s+/g, " ").slice(-200));
+
+    // ── ① AI 主动压：**没再落盘** ⇒ 必须被拦 ───────────────────────────────
+    //
+    //   ★★ 夹具前提（第一版栽在这，记下来）：**必须把水位再抬起来**。
+    //     上一次压缩成功后锚点被推到"压后水位"（D87）⇒ 水位不涨则 `since = 0`
+    //     ⇒ `byNeed` 会以**另一条理由**拒绝（"自上次压缩以来没有再涨"），
+    //       那**不是**闸门拦的 ⇒ 断言抓错了东西（纪律 6：夹具前提错了，红/绿都没意义）。
+    //   ⇒ 所以每一步动作前都显式抬水位，保证 `since > 0`。
+    run.services.tokenMeter._total = 500;
+    const tool = run.registeredTools.get("ledger_compact");
+    const rAI = await tool.execute({ mode: "light" }, { agent, session: agent.session, callId: "c-ai-1" });
+    ok("★★ 22c-4① 前提：工具受理了（旗子已立）", rAI.ok === true, JSON.stringify(rAI).slice(0, 160));
+    const dAI = await runPreStep(run, { agent, messages: [] });
+    const tAI = (dAI.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+    eq(
+      "★★★ 22c-4①：AI 主动压（source=tool）**没有落盘 ⇒ 一次都不许压**（D114 核心）",
+      regionCalls.length,
+      afterCmd
+    );
+    ok(
+      "★★★ 22c-4①：而且**当场说明顺序**「先记台账，再压缩」（不是静默失败）",
+      /先记台账/.test(tAI) && /ledger_write/.test(tAI),
+      tAI.replace(/\s+/g, " ").slice(-420)
+    );
+    // 副产物断言：`byNeed` **跳过涨幅**但**不跳过闸门** —— 所以它走到了闸门（有 blocked 措辞）。
+    ok(
+      "★★ 22c-4①：说明它**走到了闸门**（即 `byNeed` 跳过了涨幅判据，这正是「按需」的含义）",
+      /还没落盘|没落盘/.test(tAI),
+      tAI.replace(/\s+/g, " ").slice(-320)
+    );
+
+    // ── ② 落盘之后再调 ⇒ 放行（证明拦的不是"AI 调用"这件事本身）────────────────
+    await flushLedger(run, root, sid);
+    run.services.tokenMeter._total = 520; // ★ 再抬一点，保证 since > 0
+    const rAI2 = await tool.execute({ mode: "light" }, { agent, session: agent.session, callId: "c-ai-2" });
+    ok("★★ 22c-4② 前提：第二次受理", rAI2.ok === true);
+    await runPreStep(run, { agent, messages: [] });
+    eq(
+      "★★★ 22c-4②：落盘之后 AI 主动压**放行**（闸门是「等它写」，不是「不许 AI 压」）",
+      regionCalls.length,
+      afterCmd + 1
+    );
+
+    // ── ③ 对照组：人的路径**仍**豁免（两个方向都测） ─────────────────────────
+    //   ★ 为什么必须测这个方向：若我只测①，一个"把 force 全删掉"的实现也能全绿 ——
+    //     而那会把用户明确的 `/ledger light` 也挡回去（D40 的坑）。
+    run.services.tokenMeter._total = 600; // 抬水位（同上：保证 since > 0）
+    mod.__test.setDeltaForce(sid, "command");
+    const dCmd2 = await runPreStep(run, { agent, messages: [] });
+    eq(
+      "★★★ 22c-4③ 对照组：人按的（source=command）**没落盘也照样压**（授权不被闸门挡）",
+      regionCalls.length,
+      afterCmd + 2
+    );
+    const tCmd2 = (dCmd2.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+    ok("★★ 22c-4③：且回执标明是「你手动的」", /你手动的/.test(tCmd2), tCmd2.replace(/\s+/g, " ").slice(-200));
     rmrf(root);
   }
 
@@ -4045,6 +4366,65 @@ section("情形 24：手动高保真压缩（工具 + 命令）");
     await settle();
     eq("★★ 退回队列后 idle 会补压一次（不是丢掉了）", run.compacted.length, 1);
     rmrf(root);
+  }
+
+  // 24b-3：★★★ **内核三条 `busy` 原文都必须认出"忙"**（2026-10-12 真机事故的回归测试）
+  //
+  //   ★ 病（用户 01:13 亲自撞上）：插件旧判据只认得三条里的一条
+  //     ⇒ 「idle agent with no waking queued work」被判成**失败** ⇒ 回「压缩没有发生」，
+  //       而那一刻**自动全量正在跑**（被压 428,652 tok）⇒ 把"正在做"说成"没发生"。
+  //
+  //   ★ 三条原文**逐字抄自内核**（解 app.asar 得出，非我编）：
+  //     `dsh-compaction-basic/lib/index.js` 的 `:457` / `:538` / `:1009`。
+  //   ★ 每条都测**两种**内核形态：
+  //     ① 带 `err.code === "busy"`（当前内核的 `ManualCompactionError` **有**这个字段）
+  //     ② **不带** code、只有 message（老内核 / 别的实现）⇒ 必须由**文本兜底**接住
+  //     ⇒ 两条判据各自都被真测到，不是"有一条顶用就行"。
+  {
+    const BUSY_MESSAGES = [
+      // ① 已有打开的回合（旧正则认得的就这一条）
+      "manual compaction: the session already has an open turn",
+      // ② 已有压缩在进行（并发锁）
+      "manual compaction: compaction already in progress; the session compaction lock is already active",
+      // ③ ★ 用户撞上的那条：agent 不空闲 / 有唤醒队列
+      "manual compaction requires an idle agent with no waking queued work",
+    ];
+    for (const [i, msg] of BUSY_MESSAGES.entries()) {
+      for (const withCode of [true, false]) {
+        const root = mkProj(`manual-cmd-busy-${i}-${withCode ? "code" : "text"}`);
+        const run = makeCtx({
+          withCompaction: true,
+          compactionBusy: true,
+          compactionBusyMessage: msg,
+          compactionBusyCode: withCode,
+        });
+        mod.apply(run.ctx, {});
+        const sid = `session-busy00-${String(i)}${withCode ? "1" : "0"}`;
+        const agent = { session: { header: { id: sid, cwd: root }, id: sid }, steer: () => {} };
+        const cmd = run.registeredCommands.get("ledger");
+        const out = await cmd.handler({
+          commandId: `c-busy-${i}-${withCode}`,
+          agent,
+          rawInput: "compact",
+          attachments: [],
+          signal: new AbortController().signal,
+        });
+        // 判据：必须是"已排队"（success + 明说压不了），**绝不能**是"压缩没有发生"
+        eq(
+          `★★★ 24b-3[${i}/${withCode ? "有 code" : "仅文本"}]：内核 busy 原文 ⇒ 判为"忙"，排回队列` +
+            `（原文：${msg.slice(0, 46)}…）`,
+          out.kind,
+          "success"
+        );
+        ok(
+          `★★★ 24b-3[${i}/${withCode ? "有 code" : "仅文本"}]：**不许**说"压缩没有发生"（那是误报）`,
+          !/压缩没有发生/.test(out.text) && /已排队/.test(out.text),
+          out.text
+        );
+        eq(`★ 24b-3[${i}]：忙时确实没压成`, run.compacted.length, 0);
+        rmrf(root);
+      }
+    }
   }
 
   // 24c：没有 compaction 服务 ⇒ 软失败，绝不抛
@@ -4840,13 +5220,15 @@ section("情形 27：官方设置面板");
     eq("GET 状态码 200", r.status, 200);
     eq("GET ok", r.body.ok, true);
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
-    eq("★ 回报了十三项元数据（含模式与增量压缩）", r.body.specs?.length, 13);
+    eq("★ 回报了十四项元数据（含模式与增量压缩三档）", r.body.specs?.length, 14);
     ok(
-      "★ 十三项就是用户要的那些",
+      "★ 十四项就是用户要的那些",
       JSON.stringify(r.body.specs.map((s) => s.key).sort()) ===
         JSON.stringify([
           "autoCompact",
           "changeRegisterMax",
+          // ★★★ 2026-10-12（D115）：用户要的兜底线 —— "涨到这么多点仍未主动压 ⇒ 机械压"。
+          "deltaFallbackPoints",
           "deltaRemovePoints",
           "deltaTriggerPoints",
           "highFidelityCompact",
@@ -5432,6 +5814,13 @@ section("情形 27：官方设置面板");
       await runPreStep(run, { agent, messages: [] });
       run.services.tokenMeter._total = 750;
       await runPreStep(run, { agent, messages: [] });
+      // ★★★ 2026-10-12（D119）：**必须在这里落盘**，否则这条断言测不到它要测的东西。
+      //   **为什么**：本用例水位 **0.75** = 全量线。D119 之前那一步走"水位 ≥0.75 旁路"放行；
+      //   D119 之后**全量必须过落盘闸门**（用户要求"全量也要先记台账"）⇒ 没落盘就被拦。
+      //   ★ 即：**红的理由是"夹具没落盘"，而不是"serviceFor 拿不到服务"**（纪律 6）。
+      //   ⇒ 本用例测的是"**只有 serviceFor 能取到 compaction**"这件事，
+      //     与闸门无关 ⇒ 显式落盘把闸门这个混杂变量排除掉。
+      await flushLedger(run, root, sid);
       await fire(run, "agent/status", { agent, status: "idle" });
       await settle();
       eq("★★★ 只有 agentPresets.serviceFor 拿得到 ⇒ **压了**（裸 ctx.get 与 agent.ctx.get 这里都是 0）", viaPresets.length, 1);
@@ -5442,7 +5831,7 @@ section("情形 27：官方设置面板");
     {
       const root = mkProj29("reach-none");
       const run = makeCtx({ withCompaction: false, withTokenMeter: true });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, {  });
       const sid = "session-reach000-0002";
       const agent = {
         session: { header: { id: sid, cwd: root }, id: sid, requestContext: () => ({ contextWindow: 1000 }) },
@@ -5471,7 +5860,7 @@ section("情形 27：官方设置面板");
         withCompaction: false,
         agentPresetServices: { compaction: mkCompact(viaPresets) },
       });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { highFidelityCompactRatio: 1.0, /* ★D119：本用例测闸门/计数器/口径，**不测**「到全量线该让路」。让路有两个入口 —— ① `pressure.ratio >= hfLine` ② 水位 ≥ `capLine = min(内核线−5点, hfLine)`。取 `hfLine = 1.0` 让两者都够不着本用例水位。★ **绝不能设 `highFidelityCompact: false`**（我第一版那么改过，多红 7 条）：它还连带关掉**全量前置探针**，而依赖那段注入的断言会跟着塌。 */ });
       const sid = "session-reach000-0003";
       const agent = {
         session: { header: { id: sid, cwd: root }, id: sid },
@@ -5500,7 +5889,7 @@ section("情形 27：官方设置面板");
         withTokenMeter: true,
         agentPresetServices: { compaction: mkCompact(viaPresets) },
       });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, {  });
       const sid = "session-reach000-0004";
       const agent = {
         session: { header: { id: sid, cwd: root }, id: sid, requestContext: () => ({ contextWindow: 1000 }) },
@@ -5511,6 +5900,12 @@ section("情形 27：官方设置面板");
       await runPreStep(run, { agent, messages: [] });
       run.services.tokenMeter._total = 750;
       await runPreStep(run, { agent, messages: [] });
+      // ★★★ 2026-10-12（D119）：**全量也要过落盘闸门**（用户要求"全量也要先记台账日志"）
+      //   ⇒ 水位 75% 那条旁路对全量**已失效** ⇒ 必须显式落盘。
+      //   ★ 否则闸门拦下 ⇒ `compactNow` **根本不会被调用** ⇒ 本用例（测 serviceFor 有没有
+      //     收到真实 agent）会以**错的理由**变红 —— 与 29a 第 5817-5823 行那条修法**同型**。
+      //   本用例测的是"只有 serviceFor 能取到 compaction"，与闸门无关 ⇒ 显式落盘排除这个混杂变量。
+      await flushLedger(run, root, sid);
       await fire(run, "agent/status", { agent, status: "idle" });
       await settle();
       eq("★★★ serviceFor 收到了真实的 agent（没传 agent 就取不到 ⇒ 这里会是 0）", viaPresets.length, 1);
@@ -5722,7 +6117,7 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-basic");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0001";
       const agent = mkDeltaAgent(root, sid, 7); // 21 个节点
       priceNodes(run, agent, 20);
@@ -5749,17 +6144,21 @@ section("情形 27：官方设置面板");
         regionCalls[0]?.start === 1,
         JSON.stringify(regionCalls[0])
       );
-      // ★ 校准过的数字（**2026-10-11 棘轮修复后重新测的，不是我推的**）：
-      //   21 节点 × 20 token = 420；水位 420（42%）、每轮压掉 10 点
-      //   ⇒ 保留 = (0.42 − 0.10) × 1000 = **320** token ⇒ 保留最后 17 个、压掉最旧 4 个（**end=4**）。
-      //   ⚠️ 我先按"攒够 320 就停"手推成 end=6，实测是 **end=4** —— 因为 `selectIncrementalRange`
-      //     从末尾往回攒，凑够门槛时**已经越过**门槛（不是恰好等于），随后还要按平衡边界回退。
-      //   ⇒ 教训：**这类数字必须从实测输出里读回来**，手推会错。
-      //   （第一版夹具 token 给太小、且只造 tool-call 不造 tool/result，
-      //     导致 range 恒为 null ⇒ 假红。见 `mkDeltaAgent` 的注释。）
+      // ★ 校准过的数字（**反复重新测过，不是我推的**）：
+      //   21 节点 × 20 token = 420；水位 420（42%）。
+      //   ★★★ 2026-10-12（D116）：**每轮压多少从"固定 10"改成了"累计增量的一半"** ⇒
+      //     本夹具锚点 0.10、水位 0.42 ⇒ 涨 **32 点** ⇒ 压 `round(32/2)` = **16 点**
+      //     （上界 `deltaRemovePoints×2` = 20，未触顶）⇒ 保留 = (0.42 − 0.16) × 1000 = **260** token
+      //     ⇒ 比原来（固定 10 ⇒ 保留 320）**保留得更少** ⇒ `end` 从 **4 变成 10**。
+      //   ★ 这是**语义变化的正确连带**，不是"断言过时"：
+      //     用户 2026-10-12 明确选了"每次压当前累计增量的一半"（D116）。
+      //   ⚠️ 这个数**实测读回来的**（第一次我按"攒够 260 就停"手推成 end=8，实测是 **10**）——
+      //     因为 `selectIncrementalRange` 从末尾往回攒，凑够门槛时**已经越过**门槛，
+      //     随后还要按平衡边界回退。⇒ **教训照旧：这类数字必须从实测输出里读回来，手推会错。**
       ok(
-        "★★★ 而且**只压最旧一段、不碰最新**（end=4，后面 17 个节点全留着）",
-        regionCalls[0]?.end === 4,
+        "★★★ 而且**只压最旧一段、不碰最新**（end=10，后面 11 个节点全留着）" +
+          "（D116 起每轮压「累计增量的一半」⇒ 比固定 10 点压得更多、end 变大）",
+        regionCalls[0]?.end === 10,
         `end=${regionCalls[0]?.end}（共 21 个节点）`
       );
       rmrf(root);
@@ -5776,7 +6175,7 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-no-contradict");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0009";
       const agent = mkDeltaAgent(root, sid, 7);
       priceNodes(run, agent, 20);
@@ -5802,14 +6201,30 @@ section("情形 27：官方设置面板");
     }
 
     // 30b：★★ 没涨够 ⇒ 什么都不做（不能每步都压）
+    //
+    // ★★★ 2026-10-11 修一个**夹具前提错误**（纪律第 8 条：*前提错了全绿就是假绿*）：
+    //   原来这一段**没有设锚点**，于是 `anchorOf()`（`lib/index.js` L736）取不到值，
+    //   而 `since = anchor === undefined ? pressure.ratio : pressure.ratio - anchor`
+    //   ⇒ `since` 退化成**绝对水位**（0.2），恰好 **≥** 触发线 0.2 ⇒ 判据①**放行**。
+    //   ⇒ 它测的根本不是"只涨 10 点"，而是"绝对水位到 20%"。
+    //   ★ 为什么以前没暴露：那时这一段挂在 `text !== undefined` 门下（D89-2b），
+    //     第 2 步没有注入 ⇒ **压根没轮到判据** ⇒ 断言"通过"是**空转**。
+    //     我把 D89-2b 修掉（判据不再搭注入的车）之后，它才第一次真的被问到 ⇒ 变红。
+    //   ⇒ 修法：**把锚点显式设成 100/1000 = 0.1**，让"只涨 10 点"这个前提**成立**，
+    //     这样断言才真的在测"涨幅不够 ⇒ 不压"。
     {
       const root = mkDeltaProj("delta-notyet");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0002";
       const agent = mkDeltaAgent(root, sid, 7);
       priceNodes(run, agent, 20);
+
+      // ★ 显式立锚点：第 1 步的水位（100/1000）。传 `{}` 即可 ——
+      //   `setAnchor` 内存那半走可选链（拿不到 state 就跳过），**盘上那半照写**，
+      //   而 `anchorOf` 在内存为空时正好回落到盘上那一份（就是我们要测的那一支）。
+      mod.__test.setAnchor({}, sid, 0.1);
 
       await flushLedger(run, root, sid);
       run.services.tokenMeter._total = 100;
@@ -5818,6 +6233,16 @@ section("情形 27：官方设置面板");
       run.services.tokenMeter._total = 200;
       await runPreStep(run, { agent, messages: [] });
       eq("★★ 只涨 10 点 ⇒ 一次都没压", regionCalls.length, 0);
+
+      // ★★★ 前提断言：确认锚点真的取到了、且涨幅真的不够 ——
+      //   否则这条用例随时可能又退化回"空转通过"。
+      const anchorNow = mod.__test.anchorOf({}, sid);
+      const sincePts = anchorNow === undefined ? undefined : (200 / 1000 - anchorNow) * 100;
+      ok(
+        "★★★ 30b 前提：锚点取到了，且本次涨幅确实 < 触发线（否则上面那条是空转）",
+        anchorNow !== undefined && sincePts < 20,
+        `anchor=${anchorNow} since=${sincePts === undefined ? "?" : sincePts.toFixed(1)} 点`
+      );
       rmrf(root);
     }
 
@@ -5829,7 +6254,7 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-nogflush");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0003";
       const agent = mkDeltaAgent(root, sid, 7);
       priceNodes(run, agent, 20);
@@ -5848,6 +6273,70 @@ section("情形 27：官方设置面板");
       rmrf(root);
     }
 
+    // 30c-2：★★★ **没有注入的那一步也必须有机会排队**（D89-2b 修复的正面用例）
+    //
+    //   ★ 这是用户第 2 点那个真根因的**回归用例**：
+    //     旧实现在这里写的是 `if ((enableDelta && text !== undefined) || forcedLight)`
+    //     ⇒ "本步恰好有东西要注入"才去问"该不该压"。而**水位到线与台账有没有变无关**。
+    //     实测（`_probe-why-late.mjs`）：19:24~19:27 水位 ≥75% 的 **16 步只有 8 步有注入**
+    //     ⇒ 另一半**从来没机会排队** ⇒ 一路拖到 **78.4%** 才压上。
+    //
+    //   ★ 怎么造出"没有注入"：**连着两步**跑 pre-step ——
+    //     第 1 步会注入（首次注入），并把指纹记下；
+    //     第 2 步**什么都不变** ⇒ `text` 保持 `undefined` ⇒ 正是真实场景里那一半。
+    //   ★★ 水位必须**选得干净**（第一版栽在这上面，记下来）：
+    //     · 要么过不了触发线（那就是 30b，测不到本用例）；
+    //     · 要么**踩到提醒档** ⇒ 提醒那一步又有注入了 ⇒ 测不到"无注入"；
+    //     · ★ 更阴的是：提醒会顺带**立下落盘义务**（`flushOwedAt`），
+    //       下一步的落盘闸门就会拦住压缩 ⇒ 断言红，而**红的理由是闸门、不是 D89-2b**。
+    //     ⇒ 所以取 **锚点 5% / 水位 26%**：涨幅 21 点 ≥ 20（过触发线），
+    //       而 26% < 最低提醒档 30% ⇒ **全程一条提醒都不发** ⇒ 只有第 1 步有注入。
+    {
+      const root = mkDeltaProj("delta-noinject");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
+      // ★★ sid **必须全文件唯一**（我第一版图省事复用了 30y 的 0011，当场炸了两条）：
+      //   锚点是**按 sid 落盘**进沙箱家的（`anchors.json`），
+      //   于是本用例的锚点 0.05 **污染了 30y** ⇒ 30y 一步都没压成 ⇒ 它那两条断言红。
+      //   ⇒ 教训：**自检里 sid 就是全局键**，不是随手起个名字。
+      const sid = "session-delta000-0012";
+      const agent = mkDeltaAgent(root, sid, 7);
+      priceNodes(run, agent, 20);
+
+      // 锚点立在水位 50（=5%）：后面涨到 260（26%）⇒ 涨 **21 点**，过触发线。
+      mod.__test.setAnchor({}, sid, 0.05);
+      await flushLedger(run, root, sid);
+
+      run.services.tokenMeter._total = 50;
+      await runPreStep(run, { agent, messages: [] }); // 第 1 步：首次注入
+      run.services.tokenMeter._total = 260;
+
+      // ★★ 关键：**这一步没有任何东西该注入**（指纹没变、26% 也不到提醒档）。
+      const before = regionCalls.length;
+      const d = await runPreStep(run, { agent, messages: [] });
+      const t = (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+
+      // 前提：确认这一步**真的没有**常规注入（否则测的是老路，等于没测 D89-2b）。
+      ok(
+        "★★★ 30c-2 前提：这一步**确实没有**台账/提醒类常规注入（否则测不到 D89-2b）",
+        !/project-ledger facts belong to THIS conversation/.test(t),
+        t.slice(0, 300)
+      );
+      // ★ 核心断言：**没有注入也要压**。
+      eq(
+        "★★★ 30c-2：没有注入的那一步，增量压缩**照样发生了**（D89-2b 回归）",
+        regionCalls.length,
+        before + 1
+      );
+      ok(
+        "★★ 30c-2：而且如实说明了为什么这一步会动手（不是悄悄压）",
+        /增量压缩/.test(t),
+        t.slice(0, 400)
+      );
+      rmrf(root);
+    }
+
     // 30d：★★★ 锚点必须取**压后**水位（否则阈值一轮轮漂高，冲破 70%）
     //
     //   ★ 轨迹证据在 `tools/_probe-delta-anchor.mjs`（纯数学）：
@@ -5859,7 +6348,7 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-anchor");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0004";
       const agent = mkDeltaAgent(root, sid, 10);
       priceNodes(run, agent, 20);
@@ -5921,13 +6410,18 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-light-force");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0007";
       const agent = mkDeltaAgent(root, sid, 10);
       priceNodes(run, agent, 20);
 
       // ★ 先把"起点"定下来：压过一次，锚点落在当时水位。
       await flushLedger(run, root, sid);
+      // ⚠️ **不要**在这里额外插一次 `runPreStep`（我第一版插了，反而把用例弄坏，记下来）：
+      //   用去重是"指纹 + 文本"两道 ⇒ **多跑一步会把指纹提前消费掉**，
+      //   紧接的那一步就 `skip = true` ⇒ `text` 留空 ⇒ 撞上末尾的
+      //   `if (text === undefined) return decision;` ⇒ **压缩也跟着不发生**。
+      //   ⇒ 正解是"**一步到位**"：落盘 + 抬水位 + pre-step 在同一步里做完。
       run.services.tokenMeter._total = 350;
       await runPreStep(run, { agent, messages: [] });
       eq("★ 先自动压一次（建立锚点）", regionCalls.length, 1);
@@ -5981,7 +6475,7 @@ section("情形 27：官方设置面板");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
       // ★ 把提醒档位抬到 0.95 ⇒ 低水位时**不会有水位提醒**这个 text 来源。
-      mod.apply(run.ctx, { pressureTiers: "0.95" });
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */  pressureTiers: "0.95" });
       const sid = "session-delta000-0008";
       const agent = mkDeltaAgent(root, sid, 10);
       priceNodes(run, agent, 20);
@@ -6028,7 +6522,7 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-off");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, { incrementalCompact: false });
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */  incrementalCompact: false });
       const sid = "session-delta000-0005";
       const agent = mkDeltaAgent(root, sid, 7);
       priceNodes(run, agent, 20);
@@ -6058,7 +6552,7 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-yield");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0008";
       const agent = mkDeltaAgent(root, sid, 7);
       // ★★★ 节点 token 必须**足够大**，否则这条断言是**摆设**（反向验证当场抓到过）：
@@ -6097,7 +6591,7 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-balance");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0006";
       // 造一个**悬空**的 surface：最后是 assistant(1 call) 但**没有 tool/result**。
       const events = [
@@ -6166,7 +6660,7 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-target-vs-actual");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0010";
       const agent = mkDeltaAgent(root, sid, 10);
       priceNodes(run, agent, 20);
@@ -6187,8 +6681,13 @@ section("情形 27：官方设置面板");
       const t = (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
       ok("★ 前提：注入里有本次压缩的回执", /刚做了一次增量压缩/.test(t), t.slice(0, 400));
       ok(
-        "★★★ 报**目标**（= 设置里的 deltaRemovePoints = 10）",
-        /目标/.test(t) && /10\s*点/.test(t),
+        // ★★★ 2026-10-12（D116）：**目标从「固定 10」变成「累计增量的一半」** ——
+        //   本夹具涨 35 点 ⇒ 目标 = round(35/2) = **18** 点（上界是 deltaRemovePoints×2 = 20）。
+        //   ★ 我第一版断言写死「= 10」（那是 D116 之前的固定值）⇒ 当场红。
+        //     这不是"断言过时"，而是**它正确地反映了语义变化**：
+        //     ★ 用户 2026-10-12 明确选了"动态：每次压当前累计增量的一半"。
+        "★★★ 报**目标**（= 累计增量的一半：涨 35 点 ⇒ 目标 18 点）",
+        /目标/.test(t) && /18\s*点/.test(t),
         "没找到目标那一行：" + t.slice(0, 400)
       );
       ok(
@@ -6209,6 +6708,564 @@ section("情形 27：官方设置面板");
       rmrf(root);
     }
 
+    // 30x：★★★ **D88 兜底线** —— 锚点被抬高后，触发线不许越过内核硬压线
+    //
+    //   ★ 病（用户第 2 点那条线上量出来的，见 D88）：触发线 = `锚点(压后水位) + 20`。
+    //     而"压后水位"取决于这一轮真压掉多少（实测兑现率 ~50%）⇒
+    //     **压得越少 ⇒ 锚点越高 ⇒ 下次触发线越高** = **恶性棘轮**。
+    //     盘上实测锚点 **69.0%** ⇒ 触发线 **89.0%**，而**内核硬压线 80%**
+    //     ⇒ ★ **增量永远等不到触发点**。
+    //   ★ 修：`触发线 = min(锚点 + 触发点, 兜底线)`，
+    //     且兜底那条**必须**再要求 since ≥ 2 点（否则"刚压完水位仍在线上"⇒ 连环重压）。
+    //
+    //   ★★★ 2026-10-12 **重写**（用户当场看出来的回归，见 D99）：
+    //     用户原话（逐字）：*"理论上到这个时候，不应该是全量压缩生效吗？怎么是增量压缩先生效呢？"*
+    //     **病**：旧兜底线 `min(全量线,内核线)−5` = **0.70** —— **低于全量线 0.75**
+    //       ⇒ 水位一进 `[0.70,0.75)`，`byCap` 就命中，而**让路判据要 0.75 才命中**
+    //       ⇒ **增量抢跑**、压回 ~0.62 ⇒ 水位**永远爬不到 0.75** ⇒ **全量被永久饿死**。
+    //       实测：本会话"自动（增量）" **9 次** vs "自动（70% 水位）"**仅 1 次**。
+    //     **修**：`capLine = min(内核线 − 5, 全量线)` ⇒ 兜底位点**不低于全量线**，
+    //       于是"该全量就全量"（让路先命中）。
+    //
+    //   ★★ 本组守**四件**（缺一，这个修复就可能悄悄坏掉）：
+    //     ① **兜底不抢全量的水位带**（用户在意的那个回归）；
+    //     ② **兜底真正的用武之地**：全量线**高过内核线**时（那时全量来不及，
+    //        兜底保证我们在被内核硬压之前先自己压一次）；
+    //     ③ **不许连环重压**（since ≥ 2 那个小门）；
+    //     ④ **让路仍优先**（到全量线 ⇒ 增量不抢）。
+    {
+      // ① 兜底不抢全量的水位带 + ② 兜底的真用武之地
+      const root = mkDeltaProj("delta-cap");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      // ★ 用户设的值：全量线 0.75
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */  highFidelityCompactRatio: 0.75 });
+      const sid = "session-delta000-0013";
+      const agent = mkDeltaAgent(root, sid, 40);
+      priceNodes(run, agent, 20);
+
+      // ★ 锚点 0.69（触发线本该 0.89，够不着）⇒ 这时**只有兜底**能救
+      mod.__test.setAnchor({}, sid, 0.69);
+      await flushLedger(run, root, sid);
+
+      // ★★★ ① 回归的主断言：水位 **0.72** —— 在**旧**兜底线(0.70)以上、**全量线(0.75)以下。
+      //   旧行为：**增量抢跑**（把水位压回去 ⇒ 全量永远到不了 0.75）。
+      //   新行为：**一次 region 都不许调**（这一段是留给全量的水位带）。
+      run.services.tokenMeter._total = 720;
+      await runPreStep(run, { agent, messages: [] });
+      eq(
+        "★★★ 30x①：水位 72% 在「全量线之下、旧兜底线之上」⇒ 增量**不许抢**（全量的水位带）",
+        regionCalls.length,
+        0
+      );
+      rmrf(root);
+    }
+
+    // 30x-1b：★ 兜底真正的用武之地（全量线**高过**内核线时）
+    {
+      const root = mkDeltaProj("delta-cap-high");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      // ★ 全量线 0.85 > 内核线 0.80 ⇒ **全量根本来不及** ⇒ 兜底必须接管
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */  highFidelityCompactRatio: 0.85 });
+      const sid = "session-delta000-0015";
+      const agent = mkDeltaAgent(root, sid, 40);
+      priceNodes(run, agent, 20);
+
+      mod.__test.setAnchor({}, sid, 0.69); // 触发线 0.89 ⇒ 够不着（这就是 D88 那个病）
+      await flushLedger(run, root, sid);
+
+      // 水位 0.76（76%）：≥ 兜底线(0.75) 且 ≥ since 门槛(2 点)
+      //   ⇒ ★ **必须在 0.80 之前压掉**，否则只能挨内核那一次（抓不到逐字胶囊）
+      run.services.tokenMeter._total = 760;
+      await runPreStep(run, { agent, messages: [] });
+      eq(
+        "★★★ 30x-1b：全量线 0.85 > 内核线 0.80 ⇒ **兜底接管**（在 0.80 之前自己压一次）",
+        regionCalls.length,
+        1
+      );
+      rmrf(root);
+    }
+
+    {
+      // ③ 不连环重压
+      const root = mkDeltaProj("delta-cap");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      // ★★★ 全量线**必须设成用户那个值 0.75** —— 这不是装饰，是**本用例成立的前提**：
+      //   · 夹具默认全量线是 **0.7** ⇒ 兜底窗口只剩 [0.65, 0.70)，
+      //     而锚点 0.69 时那个窗口里 `since` 恒 < 2 点 ⇒ **兜底压根没有生效空间**
+      //     （第二版就栽在这：72% 一进去就撞上"让路"，`regionCalls` 恒为 0 ⇒ 假红）。
+      //   · ★ 而**真实的 D88 只在全量线高的时候才成立** —— 用户设的就是 **0.75**。
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */  highFidelityCompactRatio: 0.75 });
+      const sid = "session-delta000-0013b";
+      const agent = mkDeltaAgent(root, sid, 40);
+      priceNodes(run, agent, 20);
+
+      mod.__test.setAnchor({}, sid, 0.69);
+      await flushLedger(run, root, sid);
+
+      // 水位 0.68（68%）：since = −1 点 ⇒ 什么都不该发生（还没到兜底线 0.75）
+      run.services.tokenMeter._total = 680;
+      await runPreStep(run, { agent, messages: [] });
+      eq("★ 30x 前提：68% 时**不该**压（未到兜底线 0.75）", regionCalls.length, 0);
+
+      // ★★ 必须**再落一次盘**：68% 这一步跨过 **50% 提醒档** ⇒ 提醒会顺带立下
+      //    "压缩前先落盘"的义务（`flushOwedAt`）⇒ 闸门会拦住下一步的压缩。
+      //    ★ 这正是真实情形：模型被提醒后**写完台账**，然后才压。
+      await flushLedger(run, root, sid);
+
+      // 水位 0.75（正好全量线）：**让路** ⇒ 增量仍不许抢（全量接管）
+      run.services.tokenMeter._total = 750;
+      await runPreStep(run, { agent, messages: [] });
+      eq(
+        "★★★ 30x③：水位正好到全量线 0.75 ⇒ 增量**让路**（一次 region 都不许调）",
+        regionCalls.length,
+        0
+      );
+      rmrf(root);
+    }
+
+    // 30c-3：★★★ **没有注入的那一步，全量也必须有机会排队**（真机事故的回归用例）
+    //
+    //   ★ 病（2026-10-12 真机，用户报「76% 还没触发」）：
+    //     全量那条排队**搭「本步恰好有注入」的车**（要 `text !== undefined` 才排）。
+    //     实测时间线：水位 **01:06:42** 就到 75%，可排队**等到 01:11:05** ——
+    //     迟 **4 分 23 秒**；那 4 分钟里没有台账改动 ⇒ 没有注入 ⇒ **不排队**。
+    //     （01:11:05 排上，纯粹因为 AI 恰好写了台账 ⇒ 回执注入把 `text` 撑了起来。）
+    //   ★ 这是 **D93 修过的「增量那条」的同型病** —— 当时只修了一条路（纪律 12）。
+    //
+    //   ★★★ 造出「这一拍恰好没有注入」**为什么这么难**（我第一版就栽在这，
+    //     红的是"前提"而不是"结论"，值得逐条记下来）：
+    //     `text` 在本文件里是**逐步被抢**的，抢的顺序就是执行顺序：
+    //       待兑现命令 → 压缩后重注 → 台账全文（指纹变了才注） → 水位提醒（按档，每档一次）
+    //       → **全量探针**（只在 `text === undefined` 时才跑）
+    //     ⇒ 只要前面任何一个占了 `text`，探针**根本没机会**执行。
+    //     ★ 第一版我写"上一步跨 0.7 档、这一步什么都不变"，结果红了"前提"：
+    //       上一步**台账全文先把 `text` 占了** ⇒ 水位提醒那段被整段跳过
+    //       ⇒ **0.7 档当时并没被标记** ⇒ 这一步它才补发 ⇒ 又占了 `text` ⇒ 探针仍没跑。
+    //     ★ 正解：**先把"会抢的"逐个排空，再让探针出手** ——
+    //       步1 台账全文（把指纹与回执消费掉） → 步2 水位 0.7 档（把三档全部标记）
+    //       → 步3 什么都不剩 ⇒ `text === undefined` ⇒ 探针出手。
+    //     ★★ 另有一处必须同时避开：**增量那条也会抢 `text`**。
+    //       所以锚点取 **0.76**（高于全量线）⇒ `since` 与兜底两条都不成立
+    //       ⇒ 增量一次都不跑 ⇒ 才能把"是谁排了队"分辨清楚。
+    //       （若锚点低，增量会先跑并置 `deltaHandled=true`，全量那条又被 `!== true` 挡掉。）
+    {
+      const root = mkDeltaProj("delta-noinject-full");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      // ★ 用**用户真实设置** 0.75（不是夹具默认 0.7）—— 断言才与真机可比。
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */  highFidelityCompactRatio: 0.75 });
+      const sid = "session-delta000-0016"; // ★ sid 全局唯一（锚点按 sid 落盘、会跨用例污染）
+      const agent = mkDeltaAgent(root, sid, 7);
+      priceNodes(run, agent, 40);
+
+      // 锚点 0.76（> 全量线）：这一步之后，增量两条判据都不成立 ⇒ 增量不会来抢 `text`。
+      mod.__test.setAnchor({}, sid, 0.76);
+      await flushLedger(run, root, sid);
+
+      // ── 步1：水位 0.72（< 0.75 ⇒ 不排全量）⇒ 台账全文注入（消费掉指纹与回执）──
+      run.services.tokenMeter._total = 720;
+      await runPreStep(run, { agent, messages: [] });
+
+      // ── 步2：水位仍是 0.72 ⇒ 台账没变（不注）⇒ 这一拍轮到 **0.7 档提醒** ──
+      await runPreStep(run, { agent, messages: [] });
+
+      // ── 步3：水位 0.78（≥ 全量线）⇒ 三档已全部标记、指纹没变、回执已空 ──
+      //   ⇒ ★ `text` 本该是 `undefined`，正是真机上「不排队」的那一拍。
+      run.services.tokenMeter._total = 780;
+      const d = await runPreStep(run, { agent, messages: [] });
+      const t = (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+
+      // 前提：这一步**确实没有**常规台账注入（否则测的是老路，等于没测这个病）。
+      ok(
+        "★★★ 30c-3 前提：这一步**确实没有**台账全文类常规注入（否则测不到「搭车」那个病）",
+        !/project-ledger facts belong to THIS conversation/.test(t),
+        t.slice(0, 400)
+      );
+      // 前提②：增量也不许来抢（否则全量是被 `deltaHandled` 挡掉的，测不出探针）。
+      eq("★★ 30c-3 前提：增量这一步**没跑**（一次 region 都不该调，否则测不出探针）", regionCalls.length, 0);
+      // ★★ 核心：全量**排上了队**，且是**探针自己**起的（那句文案只属于探针）。
+      ok(
+        "★★★ 30c-3：没有注入的那一步，全量**照样排上队**（真机「迟 4 分 23 秒」的回归）",
+        /即将执行一次高保真压缩/.test(t),
+        t.slice(0, 700)
+      );
+      // ★ 如实说明它为什么自己起了一次（不是悄悄排的）。
+      ok(
+        "★★ 30c-3：并如实说明「本步原本没有别的注入」（不是悄悄排的）",
+        /本插件注意到水位已到/.test(t),
+        t.slice(0, 400)
+      );
+      rmrf(root);
+    }
+
+    // 30c-4：★★★ **全量失败之后，必须能自己重新排队**（否则会掉进 D59 那个死锁）
+    //
+    //   ★ 为什么这条非测不可（本轮读失败路径推演出来的，不是假想）：
+    //     `runHighFidelityCompact` 的 `catch` **只退票 + 如实回报，不重新排队**
+    //     （`lib/index.js:10787-10800`），而 idle 处理器**在调用前就把队列删了**
+    //     （`:11632`）。⇒ 一次失败的后果是：**队列空 + `hfCompacted` 未置真**。
+    //
+    //   ★★★ 于是下一步的让路判据 `pressure >= hfLine && oursDone !== true && !hfQueued`
+    //     **三项全真** ⇒ 增量**让路**。而全量要重新排队，若还搭"本步有注入"的车
+    //     （**正是 D107 修的病①**）⇒ 那一步没注入 ⇒ **全量不重排**
+    //     ⇒ ★ **增量让路 + 全量不重排 = 谁也不压** = D59 那个"近 4 小时零压缩"的形态。
+    //
+    //   ⇒ ★ 本用例钉的正是"D107 的探针**不只是**让全量早排队，
+    //     它还是**失败后重排的唯一通道**" —— 这是我在 D109 附里下的一个**推断**，
+    //     按纪律 8/12 **必须实验**，不能只写在注释里。
+    //
+    //   ★ 夹具：复用 30c-3 的"零注入"三步法造出那一拍，然后
+    //     ① 派 idle 让全量**执行并失败**（`_busy` 翻转）；
+    //     ② 翻转回成功，再走一步 ⇒ 全量必须**自己重新排上队**。
+    {
+      const root = mkDeltaProj("delta-full-retry");
+      const regionCalls = [];
+      const run = makeCtx({
+        withCompaction: true,
+        withTokenMeter: true,
+        regionCalls,
+        // ★ 一上来就让全量"忙失败"（三条 busy 原文里最阴的那条 —— 用户真撞上的形态）。
+        compactionBusy: true,
+        compactionBusyMessage: "manual compaction requires an idle agent with no waking queued work",
+      });
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */  highFidelityCompactRatio: 0.75 });
+      const sid = "session-delta000-0017"; // ★ sid 全局唯一
+      const agent = mkDeltaAgent(root, sid, 7);
+      priceNodes(run, agent, 40);
+      mod.__test.setAnchor({}, sid, 0.76); // 避开增量抢 text（同 30c-3）
+      await flushLedger(run, root, sid);
+
+      // ── 三步排空"会抢 text 的"（同 30c-3）──────────────────────────
+      run.services.tokenMeter._total = 720;
+      await runPreStep(run, { agent, messages: [] }); // 台账全文
+      await runPreStep(run, { agent, messages: [] }); // 0.7 档提醒
+      run.services.tokenMeter._total = 780;
+      const d3 = await runPreStep(run, { agent, messages: [] });
+      const t3 = (d3.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok("★★ 30c-4 前提：第 3 步确实排上了全量（靠探针）", /即将执行一次高保真压缩/.test(t3), t3.slice(0, 300));
+
+      // ── ① 派 idle ⇒ 全量执行但**失败**（忙）───────────────────────
+      const before = run.compacted.length;
+      for (const h of run.handlers.get("agent/status") ?? []) await h({ agent, status: "idle" });
+      eq("★★ 30c-4 前提：这次 idle **没有**压成（夹具确实让全量失败了）", run.compacted.length, before);
+
+      // ── ② 恢复成功，再走一步（水位不变、仍 ≥ 全量线、且**没有任何常规注入**）──
+      run.services.compaction._busy = false;
+      const d4 = await runPreStep(run, { agent, messages: [] });
+      const t4 = (d4.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+
+      ok(
+        "★★★ 30c-4 前提：这一步**确实没有**台账全文类常规注入（否则测的又是「有人搭车」）",
+        !/project-ledger facts belong to THIS conversation/.test(t4),
+        t4.slice(0, 400)
+      );
+      // ★★★ 核心：全量必须**自己重新排上队** —— 否则就是"让路 + 不重排 = 谁也不压"。
+      ok(
+        "★★★ 30c-4：全量失败后，**没有注入的那一步也把全量重新排上了队**" +
+          "（否则「增量让路 + 全量不重排」= D59 死锁）",
+        /即将执行一次高保真压缩/.test(t4),
+        t4.slice(0, 700)
+      );
+      // 真派一次 idle 确认这次能压成（证明"重排"不是空话）。
+      for (const h of run.handlers.get("agent/status") ?? []) await h({ agent, status: "idle" });
+      eq("★★★ 30c-4：重排之后 idle 真的压成了（重排是有效的，不是只发个文案）", run.compacted.length, before + 1);
+      rmrf(root);
+    }
+
+    // 30x-2（已并入 30x③）：原来这里是"默认全量线 0.7 / 水位 76% ⇒ 让路"。
+    //   ★ 2026-10-12 删：它测的是**夹具默认设置**下的行为，而 30x③ 用**用户真实设置**
+    //     （0.75）在**正好压线**处测同一件事 ⇒ 后者更强、且不必维护两套前提。
+    //     留着它只会让"改默认值时两条断言分叉"（本项目栽过"两处各写一份"）。
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 31x：★★★ **三档触发**（用户 2026-10-12 的要求，正文见 D115）
+    //
+    //   用户原话：*"能不能不再强制输出 20 压缩 10，而是由模型主动去在它认为合适的地方
+    //   调用工具压缩……设定计数器，输出一定数值（默认百分之四十）仍未调用过压缩时，
+    //   进行机械规则（但一定一定先记台账！！！）"*
+    //
+    //   ⇒ 三档（本族用例要钉的正是这个）：
+    //     ① 模型按需（`ledger_compact`）—— D114 已测（22c-4）
+    //     ② **涨够 20 ⇒ 只轻推**（注入一句提示，**不压**）
+    //     ③ **涨够 40 ⇒ 机械压**（安全网，★ 仍过落盘闸门）
+    //
+    //   ★★★ 为什么这族用例必须新写：我为了让老用例继续测它们本来测的机制
+    //     （锚点/让路/闸门），给那 18 个夹具**显式把兜底线设成 20**
+    //     ⇒ 那些用例内部"涨够就压"仍成立 ⇒ ★ **它们再也测不到"20 只推"这件事**。
+    //     自检仍然是 1102/0，但那是"我想到的都对了"，**不说明新行为被覆盖了**。
+    // ═══════════════════════════════════════════════════════════════════════
+    {
+      // ── 31a：★ **到了节点（落过盘）+ 水位在可推区间 ⇒ 只推不压**，且**只推一次** ────
+      //
+      // ★★★ 2026-10-12（D117）**本用例的语义整体换了**（跟代码一起换）：
+      //   旧：测"涨够 20 点 ⇒ 轻推"（**按涨幅**）
+      //   新：测"**到了节点 + 水位够高 ⇒ 轻推**"（**不按涨幅** —— 这正是用户否掉的那条）
+      //   ⇒ 所以夹具必须**同时造出两个新条件**：
+      //     ① 水位 ≥ `NUDGE_MIN_RATIO`（0.45）
+      //     ② **本周期落过盘**（= 声明了节点）
+      //     ★ 而"涨幅"要**刻意压在兜底线（40）之下** ⇒ 保证"只推不压"。
+      const root = mkDeltaProj("delta-nudge-only");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      // ★ 这里**故意用默认设置**（轻推 20 / 兜底 40）—— 这正是用户在用的配置。
+      mod.apply(run.ctx, {});
+      const sid = "session-delta000-0100"; // ★ sid 全局唯一
+      const agent = mkDeltaAgent(root, sid, 7);
+      priceNodes(run, agent, 40);
+
+      // ★ 锚点 0.30 / 水位 0.50 ⇒ 涨 **20 点**（< 兜底 40 ⇒ 不该机械压；≥ 触发 20 ⇒ 不再重复推）
+      mod.__test.setAnchor({}, sid, 0.30);
+      await flushLedger(run, root, sid);
+      const baseline = regionCalls.length;
+
+      // ★★ 夹具要点（第一版栽在这，记下来）：**必须先把"会抢注入的"逐个排空**。
+      //   `text` 是逐步被抢的，且**提醒档在压缩编排之前**就跑了 ⇒ 顺序是：
+      //     ① 台账全文注入（`flushLedger` 之后的第一步必然是它）
+      //     ② 水位提醒（按档，每档一次）
+      //     ③ 才轮到轻推
+      //   ⇒ 第一版我只走了两步就去断言 ⇒ 那两步分别是「台账全文」「50% 档提醒」
+      //     ⇒ 轻推**根本没机会** ⇒ 断言红，而红的是**夹具没排空**，不是轻推坏了（纪律 6）。
+      run.services.tokenMeter._total = 500;
+      await runPreStep(run, { agent, messages: [] }); // ① 台账全文
+      await runPreStep(run, { agent, messages: [] }); // ② 50% 档提醒（消费掉）
+
+      // ★★★ 夹具要点（**反向验证抓出来的，最值钱的一处**）：
+      //   不在这里落盘 ⇒ 上面那次提醒立下了 `flushOwedAt`（"开了口就要等"）
+      //   ⇒ 那一步**落盘闸门也会拦住压缩** ⇒ `regionCalls === 0` 这条断言
+      //   **不是因为"三档设计"通过的，而是被闸门顺带拦的**（因为错误的原因通过）。
+      //   ★ 证据：把 `byFallback` 退回"涨够 20 就压"后，**这条断言仍不红**。
+      //   ⇒ 修法：**先落盘**抹掉闸门这个混杂变量。
+      //   ★★ 而落盘**同时**满足 D117 的第二个新条件（"声明了节点"）—— 一举两得。
+      await flushLedger(run, root, sid);
+      await runPreStep(run, { agent, messages: [] }); // ③ 消费掉回执注入
+      const before = baseline;
+
+      const d = await runPreStep(run, { agent, messages: [] }); // ④ 这一拍轮到轻推
+      const t = (d.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+
+      eq(
+        "★★★ 31a：到了节点、水位在可推区间、但**没到兜底线 ⇒ 这一整段一次都不许压**（D117 核心）",
+        regionCalls.length,
+        before
+      );
+      ok(
+        // ★★★ 2026-10-12（D117）：轻推文案已从"你攒够了"改成**节点语气**
+        //   （用户原话：*"『建议你按需压一次』这句话本身有点毛病 ——
+        //   即使模型只输出了 10 点，也有可能到了某个节点需要归纳一下"*）。
+        //   ⇒ 断言的锚串必须跟着换成**新文案独有**的那句（"到了一个节点"）。
+        "★★★ 31a：而是**注入一句轻推**（节点语气：到了一个节点 + 给出 `ledger_compact`）",
+        /到了一个节点/.test(t) && /ledger_compact/.test(t),
+        t.replace(/\s+/g, " ").slice(-460)
+      );
+      ok(
+        "★★ 31a：且如实告知「不压的话到 N 点会兜底」",
+        /兜底/.test(t),
+        t.replace(/\s+/g, " ").slice(-320)
+      );
+      // ★★★ 2026-10-12（D117）新增：轻推必须**明说"压错了也不丢"** ——
+      //   模型不动手多半是**怕压掉东西**；这条是降低心理门槛的关键，
+      //   而它正是"让压缩成为常态"能不能落地的一环。
+      ok(
+        "★★★ 31a：且明说**压错了也不丢**（可逐字读回 + 台账会重注）—— 这是降低心理门槛的关键",
+        /压错了也不丢/.test(t) && /ledger_recall/.test(t),
+        t.replace(/\s+/g, " ").slice(-420)
+      );
+
+      // ★ 只推一次：下一步水位不变 ⇒ **不该再推**（否则每步注新文本 ⇒ 缓存每步全冷）。
+      const d2 = await runPreStep(run, { agent, messages: [] });
+      const t2 = (d2.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+      ok(
+        "★★★ 31a：轻推**只发一次**（水位没再涨 ⇒ 不许重复推 —— 否则 prompt 缓存每步全冷）",
+        !/到了一个节点/.test(t2),
+        t2.replace(/\s+/g, " ").slice(-300)
+      );
+      rmrf(root);
+    }
+
+    {
+      // ── 31b：涨够兜底线（40）⇒ **机械压**（安全网）★ 且**仍过落盘闸门** ──────
+      const root = mkDeltaProj("delta-fallback-force");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-delta000-0101";
+      const agent = mkDeltaAgent(root, sid, 7);
+      priceNodes(run, agent, 40);
+
+      mod.__test.setAnchor({}, sid, 0.10);
+      await flushLedger(run, root, sid);
+      // 先把低档提醒消费掉（水位跨档那一步会有注入 + **立下落盘义务**）。
+      run.services.tokenMeter._total = 200;
+      await runPreStep(run, { agent, messages: [] });
+
+      // ★★★ 夹具要点（第一版栽在这，记下来）：**跨档那一步会立下"欠一次落盘"的义务**
+      //   （`flushOwedAt`，见 `renderPressureNotice` 的注释："开了口就要等"）。
+      //   ⇒ 若不落盘就抬到兜底线，闸门会拦住 —— ★ **那是正确行为**（用户的铁律：
+      //     "一定一定先记台账"），但会让本用例测到**闸门**而不是**兜底**。
+      //   而"兜底也要过闸门"**另有 31c 专门测** ⇒ 这里必须**先落盘**，
+      //   才能干净地测"到了兜底线就一定压"。
+      await flushLedger(run, root, sid);
+
+      // 水位 0.52：距锚点 0.10 涨 **42 点** ⇒ ≥ 兜底 40 ⇒ **必须机械压**。
+      run.services.tokenMeter._total = 520;
+      const before = regionCalls.length;
+      const d = await runPreStep(run, { agent, messages: [] });
+      const t = (d.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+      eq(
+        "★★★ 31b：涨够兜底线（42 ≥ 40）⇒ **机械压一次**（安全网，不靠模型自觉）",
+        regionCalls.length,
+        before + 1
+      );
+      ok(
+        "★★ 31b：并如实回报已压（不是悄悄压）",
+        /增量压缩/.test(t),
+        t.replace(/\s+/g, " ").slice(-320)
+      );
+      rmrf(root);
+    }
+
+    {
+      // ── 31c：★ 兜底线**也过落盘闸门**（用户："一定一定先记台账！！！"）────────
+      //   ★ 为什么单独测：兜底是"插件替你压"，**最容易忘掉闸门** ——
+      //     而那正是用户反复强调的那一条。
+      const root = mkDeltaProj("delta-fallback-gate");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, {});
+      const sid = "session-delta000-0102";
+      const agent = mkDeltaAgent(root, sid, 7);
+      priceNodes(run, agent, 40);
+
+      mod.__test.setAnchor({}, sid, 0.10);
+      await flushLedger(run, root, sid);
+      // 先用**人手动**压一次 ⇒ `lastCompactCycleAt > flushedAt` ⇒ "本周期没落盘"成立。
+      mod.__test.setDeltaForce(sid, "command");
+      run.services.tokenMeter._total = 200;
+      await runPreStep(run, { agent, messages: [] });
+
+      // 抬到兜底线之上（42 点），但**不再落盘** ⇒ 兜底必须被闸门拦住。
+      //
+      // ★★ 夹具要点（第一版栽在这）：上一步是人手动压的，而**它同时会重注台账全文**
+      //   （压缩后重注是设计：`afterCompaction` 绕过指纹去重）⇒ 这一拍的 `text`
+      //   已经被"台账全文"占了 ⇒ 我那条"先落盘"的**闸门文案虽然也追加进去了**，
+      //   但断言若只搜特定措辞、而正文被台账埋住，就**读不出结论**。
+      //   ⇒ 正解：**先把"会抢 slot 的"排空**（走一步把它消费掉），再抬水位造出"没落盘"。
+      await runPreStep(run, { agent, messages: [] }); // 把重注/回执消费掉
+      run.services.tokenMeter._total = 520;
+      const afterManual = regionCalls.length;
+      const d = await runPreStep(run, { agent, messages: [] });
+      const t = (d.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+      eq(
+        "★★★ 31c：兜底线到了、但**这一周期没落盘 ⇒ 兜底也不许压**（用户要求「一定先记台账」）",
+        regionCalls.length,
+        afterManual
+      );
+      ok(
+        "★★★ 31c：并**当场说明要先落盘**（不是静默不压）",
+        // ★ 措辞按实际代码：闸门文案里说的是「还没落盘 / 先记台账」这一类，且必须给 `ledger_write`。
+        //   ★ 我最初只匹配「先记台账」，而那条分支实际说的是「**这一轮还没落盘**」——
+        //     断言写死成自己想象的措辞就测不到（这里两个都收，但仍必须给出 `ledger_write`）。
+        /还没落盘|先记台账|压缩必须排在写台账/.test(t) && /ledger_write/.test(t),
+        t.replace(/\s+/g, " ").slice(-460)
+      );
+
+      // 落盘之后 ⇒ 放行（证明拦的是"没落盘"，不是"兜底坏了"）。
+      //
+      // ★★ 夹具要点（第一版栽在这）：闸门拦过之后会**继续立着落盘义务**
+      //   （`flushOwedAt`："开了口就要等"）。落盘一次即可清掉义务，
+      //   ★ 但**水位必须再抬**：否则 `since` 不够、兜底那条不再命中
+      //     （而且闸门那条分支本身**不会**推进锚点 ⇒ 抬水位是唯一让它重新命中的办法）。
+      //   ★★ 还要**先把这一步的注入消费掉**（闸门文案那一步已占过 slot）。
+      await flushLedger(run, root, sid);
+      await runPreStep(run, { agent, messages: [] }); // 消费掉落盘带来的注入
+      run.services.tokenMeter._total = 620; // ★ 再抬 10 点，确保 since ≥ 40
+      const beforeRelease = regionCalls.length;
+      await runPreStep(run, { agent, messages: [] });
+      eq(
+        "★★★ 31c：落盘之后兜底**放行**（闸门是「等它写」，不是「永不压」）",
+        regionCalls.length,
+        beforeRelease + 1
+      );
+      rmrf(root);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 31d：★★★ **每轮压「当前累计增量的一半」**（D116，用户口径）
+    //
+    //   ★ 用户原话：*"依旧是压差不多一半"* ⇒ 他选的是**动态**
+    //     「每次压掉当前累计增量的一半」（不是固定 10 点）。
+    //
+    //   ★★★ 为什么必须单独钉它：现有那两条（`目标 18 点` / `end=10`）只覆盖
+    //     **一个**涨幅值（35 点）⇒ 一个"恰好输出 18"的实现也能蒙过去。
+    //     本用例用**两个不同涨幅**（涨 20 / 涨 40）⇒ 分别要求压 **10 / 20**，
+    //     ★ 这就把"按 since 算"与"写死某个数"**区分开**了。
+    //   ★ 顺带钉住**上界**（`deltaRemovePoints × 2`，默认 20）：
+    //     涨 100 点时不该压 50（那会把上下文砍出断裂感 —— 用户另一条硬约束）。
+    // ═══════════════════════════════════════════════════════════════════════
+    {
+      const root = mkDeltaProj("delta-half-dynamic");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      // ★★★ 夹具配方（**我在这里连栽三次，第四版才对 —— 教训值得记**）：
+      //   病根：**水位提醒档会插进来抢注入槽、并立下落盘义务** ⇒ 压缩被闸门拦住
+      //   （诊断实测 `region=0 含目标=false`，注入里是那条 30% 档提醒）。
+      //   前三版我都在"排空提醒"上打转（抬水位→发提醒→落盘→再走一步），
+      //   ★ 但**每次抬水位都会跨过新的档** ⇒ 提醒又发、义务又立 ⇒ **永远差一步**。
+      //   ⇒ 正解**照抄本文件已验证的 30x 配方**（`:6725`）：
+      //     **把锚点立高（0.69）、水位一步抬到 0.72** ⇒
+      //     · 只跨到 70% 档（一条提醒），且那一步**就是压缩那一步**；
+      //     · `flushLedger` 先落盘 ⇒ 闸门放行。
+      //   ★ 用锚点 0.40 / 水位 0.72 ⇒ **涨 32 点** ⇒ 目标 = round(32/2) = **16** 点。
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, highFidelityCompactRatio: 0.75 });
+      const sid = "session-delta000-0103";
+      const agent = mkDeltaAgent(root, sid, 40);
+      priceNodes(run, agent, 20);
+
+      mod.__test.setAnchor({}, sid, 0.40);
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 720; // 涨 32 点 ⇒ 目标 16
+      const d1 = await runPreStep(run, { agent, messages: [] });
+      const t1 = (d1.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+      ok(
+        "★★★ 31d①：涨 32 点 ⇒ 目标是压 **16** 点（= 32 的一半，不是固定 10）",
+        /目标/.test(t1) && /16\s*点/.test(t1),
+        `未找到「目标 … 16 点」：${t1.replace(/\s+/g, " ").slice(-380)}`
+      );
+      rmrf(root);
+    }
+
+    {
+      // ── ② 涨 80 点 ⇒ 应压 **20**（上界，不是 50）─────────────────────
+      const root = mkDeltaProj("delta-half-cap");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      // ★ 同 31d① 的配方（锚点高 + 水位一步抬到位）。
+      //   ★ 上界：`deltaRemovePoints × 2` = 20；涨 80 点 ⇒ "一半" = 40 ⇒ **封顶 20**。
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, deltaRemovePoints: 10, highFidelityCompactRatio: 0.75 });
+      const sid = "session-delta000-0104";
+      const agent = mkDeltaAgent(root, sid, 40);
+      priceNodes(run, agent, 20);
+
+      mod.__test.setAnchor({}, sid, 0.10);
+      await flushLedger(run, root, sid);
+      // ★★★ 水位必须**低于全量线 0.75**，否则会命中「让路判据」把活交给全量
+      //   （实测：水位 0.90 ⇒ `region=0`，因为 0.90 ≥ 0.75 ⇒ 增量让路）。
+      //   ⇒ 取锚点 0.10 / 水位 0.74 ⇒ 涨 **64 点** ⇒ "一半" = 32 ⇒ **上界 20 生效**。
+      run.services.tokenMeter._total = 740; // 涨 64 点 ⇒ 一半 32 ⇒ 封顶 20
+      const d = await runPreStep(run, { agent, messages: [] });
+      const t = (d.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+      ok(
+        "★★★ 31d②：涨 80 点时目标**封顶在 20**（= deltaRemovePoints×2，不是「一半」的 40）" +
+          " —— 防止一次砍太多、上下文断裂",
+        /目标/.test(t) && /20\s*点/.test(t) && !/40\s*点/.test(t),
+        `未找到「目标 … 20 点」：${t.replace(/\s+/g, " ").slice(-380)}`
+      );
+      rmrf(root);
+    }
+
     // 30y：★★★ 量不到压后水位时，**不许报假实绩**（宁可不报）
     //
     //   ★ 与 `measurePressure` 的既有原则一致：拿不到值就返回 undefined，
@@ -6218,7 +7275,7 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-actual-unknown");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { deltaFallbackPoints: 20, /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
       const sid = "session-delta000-0011";
       const agent = mkDeltaAgent(root, sid, 10);
       priceNodes(run, agent, 20);
@@ -6351,11 +7408,79 @@ section("情形 27：官方设置面板");
   }
 
   // ② 会**改写源码**的探针绝不能被发出去
-  const dangerous = ["_probe-assertion-can-fail.mjs"];
+  //
+  // ★★★ 2026-10-12 改成**自发现**（原来是一份手写名单，只写了一个文件名）。
+  //   为什么必须改：手写名单的问题不是"现在漏了谁"，而是**将来** ——
+  //   本项目在 2026-10-12 一天之内就新增了 **6 个**会改写 `lib/index.js` 的反向验证探针
+  //   （`_probe-busy-reverse` / `_probe-hfprobe-reverse` / `_probe-hfqueued-reverse` /
+  //     `_probe-queued-idle-exp1..4` …）。它们的工作方式就是"备份 → 改源码 → 跑自检 → 还原"。
+  //   ⇒ 靠人记得回来加名单**必然漏**（同型：D101/D104 两次空转断言都是"靠人记得"漏掉的）。
+  //   ⇒ 正解：**扫 `tools/` 目录**，把"文件里出现写 `lib/index.js` 的迹象"的那些报出来。
+  //
+  // ★★★ 写这条时我**当场又踩了一次**（纪律 3 的形态，值得留档）：
+  //   第一版我用了 `repoRoot` —— 那个变量名在本题里**不存在**（本题是 `HERE`）
+  //   ⇒ `readdirSync` 抛 `ReferenceError` ⇒ 被我的 `catch` 吞掉 ⇒ **静默退回老名单**
+  //   ⇒ 报"扫到 1 个"、看着像通过，其实**什么都没扫**。
+  //   ⇒ 修法：① 用对变量 `HERE`（`path.join(HERE, "..")` 才是项目根）；
+  //           ② **去掉静默退回** —— 扫不动就**报红**，绝不假装通过
+  //              （"取不到值先怀疑取法"，而不是悄悄降级）。
+  const projectRoot = path.join(HERE, "..");
+  const toolsDir = path.join(projectRoot, "tools");
+  const isSourceTree = fs
+    .readdirSync(toolsDir)
+    .some((n) => n !== "selftest.mjs" && n.endsWith(".mjs"));
+  const dangerous = (() => {
+    const found = [];
+    for (const nm of fs.readdirSync(toolsDir)) {
+      if (!nm.endsWith(".mjs") || nm === "selftest.mjs") continue;
+      const src = fs.readFileSync(path.join(toolsDir, nm), "utf8");
+      // 判据（只要"像"就报）：写出现在这些迹象任一 ⇒ 视为会改写源码。
+      //   ★ 宁可多报（让人看一眼），不可漏报 —— 漏一个就是把危险脚本发给用户。
+      const writesLib =
+        /writeFileSync\s*\(\s*LIB\b/.test(src) ||
+        /writeFileSync\s*\(\s*path\.join\([^)]*"lib"[^)]*\)/.test(src) ||
+        /["'`]lib[\\/]index\.js["'`]/.test(src);
+      if (writesLib) found.push(nm);
+    }
+    return found;
+  })();
   for (const d of dangerous) {
     const shipped = files.some((f) => f.includes(d));
     ok(`★★★ 会改写源码的探针 ${d} **不在**打包清单里`, !shipped, `files = ${JSON.stringify(files)}`);
   }
+  // ★★ 自证：这条"自发现"必须真的发现了东西（否则扫法坏了会静默全绿）。
+  //
+  // ★★★ 2026-10-12：**这条自证差点变成"装上即坏"**（我当场用模拟包验出来的）。
+  //   病：发布出去的包 `files` 白名单**只有 `tools/selftest.mjs`** ⇒ 用户那边 `tools/` 里
+  //   只有自己 ⇒ 扫到 **0 个** ⇒ 我的「≥1」断言在**用户机器上报红** ——
+  //   而代码其实是好的（那是"源头才有的那些探针本来就没发出去"）。
+  //   ★ 实测（`tools/_probe-simulate-package.mjs` 按白名单复制成模拟包再跑）：
+  //     未修前 **1 条红**（就是这条自证）；修后 **0 条红**。
+  //   ⇒ 判据改成："**只有在源仓库里**才要求扫到东西"；在发布包里**如实标注跳过**，
+  //     与上面 ⑥ 那条"引用必达"的处理方式一致（同一份文件里已有的成熟做法）。
+  //   ★ 而"扫法是否真的有效"**不能靠这条断言自证**（它 ≥1 时骗过我一次）——
+  //     那个由**独立复算**守：`tools/_probe-dangerous-crosscheck.mjs`（另写一套判据数一遍）。
+  //   ★★ 2026-10-12（**验收员 005 抓到** D-3：台账与 D112 都写"现守 26 个"，
+  //     而**独立复算 = 31**）。⇒ 病根就是下面那个 `>= 1`：
+  //     它只判"扫到了东西"，**数字漂了没人管** —— 台账写 26、实际 31，白白错了半天。
+  //   ★ 修法：**把具体数字写进断言**。数字变了必须同步改这里（与情形 43 的口径断言同型）：
+  //     改代码/加探针而忘了改这条 ⇒ **当场变红**，而不是静默漂移。
+  const DANGEROUS_EXPECTED = 31;
+  ok(
+    isSourceTree
+      ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
+      : "★★★ 自发现会改写源码的探针（⏭ 跳过：本包只含 tools/selftest.mjs，无探针可扫）",
+    isSourceTree ? dangerous.length === DANGEROUS_EXPECTED : true,
+    isSourceTree
+      ? `实际扫到 ${dangerous.length} 个：${dangerous.join(", ")}`
+      : `tools/ 里只有 selftest.mjs（发布包形态）`
+  );
+  // ★ 再留一条"不为空"的下限断言：万一上面那条被误改成 0，这条还能托住。
+  ok(
+    isSourceTree ? "★★ 且扫到的探针数不为 0（否则扫描本身失效）" : "★★ 探针数下限（⏭ 发布包内跳过）",
+    isSourceTree ? dangerous.length >= 1 : true,
+    `dangerous.length=${dangerous.length}`
+  );
 
   // ③ 运行时真正需要的三样必须在
   for (const need of ["lib", "cordis.patch.yml"]) {
@@ -6586,7 +7711,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 13", settingKeys.length, 13);
+  eq("★ 口径：设置项数 = 14（D115 新增 deltaFallbackPoints）", settingKeys.length, 14);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
   const SUBS = ["status", "show", "init", "update", "archive", "compact", "light", "log", "mode", "lock", "handoff", "triage"];
@@ -6603,8 +7728,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const selfSrc = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
   const sectionCalls = (selfSrc.match(/^section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 40（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 40);
-  eq("★ 口径：其中带「情形 N」编号的 = 39", numbered, 39);
+  eq("★ 口径：section 总数 = 44（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 44);
+  eq("★ 口径：其中带「情形 N」编号的 = 43", numbered, 43);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -6665,6 +7790,123 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
         dangling.length === 0,
         "★ 断链（被引用但无正文）：" + (dangling.map((n) => "D" + n).join(" ") || "（无）")
       );
+    }
+  }
+
+  // ── ⑦ ★★★ 台账 §7 口径表**必须与代码实际一致** ─────────────────────────
+  //
+  // ★★★ 为什么加它（**验收员 005 当场抓到的假承诺**，2026-10-12）：
+  //   台账 §7 那张表旁边写着：
+  //     *"★ **数字由自检自己数**（情形 43）⇒ **改代码忘了改文档当场变红**。"*
+  //   ★ **实测这句是假的** —— 上面 ①—⑤ 那几条的**输入只有 `lib/index.js`
+  //     与 selftest 自己**，`LEDGER.md` 只在 ⑥ 里被读，而 ⑥ 只查 `D<n>` 是否存在
+  //     ⇒ **把 §7 表的数字改错，自检一条都不会红**。
+  //   ★ 而台账 §7 当时**真的就是错的**：写「设置项 13 / 情形组 43·42」，
+  //     代码实际是 **14 / 44·43**（D115 加了 `deltaFallbackPoints`、新增了情形 49）。
+  //
+  // ★★★ 这正是本项目那条纪律的**同型复发**：
+  //   「**记录存在 ≠ 记录准确**」（D89）—— 数字写下来了，**写的是错的那个值**，
+  //   而且**守卫是空的**。⇒ 修法不能只是"把数字改对"，必须**让守卫真的有牙**。
+  //
+  // ★ 判据两侧都取自**各自文件**、不引用本文件里的期望值（纪律第 2 条）：
+  //     台账侧 = `LEDGER.md` §7 表里的四个数字；代码侧 = 上面 ①—④ 刚数出来的实际值。
+  //   ⚠️ 且**不比对"由谁守"那一列**（那是叙述，不是数字）。
+  {
+    const ledgerPath = path.join(HERE, "..", "LEDGER.md");
+    if (!fs.existsSync(ledgerPath)) {
+      // ★ 发布包不含 LEDGER.md ⇒ 如实跳过，绝不假装通过（与 ⑥ 同一处理）。
+      ok("★ 口径：台账 §7 表与代码一致（⏭ 跳过：台账不在本包内）", true, ledgerPath);
+    } else {
+      const ledgerSrc = fs.readFileSync(ledgerPath, "utf8");
+      // 只吃 §7 那张表：从「口径分叉」标题到下一个 `###` 之前
+      const s7 = ledgerSrc.indexOf("口径分叉");
+      const s7end = s7 === -1 ? -1 : ledgerSrc.indexOf("\n###", s7 + 10);
+      const seg = s7 === -1 ? "" : ledgerSrc.slice(s7, s7end === -1 ? s7 + 2000 : s7end);
+
+      /** 从表里抽"某一行的第 2 列里的第一个整数" */
+      // ★ 必须**非贪婪** `[^|]*?`：`情形组` 那一行的第 2 列里有两个加粗数字
+      //   （「总数 **44**」与「带编号 = **43**」），贪婪写法会取到**最后一个**（43）——
+      //   实测当场抓到我这个 bug（我本来想写 44）。
+      const cellInt = (rowKey) => {
+        const m = seg.match(new RegExp(`\\|\\s*${rowKey}\\s*\\|[^|]*?\\*\\*(\\d+)\\*\\*`));
+        return m === null ? undefined : Number(m[1]);
+      };
+
+      const want = {
+        工具: toolCount,
+        子命令: present.length,
+        设置项: settingKeys.length,
+        情形组: sectionCalls,
+      };
+      const got = {
+        工具: cellInt("工具"),
+        子命令: cellInt("子命令"),
+        设置项: cellInt("设置项"),
+        情形组: cellInt("情形组"),
+      };
+      const bad = Object.keys(want).filter((k) => got[k] !== want[k]);
+      ok(
+        "★★★ 口径：台账 §7 表的数字与代码**实际数出来的**一致（改错表 ⇒ 当场变红）",
+        bad.length === 0,
+        bad.length === 0
+          ? ""
+          : bad.map((k) => `「${k}」台账写 ${got[k]}，代码实际 ${want[k]}`).join("；")
+      );
+      // ★ 带编号那一项单独量（它在同一行的括号里，形状不同）
+      const mNum = seg.match(/带编号「情形 N」=\s*\*\*(\d+)\*\*/);
+      eq(
+        "★★★ 口径：台账 §7 表「带编号情形数」与代码一致",
+        mNum === null ? undefined : Number(mNum[1]),
+        numbered
+      );
+    }
+  }
+
+  // ── ⑧ ★★ 台账**头部**的口径（上限 / D 范围）────────────────────────────
+  //
+  // ★ 同样由验收员 005 抓到（2026-10-12）：头部第 3 行写「上限 … **300**」，
+  //   而 `.dsh-ledger.json` 实际是 **350**；第 6 行写 `DECISIONS.md（D30–**D89**）`，
+  //   而实际决策已到 **D121**。⇒ 两处都是"记录存在 ≠ 记录准确"。
+  // ★ 上限那条尤其值得守：**它就是"台账到底能写多长"的唯一声明**，
+  //   写小了会让人以为该归档了、写大了会让人以为还能写 —— 两种都会误导。
+  {
+    const ledgerPath = path.join(HERE, "..", "LEDGER.md");
+    const mfPath = path.join(HERE, "..", ".dsh-ledger.json");
+    if (!fs.existsSync(ledgerPath) || !fs.existsSync(mfPath)) {
+      ok("★ 口径：台账头部上限与清单一致（⏭ 跳过：台账/清单不在本包内）", true, "");
+    } else {
+      const ledgerSrc = fs.readFileSync(ledgerPath, "utf8");
+      const mf = JSON.parse(fs.readFileSync(mfPath, "utf8"));
+      // ★ 头部 = 标题行 + 紧跟的那个引文块（`> …` 开头的那几行）。
+      //   ⚠️ 我第一版写 `split("\n\n")[0]` ⇒ 只拿到标题行、**引文块落在第二段**
+      //     ⇒ 上限与 D 范围**两条都匹配不到**（当场红）。判据要"吃到被测文本里
+      //     真正承载那些数字的那一段"，不能按段落序号猜。
+      const head = ledgerSrc.split("\n").filter((l) => l.startsWith("> ")).slice(0, 8).join("\n");
+      const mCap = head.match(/本项目\s*\*\*(\d+)\*\*/);
+      eq(
+        "★★ 口径：台账头部声明的行数上限 = `.dsh-ledger.json` 的 maxActiveLines",
+        mCap === null ? undefined : Number(mCap[1]),
+        mf.maxActiveLines
+      );
+      // ★ D 范围：头部写的最大值应 >= DECISIONS 里最大的 D 编号
+      const decPath = path.join(HERE, "..", "DECISIONS.md");
+      if (fs.existsSync(decPath)) {
+        const nums = [...fs.readFileSync(decPath, "utf8").matchAll(/^##\s+D(\d+)\b/gm)].map((m) => Number(m[1]));
+        const maxD = nums.length === 0 ? 0 : Math.max(...nums);
+        // ★ 匹配头部那句 `DECISIONS.md`（D1–**D121**）：取括号里**最后一个** D 编号。
+        //   ⚠️ 两个坑都当场踩过（都记下来，because 这类"看起来显然"的解析最容易写错）：
+        //     ① 非贪婪 `[^）]*?D(\d+)` 会拿到**第一个**（D1）⇒ 必须取括号里所有 D 号的最大值；
+        //     ② `DECISIONS\.md（` 匹配不到 —— 实际文本里文件名后面还有**一个反引号**
+        //        （`` `DECISIONS.md`（D1–**D121**） ``）⇒ 要允许 `` ` `` 出现在中间。
+        const paren = head.match(/DECISIONS\.md`?（([^）]*)）/);
+        const inside = paren === null ? [] : [...paren[1].matchAll(/D(\d+)/g)].map((m) => Number(m[1]));
+        const declared = inside.length === 0 ? undefined : Math.max(...inside);
+        ok(
+          "★★ 口径：台账头部声明的 DECISIONS 范围**不小于**实际最大决策号",
+          declared !== undefined && declared >= maxD,
+          `头部写 D…${declared === undefined ? "(没匹配到)" : declared}，实际最大 D${maxD}`
+        );
+      }
     }
   }
 }
@@ -6796,6 +8038,73 @@ section("情形 42：D61 胶囊素材跨重启（进程内 Map ⇒ 重启清空�
       "★★★ 42b：**不是**只含「重启以来」的那一条（D61 的病征）",
       first.includes("第二条：同样必须还在") && first.includes("第三条：必须还在"),
       `胶囊里的原话条数=${(first.match(/^- .\d{4}-\d{2}-\d{2} /gm) ?? []).length}`
+    );
+  }
+
+  // ── 42d：★★★ **重启后一条新事件都没有**就压缩（D61 的**窗口期**，2026-10-12 修）──
+  //
+  //   ★ 为什么 42b 测不到它：42b**先喂了一条新原话**再压缩 ⇒ `capsule.get(sid)` **已存在**
+  //     ⇒ 走的是 hydrate 里的**合并路**。而真正的窗口期是：
+  //     **重启后、还没收到任何事件、就直接压缩** ⇒ 内存里**没有这个 sid 的记录**。
+  //
+  //   ★ 病（原来那一行）：`const live = capsule.get(sid); if (live === undefined) return 0;`
+  //     ⇒ **内存没有就整段放弃**，而**盘上那份正是最全的历史**
+  //     ⇒ 第一次压缩的胶囊**只用得上"重启以来"的那几条**（D61 实测：只有 **1** 条）。
+  //   ★ 修：`live === undefined` 时**用盘上那份建一条**（保持与 `consume` 建立的形状一致：
+  //     `userMessages`/`errors` 是数组、`artifacts` 是 Map）。
+  //
+  //   ★ 判别力：把那段"建一条"删掉、恢复成 `return 0` ⇒ 本用例必红。
+  //
+  //   ⚠️⚠️ **第一版这套断言是空转的 —— 反向验证当场把它抓了出来**
+  //     （摘掉修复后**仍然全绿**，纪律第 10 条那句"摘一处不红 ⇒ 断言太弱"应验）。
+  //     ★ 为什么空转：我原来借 `compact42`（走 `/ledger compact` 命令）来触发压缩，
+  //       而 **hydrate 只在 `captureCapsuleBeforeCompact` 里被调** ——
+  //       命令那条路**根本不经过它** ⇒ 我断言的是别的东西。
+  //     ⇒ 改成**直接调 `hydrateCapsuleMemory`**（`__test` 已暴露）：
+  //       让内存为空、盘上有素材 ⇒ 断言"它把盘上那份建了出来、并返回条数"。
+  {
+    // ① 先把素材落盘（复用 42a 写好的那份）
+    let rec42d;
+    try {
+      rec42d = JSON.parse(fs.readFileSync(storePath42, "utf8")).bySession?.[sid];
+    } catch {
+      rec42d = undefined;
+    }
+    ok(
+      "★ 42d 前提：盘上确实有本 sid 的素材（否则测的是别的东西）",
+      rec42d !== undefined && (rec42d.userMessages?.length ?? 0) >= 3,
+      `记录=${rec42d === undefined ? "无" : `原话 ${rec42d.userMessages?.length ?? 0} 条`}`
+    );
+
+    // ② ★★★ 核心：**内存为空**（= 重启后一条新事件都没有）+ 盘上有 ⇒ 必须建出来
+    const emptyMem = new Map(); // 完全空的内存胶囊
+    const n = mod.__test.hydrateCapsuleMemory(emptyMem, sid);
+    const built = emptyMem.get(sid);
+    ok(
+      "★★★ 42d：内存为空时 hydrate **会把盘上那份建出来**（不是返回 0 就完事）" +
+        `【返回=${n} 建出=${built === undefined ? "无" : "有"}】`,
+      built !== undefined && n >= 3,
+      `返回=${n}；built=${built === undefined ? "undefined" : JSON.stringify({
+        userMessages: built.userMessages?.length,
+        errors: built.errors?.length,
+        artifacts: built.artifacts instanceof Map ? built.artifacts.size : `非Map(${typeof built.artifacts})`,
+      })}`
+    );
+    // ③ 形状必须与 `consume` 建立的一致 —— 否则下游按 Map 调 `.has()` 会抛
+    ok(
+      "★★★ 42d：而且**形状与 consume 建的一致**（`artifacts` 必须是 Map，否则下游会抛）",
+      built !== undefined && built.artifacts instanceof Map &&
+        Array.isArray(built.userMessages) && Array.isArray(built.errors),
+      `artifacts 类型=${built === undefined ? "N/A" : (built.artifacts instanceof Map ? "Map" : typeof built.artifacts)}`
+    );
+    // ④ 内容正确：重启前的三条原话都在
+    const texts42d = (built?.userMessages ?? []).map((x) => x.text).join("\n");
+    ok(
+      "★★★ 42d：且**重启前那三条原话**都在（内容对，不只是「有条数」）",
+      texts42d.includes("第一条：这条原话在重启后也必须还在") &&
+        texts42d.includes("第二条：同样必须还在") &&
+        texts42d.includes("第三条：必须还在"),
+      texts42d.slice(0, 300)
     );
   }
 
@@ -7114,7 +8423,518 @@ section("情形 45：被压段可回读（索引推行 + 逐字原文 + 含推�
   const idxText45 = typeof idx45 === "string" ? idx45 : "";
   ok("★★ 45③：索引**很小**（要常驻上下文 ⇒ 单次压缩一行）",
     idxText45.length > 0 && idxText45.length < 4000, `长度=${idxText45.length}`);
+
+  // ★★★ 45④（2026-10-12 阶段 1 第 2 件）：**索引必须告诉人「逐字原件在哪」**。
+  //
+  //   ★ 缺口：索引行原来只说「seq 4000–4100 ⇒ 摘要 seq 4200」——
+  //     可**同一份历史有两个去处**，而它只指了**难找的那一个**（会话日志，要自己过滤）；
+  //     另一个是**胶囊文件**（压前存好的成品：原话/报错/器物索引已分好类）。
+  //   ★ 这是**结构性缺口**：`captureCapsuleBeforeCompact` 先跑、`recordShadowedIndex` 后跑
+  //     ⇒ **路径在手却丢了**（与 D51/D52 同族：信息有了、没接到一起）。
+  //
+  //   ★ 判别力：把 `extra.capRel` 那段去掉 ⇒ ①②红（这就是反向验证要摘的地方）。
+  {
+    // ① 记索引时把路径传进去 ⇒ 记录里必须**存下了**它
+    const stB = { shadowedIndex: new Map() };
+    const CAPREL = "_ledger-log/2026-10/week2/capsules/2026-10-12-002120-fada.md";
+    const recB = mod.__test.recordShadowedIndex(stB, "sid-caprel", agent45, "test", { capRel: CAPREL });
+    ok("★★★ 45④①：记索引时传入的 `capRel` **确实被存进那条记录**",
+      recB?.capRel === CAPREL, JSON.stringify(recB ?? null).slice(0, 200));
+
+    // ② 渲染时必须**把它写给人看**（否则存了也没用 —— 那正是"过手即丢"）
+    const idxB = mod.__test.renderShadowedIndex(stB, "sid-caprel");
+    ok("★★★ 45④②：渲染出来的索引行里**带着那个路径**（可直接复制去读）",
+      typeof idxB === "string" && idxB.includes(CAPREL), String(idxB).slice(-400));
+
+    // ③ 不给 `capRel` 时**不许崩、也不许编一个假的**（向后兼容：老记录没有这个字段）
+    const stC = { shadowedIndex: new Map() };
+    mod.__test.recordShadowedIndex(stC, "sid-nocap", agent45, "test");
+    const recC = mod.__test.recordShadowedIndex(stC, "sid-nocap", agent45, "test2");
+    ok("★★ 45④③：不给 `capRel` ⇒ 记录里**没有**这个字段（而不是空串/占位）",
+      recC !== undefined && recC.capRel === undefined, JSON.stringify(recC ?? null).slice(0, 200));
+    const idxC = mod.__test.renderShadowedIndex(stC, "sid-nocap");
+    ok("★★ 45④③：且渲染**不崩、不编路径**（老记录仍可读）",
+      typeof idxC === "string" && idxC.includes("seq") && !/capsules\/undefined/.test(idxC),
+      String(idxC).slice(-300));
+  }
+
+  // ★★★ 45⑤（2026-10-12）：**区间不许是倒的** —— 否则模型照着读只会拿到空。
+  //
+  //   ★ 真缺陷（实测 26 次压缩里 **6 次**，23%）：内核的 `shadowedRange` **不是连续区间**。
+  //     形状（同一会话 seq=37021 那次）：
+  //       `shadowedRange = {start: 36764, end: 35270}`   ← **倒的**
+  //       `shadowedSeqs  = 36764, 35018, 35021, …`       ← 首项是**上一次的摘要节点**
+  //     ⇒ 语义是"这次吞掉了哪些 surface 节点"，**包含上一次的摘要** + 更旧的一批
+  //       ⇒ 所以 `start` 可以是**较新**的那个。
+  //   ★ 我原来直接渲染 `range.start–range.end` ⇒ 写出倒区间
+  //     ⇒ `ledger_recall({from:36764, to:35270})` **只会拿到空**。
+  //   ⇒ 修：从 `shadowedSeqs` 取**真实 min/max**（那个列表才是权威）。
+  //
+  //   ★ 判别力：把 `start/end` 改回 `range.start/range.end` ⇒ 下面①必红。
+  {
+    const mkSummaryAgent = (summarySeq, rangeObj, seqList) => ({
+      session: {
+        log: [
+          { type: "step/start", seq: summarySeq - 2 },
+          {
+            type: "compaction/summary",
+            seq: summarySeq,
+            time: Date.now(),
+            data: {
+              shadowedRange: rangeObj,
+              shadowedSeqs: seqList,
+              shadowedTokenCount: 12345,
+              summary: [{ text: "摘要" }],
+            },
+          },
+        ],
+      },
+    });
+    const stR = { shadowedIndex: new Map() };
+    // ★ 复刻真实那个倒着的形状：range 说 36764→35270，而节点列表是 36764 + 35018…35270
+    const invertedSeqs = [36764, 35018, 35021, 35025, 35268, 35270];
+    mod.__test.recordShadowedIndex(stR, "sid-inv", mkSummaryAgent(37021, { start: 36764, end: 35270 }, invertedSeqs), "test");
+    const idxR = mod.__test.renderShadowedIndex(stR, "sid-inv");
+    const mR = /seq (\d+)–(\d+)/.exec(String(idxR));
+    ok("★★★ 45⑤①：渲染出的区间**递增**（`seq A–B` 里 A ≤ B）",
+      mR !== null && Number(mR[1]) <= Number(mR[2]),
+      `命中=${mR === null ? "无" : `${mR[1]}–${mR[2]}`} 索引=${String(idxR).slice(-260)}`);
+    ok("★★★ 45⑤②：且区间**覆盖真实的最小与最大节点**（不许漏读）",
+      mR !== null && Number(mR[1]) === Math.min(...invertedSeqs) && Number(mR[2]) === Math.max(...invertedSeqs),
+      `命中=${mR === null ? "无" : `${mR[1]}–${mR[2]}`} 期望=${Math.min(...invertedSeqs)}–${Math.max(...invertedSeqs)}`);
+    // ★ 内核原始边界只作诊断留着（将来查语义时不必翻会话日志）
+    const recR = mod.__test.recordShadowedIndex(stR, "sid-inv2", mkSummaryAgent(37022, { start: 500, end: 100 }, [100, 200, 500]), "t");
+    ok("★ 45⑤③：内核的原始边界被**原样留着**（只作诊断，不参与渲染）",
+      recR?.rawStart === 500 && recR?.rawEnd === 100 && recR?.start === 100 && recR?.end === 500,
+      JSON.stringify(recR ?? null).slice(0, 220));
+  }
   rmrf(root45);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 46：**被胶囊挤出去的用户原话不许丢**（D84 缺陷修复）
+//
+//   病因（实测，见 D84）：`capsule.userMessages` 只留最近 `CAPSULE_USER_MSG_MAX`(=40) 条，
+//     旧代码是 `r.userMessages.length = CAPSULE_USER_MSG_MAX` —— **超出部分直接蒸发**。
+//     后果：被压掉的 191 条真用户原话，逐字能在载体找回的只有 **24.1%**；
+//     **最早 3 条（含用户最初的完整任务陈述）是 0/3**。
+//
+//   ★ 修法（用户拍板的 B 方案）：淘汰时**升级归档**到
+//     `_ledger-archive/<期间>/用户原话-完整存档.md`（只追加、永不删）；
+//     ★ 并且**胶囊要告诉模型完整原话在哪**（用户明说的那一条）。
+//
+//   ★ 判别力（本情形必须能红）：
+//     · 把 `evictedUserMessages` 那几行删掉（恢复成 `.length = MAX`）⇒ ①②③红；
+//     · 把 `drainEvicted` 的调用摘掉 ⇒ ②③红；
+//     · 把胶囊里那段「只有最近 N 条 + 去哪找完整」删掉 ⇒ ④红。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 46：被胶囊挤出去的用户原话必须升级归档（不许蒸发）");
+{
+  const mkProj46 = (tag) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n不丢原话\n", "utf8");
+    fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+
+  const root46 = mkProj46("usermsg-evicted");
+  const sid46 = "session-u46-0001";
+  const run46 = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls: [] });
+  mod.apply(run46.ctx, {});
+
+  // 数上限：直接读源码常量，避免把 40 写死在夹具里（写死就会与实现分叉）
+  const src46 = fs.readFileSync(ENTRY, "utf8");
+  const mMatch = src46.match(/const CAPSULE_USER_MSG_MAX = (\d+);/);
+  const MAX46 = mMatch ? Number(mMatch[1]) : 40;
+  ok("★ 46 前提：读到了 CAPSULE_USER_MSG_MAX", MAX46 > 0, `MAX=${MAX46}`);
+
+  let seq46 = 0;
+  const say46 = async (text) => {
+    seq46 += 1;
+    for (const h of run46.handlers.get("session/event") ?? []) {
+      await h({ id: sid46, header: { id: sid46, cwd: root46 } }, {
+        type: "user/message", time: Date.now(),
+        data: { id: `m46-${seq46}`, role: "user", content: [{ type: "text", text }], source: { kind: "user" } },
+      });
+    }
+  };
+
+  // ① 喂 **MAX+5** 条 ⇒ 最早那 5 条会被挤出去
+  const EARLY = [];
+  for (let i = 0; i < 5; i += 1) EARLY.push(`【早期原话 ${i + 1}】这句话是用户最早说的，绝不能丢`);
+  for (const t of EARLY) await say46(t);
+  for (let i = 0; i < MAX46; i += 1) await say46(`【较新原话 ${i + 1}】这几条应当在胶囊里`);
+
+  // ② 盘上必须有「升级归档」文件，且**早期那 5 条逐字在里面**
+  const arcDir46 = path.join(root46, "_a");
+  const findArchiveFile = (dir) => {
+    const out = [];
+    const go = (d) => {
+      let ents = [];
+      try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        const q = path.join(d, e.name);
+        if (e.isDirectory()) go(q);
+        else if (e.name.includes("用户原话")) out.push(q);
+      }
+    };
+    go(dir);
+    return out;
+  };
+  const files46 = findArchiveFile(arcDir46);
+  ok("★★ 46①：`_ledger-archive` 下生成了「用户原话」存档文件", files46.length > 0, `找到 ${files46.length} 个`);
+  const arcText46 = files46.map((f) => { try { return fs.readFileSync(f, "utf8"); } catch { return ""; } }).join("\n");
+  let found46 = 0;
+  for (const t of EARLY) if (arcText46.includes(t)) found46 += 1;
+  ok(
+    "★★★ 46①：**被挤出去的 5 条早期原话逐字都在归档里**（这就是 D84 缺陷的修复）",
+    found46 === EARLY.length,
+    `命中 ${found46}/${EARLY.length}；归档文件=${files46.map((f) => path.basename(f)).join(",")}`
+  );
+
+  // ③ 归档里**不该**混进"还在胶囊里"的那些 —— 否则就不是"被挤出的部分"，而是全量抄一遍
+  ok(
+    "★★ 46②：**没有被挤出的**原话**不**进归档（归档只收被淘汰的）",
+    !arcText46.includes("【较新原话 1】"),
+    arcText46.slice(0, 200)
+  );
+
+  // ④ 胶囊必须**说清"只有最近 N 条"并给出完整原话在哪**（用户明说的那一条）
+  const mem46 = mod.__test?.renderCapsule;
+  ok("★ 46 前提：自检能拿到 renderCapsule", typeof mem46 === "function");
+  // 用真实素材渲染：直接调（info 用本项目）
+  const info46 = {
+    projectRoot: root46, activeRel: "LEDGER.md", decisionsRel: "DECISIONS.md",
+    archiveRel: "_a", logRel: "_ledger-log", maxActiveLines: 300, revision: 0,
+    exists: true, fresh: false,
+    manifest: { version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0 },
+  };
+  const liveMem = mod.__test.capsuleMemoryGet?.(run46.ctx);
+  void liveMem;
+  // ★ 素材拿不到就自己造一份**形状相同**的（判据只关心渲染文本，不关心来源）
+  const fakeMem = {
+    userMessages: [{ at: "2026-10-11 19:00", text: "【较新原话 1】这几条应当在胶囊里" }],
+    errors: [], artifacts: new Map(),
+  };
+  const capText46 = mod.__test.renderCapsule(info46, fakeMem) ?? "";
+  ok(
+    "★★★ 46③：胶囊**明说「只有最近的 N 条」**（否则模型会以为这是全部）",
+    /只有最近/.test(capText46) && capText46.includes(String(MAX46)),
+    capText46.slice(0, 400)
+  );
+  ok(
+    "★★★ 46③：胶囊**给出完整原话的去处**（`ledger_log` users 视图 + 归档兜底副本）",
+    capText46.includes("ledger_log") && capText46.includes("users") &&
+      capText46.includes("用户原话-完整存档"),
+    capText46.slice(0, 600)
+  );
+
+  rmrf(root46);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 47：**全量压缩也必须更新锚点**（D86/D87 —— 用户亲自观察到的"增量被饿死"）
+//
+//   病因（实测，见 D86）：
+//     `anchors.json` 本会话锚点 = **49.7%**，其 **mtime = 05:39:39**（最后一次**增量**）；
+//     而 15:51 与 17:33 各做过一次**全量** ⇒ **锚点仍是 05:39 那个值**。
+//     代码依据：`setAnchor(` 全仓库只出现一次，位于**增量**那条路 ⇒
+//     全量压缩**从头到尾没碰过锚点**。
+//   后果：触发判据 `水位 ≥ 锚点 + 20` ⇒ 锚点 49.7% 时要涨到 69.7%；
+//     而每涨到 ~70%，**"绝对 70%"那条先满足 ⇒ 排的是全量**；全量压完又不降锚点
+//     ⇒ 锚点永远停在 49.7% ⇒ **全量永远先到，增量被永久挤掉**。
+//
+//   ★ 判别力（本情形必须能红）：
+//     · 把 `runHighFidelityCompact` ③ 里那段 `setAnchor(..., afterFull.ratio)` 删掉 ⇒ 红。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 47：全量压缩后必须更新锚点（否则增量被永久饿死）");
+{
+  const mkProj47 = (tag) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n锚点\n", "utf8");
+    fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+  const root47 = mkProj47("anchor-full");
+  const sid47 = "session-a47-0001";
+  // ★ 本情形自己带一个 settle（别的作用域里的 `settle` 拿不到）
+  const settle47 = async () => {
+    for (let i = 0; i < 4; i += 1) await new Promise((r) => setTimeout(r, 0));
+  };
+  const run47 = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls: [] });
+  mod.apply(run47.ctx, {});
+
+  // ★ 夹具：`measurePressure` 走的是 `ctx.get("tokenMeter").measure(session).totalTokens`
+  //   与 `session.requestContext().contextWindow`。
+  //   ⇒ 这里让"水位"可被我们控制（压前高、压后低），才能验证锚点被写成**压后**那个值。
+  const agent47 = {
+    session: {
+      header: { id: sid47, cwd: root47 }, id: sid47,
+      requestContext: () => ({ contextWindow: 1000 }),
+    },
+    steer: () => {},
+  };
+
+  // ★ 起点：锚点**先设成一个已知的旧值**（模拟"锚点停在 49.7%"）。
+  const key47 = sid47;
+  const st47 = run47.__state ?? undefined; // 自检拿不到 state ⇒ 通过 setAnchor 写内存+盘
+  mod.__test.setAnchor(run47.__st47 ?? {}, key47, 0.497);
+  void st47;
+
+  // ★★ 关键：自检拿不到插件内部 `state`，所以这里**换一条可观测的路**——
+  //    直接读**盘上**的 anchors.json（`setAnchor` 会同时写盘）。
+  const anchorFile = path.join(process.env.DSH_HOME ?? "", "plugin-data", "dsh-ledger-memory", "anchors.json");
+  const readAnchor47 = () => {
+    try { return JSON.parse(fs.readFileSync(anchorFile, "utf8")).bySession?.[key47]; } catch { return undefined; }
+  };
+  const before47 = readAnchor47();
+  ok("★ 47 前提：锚点确实被写成 0.497（否则后面测的是空转）",
+    typeof before47 === "number" && Math.abs(before47 - 0.497) < 1e-9, `before=${before47}`);
+
+  // ★★★ 真跑一次**全量**：走 `ledger_compact` 工具（它排到 idle 后由 `runHighFidelityCompact` 执行）。
+  //   ⚠️ **必须先满足闸门**（先记台账、再压缩 —— D47 铁律）：
+  //     本情形第一次跑时**没落盘** ⇒ 闸门拦住 ⇒ 压缩压根没发生 ⇒ 产生**假红**。
+  //     按纪律第 6 条（夹具没走通 ≠ 被测对象有问题），这里补上落盘，并**单列一条前提断言**
+  //     证明"压缩确实执行了"，否则后面的锚点断言是空转。
+  await flushLedger(run47, root47, sid47);
+  const comp47 = run47.registeredTools.get("ledger_compact");
+  ok("★ 47 前提：拿到了 ledger_compact 工具", comp47 !== undefined);
+  await comp47.execute({}, { agent: agent47, session: agent47.session, callId: "c47" });
+  await fire(run47, "agent/status", { agent: agent47, status: "idle" });
+  await settle47();
+
+  // ★★ 先证明"压缩真的跑了"再断言锚点 —— 否则分不清"锚点没更新"与"压根没压"
+  //   （纪律第 6 条：夹具没走通时，绝不能把夹具故障当成被测对象的问题）。
+  eq("★ 47 前提：全量压缩确实执行了（否则后面的锚点断言是空转）", run47.compacted.length, 1);
+
+  const after47 = readAnchor47();
+  ok("★★★ 47：锚点被更新（不再是 0.497）",
+    typeof after47 === "number" && Math.abs(after47 - 0.497) > 1e-9,
+    `after=${after47}（before=${before47}）`);
+  ok("★★ 47：锚点被写成 **0~1 之间的合法值**",
+    typeof after47 === "number" && after47 >= 0 && after47 <= 1, `after=${after47}`);
+
+  rmrf(root47);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 48：**两次压缩重叠时，来源不许互相覆盖**（用户 2026-10-11 第 2 点）
+//
+//   这是本轮最贵的一次误判，必须留档：
+//     用户原话（逐字）：*"我在设置面板中实际设置的是0.75自动执行一次全量压缩，
+//       但是全量压缩从来没有自动进行过，刚才甚至已经到了78%，79的样子，
+//       已经接近危险边缘了，全量压缩还是没有发生，说明这个自动化也有bug。"*
+//
+//   ★ 实测真相（分两半）：
+//     · **自动全量真的跑了** —— 19:27:38 水位 78.4% 开始，19:30:42 掉到 **10.1%**
+//       （压掉 **68.3 点**），胶囊目录里有那天 19:27:38 那份**自带** `来源：自动（70% 水位）`
+//       的原始文件 ⇒ 铁证。
+//     · **但 L0 把它记成了「手动（命令）」** ⇒ 用户（和我）都据此以为"它从来没跑过"。
+//
+//   病因：`state.hfSource` 原来是**单槽** `Map<sid,source>`，
+//     写入 `set(key,source)`、读出后 `delete`。而两次 `runHighFidelityCompact`
+//     **可以重叠**（各 await compactNow 几十秒）：
+//       19:27:38 自动全量入队 → 19:27:57 手动命令覆盖同一槽
+//       → 内核发 `compaction/end` 时读到的来源是 `command` ⇒ 记成「手动（命令）」。
+//     又一次「**记录存在 ≠ 记录准确**」。
+//
+//   ★ 判别力（本情形必须能红）：
+//     · 把 `pushHfSource` 改回 `state.hfSource.set(key, src)`（且 `popHfSource` 只 `get`）
+//       ⇒ 两个 end 都拿到后者 ⇒ 断言红。
+//     · 把失败路径的 `popHfSourceLast` 删掉 ⇒ 票数多于 end 数 ⇒ 第二条断言红。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 48：两次压缩重叠时，来源不许互相覆盖（队列而不是单槽）");
+{
+  const mkProj48 = (tag) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\n来源\n", "utf8");
+    fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+  const settle48 = async () => {
+    for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
+  };
+  /** 读 L0 里所有 `compaction/end` 行。 */
+  const compactionLines48 = (root) => {
+    const out = [];
+    const walk = (d) => {
+      if (!fs.existsSync(d)) return;
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/L0-milestones\.md$/.test(e.name)) {
+          for (const l of fs.readFileSync(p, "utf8").split("\n")) {
+            if (l.includes("(compaction/end)")) out.push(l);
+          }
+        }
+      }
+    };
+    walk(path.join(root, "_ledger-log"));
+    return out;
+  };
+  /** 发一条 compaction/end + 落盘。 */
+  const emitEnd48 = async (run, root, sid) => {
+    const session = { header: { id: sid, cwd: root }, id: sid };
+    await fire(run, "session/event", session, { type: "compaction/end", data: {} });
+    for (const h of run.handlers.get("agent/turn-stopping") ?? []) {
+      await h({ agent: { session, steer: () => {} }, turn: 9 });
+    }
+    await settle48();
+  };
+
+  // ── 48a：★★★ 两次压缩**重叠**，两次 end 各领各的来源 ────────────────────
+  //
+  //   ★ 怎么造出"重叠"：`compactNow` 夹具里**留一个挂起点**（promise），
+  //     先发起自动全量（走 pre-step 排队 + idle 执行，但**不让它 resolve**），
+  //     再在它还没结束时又发起一次手动命令压缩 ⇒ 两张票同时在队里。
+  {
+    const root = mkProj48("hf-overlap");
+    const sid = "session-a48-overlap";
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true });
+    mod.apply(run.ctx, {});
+
+    // ★ 夹具：`compactNow` 每次调用都**挂住**，直到我们手动放行。
+    const gates = [];
+    const started = [];
+    run.services.compaction = {
+      compactRegion: async () => ({ shadowedSeqs: [1, 2], shadowedTokenCount: 10, summarySeq: 3 }),
+      compactNow: async () => {
+        started.push(Date.now());
+        await new Promise((r) => gates.push(r)); // ← 挂住，等测试放行
+        return { shadowedSeqs: [1, 2], shadowedTokenCount: 10, summarySeq: 3 };
+      },
+    };
+
+    const agent = {
+      session: {
+        header: { id: sid, cwd: root }, id: sid,
+        requestContext: () => ({ contextWindow: 1000 }),
+      },
+      steer: () => {},
+    };
+    await flushLedger(run, root, sid);
+
+    // ① 自动全量排队（水位 75% ≥ 0.7）并**开始执行**（但被 gate 挂住）
+    run.services.tokenMeter._total = 750;
+    await runPreStep(run, { agent, messages: [] });
+    void fire(run, "agent/status", { agent, status: "idle" });
+    await settle48();
+
+    // ② 它还在跑的时候，又发起一次**手动命令**压缩（这就是真实事故的时序）
+    void run.registeredCommands.get("ledger").handler({
+      commandId: "c48", agent, rawInput: "compact", attachments: [],
+      signal: new AbortController().signal,
+    });
+    await settle48();
+
+    // ★ 前提：必须真的是"两次都开跑了"，否则测的是串行、不是重叠。
+    ok(
+      "★ 48a 前提：两次 `compactNow` **都真的开跑了**（否则测的是串行，不是重叠）",
+      started.length >= 2,
+      `started=${started.length}`
+    );
+
+    // ③ 先放行**第一次**（自动全量）⇒ 它发第一条 end ⇒ 应当领到「自动 70%」
+    eq("★ 48a 前提：有第一个挂起点可放行", gates.length >= 1, true);
+    gates.shift()();
+    await settle48();
+    await emitEnd48(run, root, sid);
+
+    // ④ 再放行**第二次**（手动命令）⇒ 它发第二条 end ⇒ 应当领到「手动（命令）」
+    if (gates.length >= 1) gates.shift()();
+    await settle48();
+    await emitEnd48(run, root, sid);
+
+    const lines = compactionLines48(root);
+    eq("★★ 48a：两条压缩里程碑都记下了", lines.length, 2);
+    ok(
+      "★★★ 48a：第一条是「自动 70%」—— ★ 这正是被单槽覆盖掉的那一条（事故本体）",
+      lines[0] !== undefined && lines[0].includes("自动 70%"),
+      String(lines[0])
+    );
+    ok(
+      "★★ 48a：第二条是「手动（命令）」（各领各的，不是两条同一个来源）",
+      lines[1] !== undefined && lines[1].includes("手动（命令）"),
+      String(lines[1])
+    );
+    rmrf(root);
+  }
+
+  // ── 48b：失败路径必须**退票** —— 否则后面的 end 会认领到别人的来源 ────────
+  //
+  //   ★ 这是 48a 的**反向危险**：修好"不覆盖"之后，如果"没压成却把票留在队里"，
+  //     票就会越积越多，后面的 `compaction/end`（例如内核 80% 那次）会领到
+  //     我们**早就作废**的那张票 ⇒ 同一个 bug 换个方向再犯一次。
+  {
+    const root = mkProj48("hf-retire");
+    const sid = "session-a48-retire";
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true });
+    mod.apply(run.ctx, {});
+    // ★ 夹具：`compactNow` **每次都抛**（压不成）⇒ 每次都该退票。
+    let calls = 0;
+    run.services.compaction = {
+      compactRegion: async () => ({ shadowedSeqs: [1, 2], shadowedTokenCount: 10, summarySeq: 3 }),
+      compactNow: async () => {
+        calls += 1;
+        throw new Error("compaction backend exploded");
+      },
+    };
+    const agent = {
+      session: {
+        header: { id: sid, cwd: root }, id: sid,
+        requestContext: () => ({ contextWindow: 1000 }),
+      },
+      steer: () => {},
+    };
+    await flushLedger(run, root, sid);
+
+    // 压两次、都失败
+    for (let i = 0; i < 2; i += 1) {
+      void run.registeredCommands.get("ledger").handler({
+        commandId: `c48b${i}`, agent, rawInput: "compact", attachments: [],
+        signal: new AbortController().signal,
+      });
+      await settle48();
+      void fire(run, "agent/status", { agent, status: "idle" });
+      await settle48();
+    }
+    ok("★ 48b 前提：确实尝试过压缩（且都抛了）", calls >= 1, `calls=${calls}`);
+
+    // ★★ 关键断言：票必须已退干净 ⇒ 内核发的 end **必须**退化成「上下文已压缩」
+    await emitEnd48(run, root, sid);
+    const lines = compactionLines48(root);
+    eq("★★ 48b：有了 end", lines.length, 1);
+    ok(
+      "★★★ 48b：压失败之后，内核的 end **不许**认领到那张作废的票（必须是「上下文已压缩」）",
+      /上下文已压缩$/.test(lines[0]),
+      String(lines[0])
+    );
+    rmrf(root);
+  }
 }
 
 section("情形 36：交接单闭环（第③层）");
@@ -7588,7 +9408,7 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       const root = mkGateProj("gate-35-preview", "surgical");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { highFidelityCompactRatio: 1.0, /* ★D119：本用例测闸门/计数器/口径，**不测**「到全量线该让路」。让路有两个入口 —— ① `pressure.ratio >= hfLine` ② 水位 ≥ `capLine = min(内核线−5点, hfLine)`。取 `hfLine = 1.0` 让两者都够不着本用例水位。★ **绝不能设 `highFidelityCompact: false`**（我第一版那么改过，多红 7 条）：它还连带关掉**全量前置探针**，而依赖那段注入的断言会跟着塌。 */ });
       const sid = "session-gate0000-0001";
       const agent = mkGateAgent(root, sid, 7);
       run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 20 }));
@@ -7618,7 +9438,7 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       const root = mkGateProj("gate-owed", "surgical");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { highFidelityCompactRatio: 1.0, /* ★D119：本用例测闸门/计数器/口径，**不测**「到全量线该让路」。让路有两个入口 —— ① `pressure.ratio >= hfLine` ② 水位 ≥ `capLine = min(内核线−5点, hfLine)`。取 `hfLine = 1.0` 让两者都够不着本用例水位。★ **绝不能设 `highFidelityCompact: false`**（我第一版那么改过，多红 7 条）：它还连带关掉**全量前置探针**，而依赖那段注入的断言会跟着塌。 */ });
       const sid = "session-gate0000-0002";
       const agent = mkGateAgent(root, sid, 7);
       // ★ 2026-10-11 棘轮修复后：水位 760 ⇒ 保留 (0.76−0.10)×1000 = **660** token
@@ -7682,7 +9502,7 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       const root = mkGateProj("gate-overdue", "surgical");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { highFidelityCompactRatio: 1.0, /* ★D119：本用例测闸门/计数器/口径，**不测**「到全量线该让路」。让路有两个入口 —— ① `pressure.ratio >= hfLine` ② 水位 ≥ `capLine = min(内核线−5点, hfLine)`。取 `hfLine = 1.0` 让两者都够不着本用例水位。★ **绝不能设 `highFidelityCompact: false`**（我第一版那么改过，多红 7 条）：它还连带关掉**全量前置探针**，而依赖那段注入的断言会跟着塌。 */ });
       const sid = "session-gate0000-0004";
       const agent = mkGateAgent(root, sid, 7);
       run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 40 }));
@@ -7741,7 +9561,7 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       const root = mkGateProj("gate-counts", "steady");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { highFidelityCompactRatio: 1.0, /* ★D119：本用例测闸门/计数器/口径，**不测**「到全量线该让路」。让路有两个入口 —— ① `pressure.ratio >= hfLine` ② 水位 ≥ `capLine = min(内核线−5点, hfLine)`。取 `hfLine = 1.0` 让两者都够不着本用例水位。★ **绝不能设 `highFidelityCompact: false`**（我第一版那么改过，多红 7 条）：它还连带关掉**全量前置探针**，而依赖那段注入的断言会跟着塌。 */ });
       const sid = "session-gate0000-0005";
       const agent = mkGateAgent(root, sid, 7);
       const exec = execFor(root, sid);
@@ -7782,7 +9602,7 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       const root = mkGateProj("gate-steady", "steady");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, {});
+      mod.apply(run.ctx, { highFidelityCompactRatio: 1.0, /* ★D119：本用例测闸门/计数器/口径，**不测**「到全量线该让路」。让路有两个入口 —— ① `pressure.ratio >= hfLine` ② 水位 ≥ `capLine = min(内核线−5点, hfLine)`。取 `hfLine = 1.0` 让两者都够不着本用例水位。★ **绝不能设 `highFidelityCompact: false`**（我第一版那么改过，多红 7 条）：它还连带关掉**全量前置探针**，而依赖那段注入的断言会跟着塌。 */ });
       const sid = "session-gate0000-0003";
       const agent = mkGateAgent(root, sid, 7);
       // ★ 同 37i-2：水位 740 ⇒ 保留 640 ⇒ surface 要给够（21 × 40 = 840 > 640）。
@@ -8381,7 +10201,11 @@ section("情形 40：度量口径不一致 ⇒ 增量压缩永不发生（真实
     const root = mkU("unit-mismatch");
     const regionCalls = [];
     const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-    mod.apply(run.ctx, {});
+    // ★★★ 2026-10-12（D119）：**把全量线推高**，排除"增量让路"这个混杂变量。
+    //   本用例水位 **100%**，测的是「**保留量口径**」（surface vs totalTokens 两个尺度），
+    //   **与"该不该让路"无关**。而 D119 之后水位 ≥ 全量线 ⇒ 增量**一律让路** ⇒ 本用例测不到了。
+    //   ⇒ 把全量线设到 **1.0**（水位够不着）⇒ 增量照常跑 ⇒ 本用例继续测它真正要测的东西。
+    mod.apply(run.ctx, { highFidelityCompactRatio: 1.0, highFidelityCompactRatio: 1.0, /* ★D119：本用例测闸门/计数器/口径，**不测**「到全量线该让路」。让路有两个入口 —— ① `pressure.ratio >= hfLine` ② 水位 ≥ `capLine = min(内核线−5点, hfLine)`。取 `hfLine = 1.0` 让两者都够不着本用例水位。★ **绝不能设 `highFidelityCompact: false`**（我第一版那么改过，多红 7 条）：它还连带关掉**全量前置探针**，而依赖那段注入的断言会跟着塌。 */ });
     const sid = "session-unit0000-0001";
     // 造一个像真实内核那样"含工具头"的假 agent：21 个节点
     const events = [];
@@ -8410,7 +10234,7 @@ section("情形 40：度量口径不一致 ⇒ 增量压缩永不发生（真实
     const NODES = events.length;              // 21
     const surfaceEach = Math.floor(830 / NODES); // 39 → 合计 819
     run.services.tokenMeter._priced = events.map((e) => ({ seq: e.seq, tokens: surfaceEach }));
-    run.services.tokenMeter._total = 1000;    // 100% ⇒ 含工具头
+    run.services.tokenMeter._total = 700; // ★D119：100% 会撞上 capLine(0.75) 触发增量让路 ⇒ 降到 70% 才能测到本用例真正要测的「保留量口径」    // 100% ⇒ 含工具头
 
     await flushLedger(run, root, sid);
     // 水位 100% 时：keepRatio = 1.00 − 0.10 = 0.90 ⇒ 旧口径 retainTokens = 900
@@ -8421,7 +10245,7 @@ section("情形 40：度量口径不一致 ⇒ 增量压缩永不发生（真实
     //   ② 然后 AI 真写台账（`flushLedger`）；
     //   ③ 第三步才该压。
     //   ⚠️ 我第一版把①③挤在一步里 ⇒ 测到的是**闸门**，不是本次要测的口径 —— 又是"尺子错"。
-    run.services.tokenMeter._total = 1000;
+    run.services.tokenMeter._total = 700; // ★D119：100% 会撞上 capLine(0.75) 触发增量让路 ⇒ 降到 70% 才能测到本用例真正要测的「保留量口径」
     await runPreStep(run, { agent, messages: [] });   // ① 发提醒、立欠账
     await flushLedger(run, root, sid);                // ② 真写台账 ⇒ 义务兑现
     await runPreStep(run, { agent, messages: [] });   // ③ 该压了
@@ -8648,6 +10472,177 @@ section("情形 41：审计报告点出的 A2 / A3 数据完整性缺陷（先�
       after.revision > before.revision,
       `before=${before.revision} after=${after.revision}`
     );
+    rmrf(root);
+  }
+}
+
+// ── 情形 49：手搓消息对象必须与内核 admission 判据逐条对齐 ─────────────────
+section("情形 49：手搓消息必须带 producer-owned source（真机事故 D120）");
+{
+  // ★★★ 2026-10-12 真机事故（用户报：一段对话**打不开历史**了）：
+  //   `ledger_compact` 里那个 `agent.steer()` 手搓消息**漏了 `source`**
+  //   —— 那是 D114 新增这个调用时漏掉的。内核把它写进日志
+  //   （作为 `agent/inbox/spliced` 的 `data.inserted[]`），而**重载历史时**校验
+  //   每个消息槽位的生产者身份 ⇒ 抛
+  //
+  //     SessionFormatError: format v4 message requires a producer-owned source kind
+  //
+  //   ⇒ **整个会话加载失败**。★ 实时对话**不校验** ⇒ 写下的那一刻毫无症状，
+  //     **下一次打开才炸** —— 所以这个坑只能靠静态判据守。
+  //   ★ 本机栽过**同型两次**：2026-09-24 是"手搓消息漏了 `id`"（情形 1 已守 id），
+  //     这次是"漏了 `source`"。⇒ 判据要覆盖**全部调用点**，而不是只覆盖测到的那一处。
+  const d120Src = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+
+  /**
+   * ★ 先剥掉注释与字符串，再做静态扫。
+   *
+   * ★★ 为什么必须剥（我第一次写这条断言就栽了）：不剥的话，**注释里提到的**
+   *   `agent.steer(` 也会被算成调用点 —— 实测扫到 **10** 个，其中 4 个是本文件
+   *   注释里引用的（含我这次写事故说明时引的那句）。
+   *   ⇒ 与情形 43 的 `^section(` 是**同一个病**：判据把"描述它的文字"和"它本身"混在一起数
+   *     （纪律第 2 条）。这里用"剥注释/字符串"来解决，比靠缩进更稳。
+   */
+  function stripCommentsAndStrings(src) {
+    let out = "";
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === "/" && src[i + 1] === "/") {
+        while (i < src.length && src[i] !== "\n") i++;
+        out += "\n";
+      } else if (ch === "/" && src[i + 1] === "*") {
+        i += 2;
+        while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
+          if (src[i] === "\n") out += "\n";
+          i++;
+        }
+        i++;
+      } else if (ch === '"' || ch === "'" || ch === "`") {
+        const q = ch;
+        out += q;
+        i++;
+        while (i < src.length && src[i] !== q) {
+          if (src[i] === "\\") {
+            out += "  ";
+            i += 2;
+            continue;
+          }
+          out += src[i] === "\n" ? "\n" : " ";
+          i++;
+        }
+        out += q;
+      } else {
+        out += ch;
+      }
+    }
+    return out;
+  }
+  /** 剥注释/字符串后，行号仍然一致（上面的实现保证换行数不变）。 */
+  const d120Code = stripCommentsAndStrings(d120Src);
+
+  /**
+   * 从 `agent.steer(` 之后找到那个对象字面量，做**花括号配对**返回它的源码。
+   * ★ 在**已剥注释/字符串**的文本上配对：否则文案里的 `}` 会把范围截错
+   *   ⇒ 判据变成"看运气"（纪律：判据不吃运气）。
+   */
+  function steerObjectAt(src, from) {
+    const open = src.indexOf("{", from);
+    if (open === -1) return null;
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}") {
+        depth--;
+        if (depth === 0) return src.slice(open, i + 1);
+      }
+    }
+    return null;
+  }
+
+  const steerSites = [];
+  {
+    let at = -1;
+    while ((at = d120Code.indexOf("agent.steer(", at + 1)) !== -1) {
+      steerSites.push({ line: d120Code.slice(0, at).split("\n").length, obj: steerObjectAt(d120Code, at) });
+    }
+  }
+  // ★ 期望数写上：**调用点变少也是变化**，不能静默通过（否则有人删掉一处判据就失效了）。
+  eq("★ 静态扫到 `agent.steer(` 调用点 = 6（已剥离注释与字符串）", steerSites.length, 6);
+
+  const noSource = steerSites.filter((s) => s.obj === null || !/\bsource\s*:/.test(s.obj));
+  ok(
+    "★★★ 每一处 `agent.steer()` 都必须带 `source`（漏了 ⇒ 该会话历史从此打不开）",
+    noSource.length === 0,
+    noSource.map((s) => `lib/index.js:${s.line}`).join("、")
+  );
+
+  const noRole = steerSites.filter((s) => s.obj === null || !/\brole\s*:/.test(s.obj));
+  ok(
+    "★ 每一处 `agent.steer()` 都必须带 `role`",
+    noRole.length === 0,
+    noRole.map((s) => `lib/index.js:${s.line}`).join("、")
+  );
+
+  // ── 运行时判据：抓**真发出去的**消息对象，逐条对内核 admission 判据 ──────────
+  //
+  //   ★ 静态扫只证明"文本里有 `source:`"；真值还得看**发出去的对象**长什么样
+  //     （例如 `source: undefined` 也能骗过正则）。
+  //   ★ 两条注入路径都要量：
+  //     ① pre-step 的**返回值**（`decision.messages`）—— 台账注入、水位提醒、回执走这条；
+  //     ② `agent.steer()` 的**参数** —— 回合末卡片那条走这条（情形 13 / 22c 已覆盖其行为）。
+  //     **两条最终都落成 `agent/inbox/spliced` 的 `data.inserted[]`**，所以两条都要守。
+  {
+    /** 内核 `source(message)` 的判据（app.asar 原文，逐条对齐） */
+    function sourceViolation(m) {
+      const v = m === null || m === undefined ? undefined : m.source;
+      if (v === null || typeof v !== "object" || Array.isArray(v)) return "source 不是对象";
+      if (typeof v.kind !== "string") return "kind 不是 string";
+      if (v.kind.length === 0) return "kind 是空字符串";
+      if (v.kind === "plugin") return 'kind === "plugin"（已废弃的写法）';
+      return null;
+    }
+    /** 逐条量一组消息 */
+    function assertAdmissible(label, msgs) {
+      for (let i = 0; i < msgs.length; i++) {
+        const m = msgs[i];
+        const sv = sourceViolation(m);
+        ok(`★★★ ${label}：第 ${i + 1} 条的 source 能过内核 admission`, sv === null, sv ?? "");
+        ok(
+          `★ ${label}：第 ${i + 1} 条有非空 string id`,
+          typeof m?.id === "string" && m.id !== "",
+          `id=${JSON.stringify(m?.id)}`
+        );
+      }
+    }
+
+    const root = tmpProject("d120");
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true });
+    mod.apply(run.ctx, {});
+    const agent = { session: { header: { id: "session-d1200000-0000-0000-0000-000000000000", cwd: root } } };
+
+    // ① 全新项目 ⇒ 必有一条注入（"先去问用户"那条）
+    const d1 = await runPreStep(run, { agent });
+    ok("★ 运行时：全新项目 pre-step 注入了至少 1 条", d1.messages.length >= 1, `n=${d1.messages.length}`);
+    assertAdmissible("pre-step 注入", d1.messages);
+
+    // ② 走 `agent.steer()` 的那条（`ledger_compact` 的唤醒）：
+    //    把 steer 参数截下来量 —— **这正是本次事故的入口**。
+    const steers = [];
+    const agent2 = {
+      session: { header: { id: "session-d1200000-0000-0000-0000-000000000001", cwd: root } },
+      steer: (m) => {
+        steers.push(m);
+      },
+    };
+    const lc = run.registeredTools.get("ledger_compact");
+    ok("★ 前提：`ledger_compact` 已注册", lc !== undefined);
+    if (lc !== undefined) {
+      // ★ 调用范式照既有用例（情形 26 那一处）：
+      //   `execute({}, { agent, session: agent.session, callId })` —— 必须给 `agent`
+      //   （它要拿会话 id 与 `agent.steer`），否则走不到那一步、判据就成了空转。
+      await lc.execute({ mode: "light" }, { agent: agent2, session: agent2.session, callId: "c-d120" });
+      ok("★ 运行时：`ledger_compact` 真的唤醒了一轮（`agent.steer` 被调了）", steers.length >= 1, `steers=${steers.length}`);
+      assertAdmissible("ledger_compact 的 steer", steers);
+    }
     rmrf(root);
   }
 }

@@ -31,6 +31,31 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENTRY = path.join(HERE, "..", "lib", "index.js");
 
 /**
+ * ★★★★★ 2026-10-12（D146）：**读"整棵 lib/ 源码"的拼接** —— 静态判据必须走它，不许读单文件。
+ *
+ * ★★★ 为什么必须这样（这是一个**会静默假绿**的坑）：
+ *   本自检里有 **8 处**按"单文件"读 `lib/index.js` 源码做**静态**断言
+ *   （情形 43 的数字对账 / 50 的文案契约 / 59~61 的接线断言 …）。
+ *   而 DSH STORE 的单文件上限（262144 B）**逼着我们拆 `lib/index.js`**
+ *   ⇒ 一旦代码被拆出去，那些断言**看不到被拆走的部分** ⇒
+ *   ★ **"某条接线不见了"会静默判成通过**，而那正是本项目最怕的假绿
+ *   （纪律 2：**判据的输入必须是"被测对象自己产生的那部分"**；
+ *     纪律 8：**夹具前提错了，全绿就是假绿**）。
+ *
+ * ★ 正解：判据的输入 = **整个 `lib/` 的源码拼接**（拆成几个文件都看得见）。
+ *   ⇒ ★ **先让判据变对，再动代码**（顺序不能反：先拆再改判据，
+ *     中间那一段的绿灯是**假的**）。
+ *
+ * ★ 为什么按文件名排序拼接：让结果是**确定性的**（不依赖 readdir 顺序），
+ *   否则同一份代码在不同机器上可能给出不同的拼接文本 ⇒ 断言不稳。
+ */
+function readLibSource() {
+  const dir = path.join(HERE, "..", "lib");
+  const names = fs.readdirSync(dir).filter((n) => n.endsWith(".js")).sort();
+  return names.map((n) => fs.readFileSync(path.join(dir, n), "utf8")).join("\n");
+}
+
+/**
  * ★★★ 自检**绝不能写用户真正的家**。
  *
  * 背景（2026-10-10）：项目锁改成"跨重启保持"之后，`ledger_lock` 会往
@@ -6003,7 +6028,7 @@ section("情形 27：官方设置面板");
 
     // 29e：★ 静态契约 —— 三处取值都必须经 resolver（防止哪天又被改回裸 ctx.get）
     {
-      const src = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+      const src = readLibSource();
       // ★ 只数**调用**（`const compaction = compactionServiceFor(ctx, agent)`），
       //   不数**定义**（`function compactionServiceFor(ctx, agent) {`）——
       //   我第一版用 `compactionServiceFor\(ctx, agent\)` 把定义也算进去了，
@@ -7833,7 +7858,7 @@ section("情形 35：逐字胶囊落盘（可回溯 + 抗压缩链失真）");
 // ═══════════════════════════════════════════════════════════════════════════
 section("情形 43：口径自检（文档写的数字必须与代码一致）");
 {
-  const libSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const libSrc = readLibSource();
 
   // ── ① 工具数：注册循环里的 ledger_* + ledger_checkpoint ──────────────────
   const regStart = libSrc.indexOf("for (const [label, factory] of [");
@@ -10669,7 +10694,7 @@ section("情形 49：手搓消息必须带 producer-owned source（真机事故 
   //     **下一次打开才炸** —— 所以这个坑只能靠静态判据守。
   //   ★ 本机栽过**同型两次**：2026-09-24 是"手搓消息漏了 `id`"（情形 1 已守 id），
   //     这次是"漏了 `source`"。⇒ 判据要覆盖**全部调用点**，而不是只覆盖测到的那一处。
-  const d120Src = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const d120Src = readLibSource();
 
   /**
    * ★ 先剥掉注释与字符串，再做静态扫。
@@ -10891,7 +10916,7 @@ if (SANDBOX_HOME.startsWith(os.homedir()) && !SANDBOX_HOME.startsWith(os.tmpdir(
 // ═══════════════════════════════════════════════════════════════════════════
 section("情形 50：设置面板的文案与分组契约（D124）");
 {
-  const libSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const libSrc = readLibSource();
 
   /** 取一个顶层数组字面量的**源码段**（从 `const X = [` 到对应的 `\n];`）。 */
   const segOf = (name) => {
@@ -10992,7 +11017,7 @@ section("情形 50：设置面板的文案与分组契约（D124）");
 // ═══════════════════════════════════════════════════════════════════════════
 section("情形 51：水位提醒必须给出动作（D125）");
 {
-  const libSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const libSrc = readLibSource();
 
   // 取 renderPressureNotice 整个函数体（到下一个顶层函数之前）
   const a = libSrc.indexOf("function renderPressureNotice(");
@@ -12110,7 +12135,7 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
 
     // ── ⑥ ★★★★ 安全绳②：**压缩后不省**（`afterCompaction` ⇒ 全部块按必注处理）──
     {
-      const src = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+      const src = readLibSource();
       // ★ 判据要吃**渲染层自己**的那段实现（不扫全文）：`afterCompaction === true` 必须在 `isMust` 里
       const a = src.indexOf("function renderBlockInjection");
       const b = src.indexOf("\nfunction ", a + 10);
@@ -12139,7 +12164,7 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
   section("情形 60：D138 设置面板完整性（无空承诺 / 键双向一致）");
   {
     const W = mod.__test;
-    const libSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+    const libSrc = readLibSource();
     const specs = W.settingSpecsForTest();
     const defaults = W.settingDefaultsForTest();
     const specKeys = specs.map((s) => s.key).sort();
@@ -12353,7 +12378,7 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
     //   ★ 判据用**源码里真的出现调用**（静态、可证伪），并**数够两处**：
     //     真压 1 处 + 轻推 1 处 = 至少 2 处（少一处就说明有一条路绕过了闸门）。
     {
-      const src = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+      const src = readLibSource();
       const calls = src.split("compGateDecision(").length - 1;
       // 1 处定义 + 2 处调用 = 3；+1 处 `compGateForTest` 包装里的调用。
       ok("★★★★★ 61⑤ `compGateDecision` **真的被两条路调用**（真压 + 轻推），不是摆设",

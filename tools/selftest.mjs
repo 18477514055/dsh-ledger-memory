@@ -5313,12 +5313,13 @@ section("情形 27：官方设置面板");
     eq("GET 状态码 200", r.status, 200);
     eq("GET ok", r.body.ok, true);
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
-    eq("★ 回报了十三项元数据（D129：删掉 deltaFallbackPoints）", r.body.specs?.length, 13);
+    eq("★ 回报了十四项元数据（D129 删掉 deltaFallbackPoints；D136 新增 blockInjection）", r.body.specs?.length, 14);
     ok(
-      "★ 十三项就是用户要的那些",
+      "★ 十四项就是用户要的那些",
       JSON.stringify(r.body.specs.map((s) => s.key).sort()) ===
         JSON.stringify([
           "autoCompact",
+          "blockInjection",
           "changeRegisterMax",
           "deltaRemovePoints",
           "deltaTriggerPoints",
@@ -7828,7 +7829,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 13（D129 删掉 deltaFallbackPoints）", settingKeys.length, 13);
+  eq("★ 口径：设置项数 = 14（D129 删 deltaFallbackPoints；D136 新增 blockInjection）", settingKeys.length, 14);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
   const SUBS = ["status", "show", "init", "update", "archive", "compact", "light", "log", "mode", "lock", "handoff", "triage"];
@@ -7853,8 +7854,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 53（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 53);
-  eq("★ 口径：其中带「情形 N」编号的 = 52", numbered, 52);
+  eq("★ 口径：section 总数 = 54（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 54);
+  eq("★ 口径：其中带「情形 N」编号的 = 53", numbered, 53);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -11960,6 +11961,146 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       eq("★★★ 58⑥ 且如实回报收了 0 块（不是假装有）", res.weightsScored, 0);
       ok("★★ 58⑥ 说明里讲清了「未判分」这件事", /未判分|没传/.test(String(res.note)), String(res.note).slice(0, 200));
       rmrf(root);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // ★★★★★ 情形 59：D136 步 3 —— **区块级注入**（唯一会改变"模型看到什么"的改动）
+  //
+  //   ★ 用户 18:48 的提法：*"注入的可以是**所有必要的**加上**非必要的区块相对位置**"*。
+  //
+  //   ★★★★ 本情形是**底线守卫**。用户底线：*"不要影响模型的准确性"* ⇒
+  //     三条安全绳**每条都必须有断言**，而且**反向验证必须能看见红**：
+  //     ① **内容变了的块必定连正文注入**（模型没见过那块内容 = 最硬的准确性风险）
+  //     ② **压缩后不省**（上下文被截短 ⇒ 之前给过的正文已经不在了）
+  //     ③ **任何不确定 ⇒ 退回整份注入**（读不到/切不出/没判分 ⇒ 宁可多注）
+  //   ★ 另外：**默认必须是关的**（未经实测对照不改注入行为）。
+  // ═══════════════════════════════════════════════════════════════════════════
+  section("情形 59：D136 步 3 区块级注入（三条安全绳 + 默认关）");
+  {
+    const W = mod.__test;
+    const mkProj59 = (tag) => {
+      const dir = tmpProject(tag);
+      fs.mkdirSync(path.join(dir, "_a"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "DECISIONS.md"), "# 决策\n", "utf8");
+      fs.writeFileSync(
+        path.join(dir, ".dsh-ledger.json"),
+        JSON.stringify({
+          version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+          archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, mode: "surgical", revision: 0,
+        }),
+        "utf8"
+      );
+      return dir;
+    };
+
+    // ── ① 默认**关** —— 未经实测对照，不改注入行为（这是底线的最外圈）──
+    {
+      eq("★★★★ 59① 设置默认：`blockInjection` **默认为 false**（没实测对照就不改模型看到的东西）",
+        mod.__test.settingDefaultsForTest().blockInjection, false);
+    }
+
+    // ── ② 开关**关**时：注入里必须有整份台账（逐字回到旧行为）──
+    {
+      const root = mkProj59("bi-off");
+      const body = "# 台账\n\n## 甲\n甲的内容独一无二\n\n## 乙\n乙的内容\n";
+      fs.writeFileSync(path.join(root, "LEDGER.md"), body, "utf8");
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const visible = await runPreStep(run, {
+        agent: { session: { header: { id: "s-bi-off", cwd: root } } },
+        messages: [],
+      });
+      const text = visible.messages.map((m) => JSON.stringify(m.content)).join("");
+      ok("★★★ 59② 开关关着 ⇒ 整份注入（旧行为逐字保留）",
+        text.includes("甲的内容独一无二") && text.includes("乙的内容"), text.slice(0, 200));
+      ok("★★★ 59② 且**不出现**区块级注入的标记", !text.includes("LEDGER-BLOCKS"), text.slice(0, 200));
+      rmrf(root);
+    }
+
+    // ── ③ 开关**开**：必注块给正文，非必注块只进目录 ──
+    {
+      const root = mkProj59("bi-on");
+      // ★ 造一个"必注块（原则类，会被强制 ≥95）"与一个"低分块"
+      const body =
+        "# 台账\n\n## 一、总纲（原则）\n买下限不买上限\n\n## 旧笔记\n一段陈旧笔记\n";
+      fs.writeFileSync(path.join(root, "LEDGER.md"), body, "utf8");
+      // ★ 项目清单里打开开关（清单优先）
+      const man = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+      man.blockInjection = true;
+      fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify(man), "utf8");
+
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const visible = await runPreStep(run, {
+        agent: { session: { header: { id: "s-bi-on", cwd: root } } },
+        messages: [],
+      });
+      const text = visible.messages.map((m) => JSON.stringify(m.content)).join("");
+      ok("★★★★ 59③ 开关打开 ⇒ 出现区块级注入标记", text.includes("LEDGER-BLOCKS"), text.slice(0, 260));
+      ok("★★★★ 59③ **原则块（必注）的正文在**（「买下限不买上限」必须能看见）",
+        text.includes("买下限不买上限"), text.slice(0, 300));
+      ok("★★★★ 59③ 且**目录里必须列出全部块**（非必注块给的是相对位置，不是消失）",
+        /台账目录/.test(text) && /旧笔记/.test(text), text.slice(0, 400));
+      rmrf(root);
+    }
+
+    // ── ④ ★★★★ 安全绳①：**内容变了的块必定连正文注入**（哪怕它权重很低）──
+    {
+      const root = mkProj59("bi-changed");
+      const v1 = "# 台账\n\n## 一、总纲（原则）\n原则内容\n\n## 低分块\n第一版内容\n";
+      const v2 = "# 台账\n\n## 一、总纲（原则）\n原则内容\n\n## 低分块\n第二版内容改了\n";
+      fs.writeFileSync(path.join(root, "LEDGER.md"), v1, "utf8");
+      const man = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+      man.blockInjection = true;
+      fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify(man), "utf8");
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const agent = { session: { header: { id: "s-bi-ch", cwd: root } } };
+      // 第一次注入（建立"上一次的块"快照）
+      await runPreStep(run, { agent, messages: [] });
+      // 改掉那个低分块
+      fs.writeFileSync(path.join(root, "LEDGER.md"), v2, "utf8");
+      const visible = await runPreStep(run, { agent, messages: [] });
+      const text = visible.messages.map((m) => JSON.stringify(m.content)).join("");
+      ok("★★★★ 安全绳①：**变了的块必须连正文注入**（哪怕它权重低 —— 模型没见过那块内容）",
+        text.includes("第二版内容改了"),
+        `未见新内容 ⇒ 会漏掉模型不知道的东西。正文片段：${text.slice(0, 300)}`);
+      rmrf(root);
+    }
+
+    // ── ⑤ ★★★★ 安全绳③：**读盘失败/切不出块 ⇒ 退回整份注入** ──
+    {
+      const root = mkProj59("bi-fallback");
+      // 只写清单、**不写台账文件** ⇒ 渲染层应退回（且整个注入走"结构登记但文件不存在"那条）
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const man = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+      man.blockInjection = true;
+      fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify(man), "utf8");
+      const visible = await runPreStep(run, {
+        agent: { session: { header: { id: "s-bi-fb", cwd: root } } },
+        messages: [],
+      });
+      const text = visible.messages.map((m) => JSON.stringify(m.content)).join("");
+      ok("★★★★ 安全绳③：台账读不到 ⇒ **不许假装省了**（应走「文件还不存在」那条提示，而不是空的区块注入）",
+        !text.includes("LEDGER-BLOCKS"), text.slice(0, 240));
+      rmrf(root);
+    }
+
+    // ── ⑥ ★★★★ 安全绳②：**压缩后不省**（`afterCompaction` ⇒ 全部块按必注处理）──
+    {
+      const src = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+      // ★ 判据要吃**渲染层自己**的那段实现（不扫全文）：`afterCompaction === true` 必须在 `isMust` 里
+      const a = src.indexOf("function renderBlockInjection");
+      const b = src.indexOf("\nfunction ", a + 10);
+      const seg = src.slice(a, b < 0 ? a + 9000 : b);
+      ok("★★★★ 安全绳②：`renderBlockInjection` 里 **`afterCompaction === true` 直接判为必注**（压缩后不省）",
+        /afterCompaction === true\s*\|\|/.test(seg),
+        "压缩后若不重注，模型手里就真的没有那些块的正文了（这正是底线要防的）");
+      ok("★★★★ 安全绳②：且压缩后的重注**显式传了** `afterCompaction: true`",
+        /renderInjectionBody\(info, undefined, \{ afterCompaction: true \}\)/.test(src));
     }
   }
 }

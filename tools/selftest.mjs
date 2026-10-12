@@ -7853,8 +7853,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 49（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 49);
-  eq("★ 口径：其中带「情形 N」编号的 = 48", numbered, 48);
+  eq("★ 口径：section 总数 = 50（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 50);
+  eq("★ 口径：其中带「情形 N」编号的 = 49", numbered, 49);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -11491,6 +11491,71 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       `${a1} vs ${a2}`
     );
     rmrf(root);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // ★★★ 情形 55：D133 **记忆区块**的第一层（分块 / 块哈希 / 差异）
+  //
+  //   ★ 为什么这一层必须先测（D134 步 1–3）：它是"**这块变了没**"的唯一判据，
+  //     而 D132 卡住的地方正是**只能整份比字节**。地址/块不稳 ⇒ 后面全是猜。
+  //   ★ 三个都是**纯函数** ⇒ 直接调，不掺压缩编排等无关变量。
+  //
+  //   ★★★ 每条断言都**两个方向**（本机纪律：只测一个方向的实现会被"恒常量"骗过）：
+  //     · 分块：块数要对（**漏块 = 内容凭空消失**）；且**不许把代码围栏里的 `#` 当标题**；
+  //     · 差异：不变的不报（否则每次都全注）；变了的必报（否则**漏注 = 伤准确性**）。
+  // ═══════════════════════════════════════════════════════════════════════════
+  section("情形 55：D133 记忆区块第一层（分块 / 块哈希 / 差异）");
+  {
+    // ── 分块：三种边界（无标题 / 有标题 / 标题前有前言）
+    const noHead = mod.__test.splitBlocks("就是一段没有标题的文字\n第二行\n");
+    eq("★★ 55①：没有标题 ⇒ 整段算**一个**块（绝不能返回空）", noHead.length, 1);
+    eq("★★ 55①：且它的 heading 是 undefined（不是空串）", noHead[0].heading, undefined);
+
+    const three = mod.__test.splitBlocks("# 标题\n正文\n## 目标\nY\n### 子项\nZ\n");
+    eq("★★★ 55②：三个标题 ⇒ **三块**（漏块就是内容凭空消失）", three.length, 3);
+    // ★★ 断言自己不许崩（反向验证抓到过：实现只返回 1 块时，`three[1].heading` 抛异常
+    //    ⇒ 后面所有断言被跳过 ⇒ **看不出红**）。⇒ 一律用可选链 + 先判存在。
+    ok(
+      "★★★ 55②：块标题被如实记下",
+      typeof three[1]?.heading === "string" && /^## 目标$/.test(three[1].heading),
+      JSON.stringify(three.map((b) => b?.heading))
+    );
+
+    const withLead = mod.__test.splitBlocks("前言（标题之前的内容）\n\n## 目标\nY\n");
+    eq("★★★ 55③：标题**之前**的内容自成一个块（否则那段凭空消失）", withLead.length, 2);
+    eq("★★★ 55③：且前言块 heading 为 undefined", withLead[0].heading, undefined);
+
+    // ── ★ 代码围栏：里面的 `#` 不是标题
+    const fenced = mod.__test.splitBlocks("# 标题\n```\n# 这是代码里的井号\n```\n正文\n");
+    eq("★★★ 55④：代码围栏里的 `#` **不许**当标题（否则把代码切碎）", fenced.length, 1);
+
+    // ── 哈希：内容敏感（两个方向）
+    // ★ 同样一律可选链：实现错时不能抛异常（见 55② 的注记）
+    const a = mod.__test.splitBlocks("## A\n内容一\n");
+    const a2 = mod.__test.splitBlocks("## A\n内容一\n");
+    const b = mod.__test.splitBlocks("## A\n内容二\n");
+    eq("★★★ 55⑤：同样的内容 ⇒ 同样的块哈希", a2[0]?.hash, a[0]?.hash);
+    ok("★★★ 55⑥：内容改了 ⇒ 块哈希**必须变**（否则漏注 ⇒ 伤准确性）", a[0]?.hash !== b[0]?.hash, `${a[0]?.hash} vs ${b[0]?.hash}`);
+
+    // ── 差异：不变的不报、变了的必报、消失的也要报
+    const d1 = mod.__test.diffBlocks(a, a2);
+    eq("★★★ 55⑦：内容没变 ⇒ changed 为空（否则每次都全注）", d1.changed.length, 0);
+    const d2 = mod.__test.diffBlocks(a, b);
+    eq("★★★ 55⑧：内容变了 ⇒ changed 恰好 1 个", d2.changed.length, 1);
+    const d3 = mod.__test.diffBlocks(b, a);
+    eq("★★★ 55⑨：块没了 ⇒ removed 恰好 1 个（要告诉模型它没了）", d3.removed.length, 1);
+    // ★ 复制两份同内容 ⇒ 只算一个（去重），否则会重复注入
+    const dup = mod.__test.splitBlocks("## A\n内容一\n## A\n内容一\n");
+    const d4 = mod.__test.diffBlocks([], dup);
+    eq("★★ 55⑩：同内容出现两次 ⇒ changed **去重成 1**（不做会重复注入）", d4.changed.length, 1);
+
+    // ── ★★★ 判别力自证：哈希必须**既稳定又敏感**（缺一个就是坏实现）
+    ok(
+      "★★★ 55⑪：判据本身有判别力 —— 哈希必须**既稳定又敏感**（缺一个就是坏实现）",
+      a[0]?.hash === a2[0]?.hash && a[0]?.hash !== b[0]?.hash,
+      `稳定=${a[0]?.hash === a2[0]?.hash} 敏感=${a[0]?.hash !== b[0]?.hash}`
+    );
   }
 }
 

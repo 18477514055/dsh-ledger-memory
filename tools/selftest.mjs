@@ -5313,25 +5313,20 @@ section("情形 27：官方设置面板");
     eq("GET 状态码 200", r.status, 200);
     eq("GET ok", r.body.ok, true);
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
-    eq("★ 回报了十四项元数据（D129 删掉 deltaFallbackPoints；D136 新增 blockInjection）", r.body.specs?.length, 14);
+    eq("★ 回报了三十五项元数据（D138 面板重置：把能修改的都放进去）", r.body.specs?.length, 35);
     ok(
-      "★ 十四项就是用户要的那些",
-      JSON.stringify(r.body.specs.map((s) => s.key).sort()) ===
+      "★★ 三十五项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
+      JSON.stringify([...r.body.specs.map((s) => s.key)].sort()) ===
         JSON.stringify([
-          "autoCompact",
-          "blockInjection",
-          "changeRegisterMax",
-          "deltaRemovePoints",
-          "deltaTriggerPoints",
-          "highFidelityCompact",
-          "highFidelityCompactRatio",
-          "incrementalCompact",
-          "logLevels",
-          "maxActiveLines",
-          "mode",
-          "pressureTiers",
-          "requireFlushBeforeCompact",
-          "turnEndOffer",
+          "autoCompact", "blockHistoryMax", "blockInjection", "capsuleArtifactMax",
+          "capsuleErrorChars", "capsuleErrorMax", "capsuleMaxChars", "capsuleStoreSessions",
+          "capsuleUserMsgChars", "capsuleUserMsgMax", "changeRegisterMax", "deltaRemovePoints",
+          "deltaTriggerPoints", "highFidelityCompact", "highFidelityCompactRatio",
+          "incrementalCompact", "logBriefChars", "logDefaultLimit", "logLevels",
+          "maxActiveLines", "maxArchiveList", "maxReadChars", "mode", "nudgeMinRatio",
+          "pressureTiers", "recallMaxChars", "requireFlushBeforeCompact", "shadowedIndexMax",
+          "triageKeepMax", "triageOwedMaxAgeMs", "turnEndOffer", "userMsgMaxChars",
+          "weightDoneCap", "weightMustInject", "weightPrincipleScore",
         ]),
       JSON.stringify(r.body.specs.map((s) => s.key))
     );
@@ -7829,7 +7824,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 14（D129 删 deltaFallbackPoints；D136 新增 blockInjection）", settingKeys.length, 14);
+  eq("★ 口径：设置项数 = 35（D138 面板重置）", settingKeys.length, 35);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
   const SUBS = ["status", "show", "init", "update", "archive", "compact", "light", "log", "mode", "lock", "handoff", "triage"];
@@ -7854,8 +7849,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 54（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 54);
-  eq("★ 口径：其中带「情形 N」编号的 = 53", numbered, 53);
+  eq("★ 口径：section 总数 = 55（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 55);
+  eq("★ 口径：其中带「情形 N」编号的 = 54", numbered, 54);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -12101,6 +12096,106 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
         "压缩后若不重注，模型手里就真的没有那些块的正文了（这正是底线要防的）");
       ok("★★★★ 安全绳②：且压缩后的重注**显式传了** `afterCompaction: true`",
         /renderInjectionBody\(info, undefined, \{ afterCompaction: true \}\)/.test(src));
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // ★★★★★ 情形 60：D138 **设置面板的完整性与诚实性**
+  //
+  //   ★ 用户逐字：*"请你重置整个设置面板。把能修改的东西都放进去。"*
+  //
+  //   ★★★ 本情形守的是**两件会静默骗人的事**（都是本项目栽过的形态）：
+  //     ① **面板上有一项、但代码里没有消费者** ⇒ 用户改了没反应（空承诺）。
+  //     ② **spec 与 defaults 的键不一致** ⇒ 漏一个键 = 那一项永远取默认值，
+  //        用户把面板翻遍也改不动它（本机纪律：**写了就得做到**）。
+  //   ★ 另外守：③ 数值项的 `min/max` 必须是**真边界**（spec 与行为同一出口）；
+  //     ④ 文案纯文本（面板不解析 markdown）。
+  // ═══════════════════════════════════════════════════════════════════════════
+  section("情形 60：D138 设置面板完整性（无空承诺 / 键双向一致）");
+  {
+    const W = mod.__test;
+    const libSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+    const specs = W.settingSpecsForTest();
+    const defaults = W.settingDefaultsForTest();
+    const specKeys = specs.map((s) => s.key).sort();
+    const defKeys = Object.keys(defaults).sort();
+
+    // ── ① spec 与 defaults **双向一致**（漏一个键 = 那一项永远改不动）──
+    const onlySpec = specKeys.filter((k) => !defKeys.includes(k));
+    const onlyDef = defKeys.filter((k) => !specKeys.includes(k));
+    ok("★★★★ 每个 spec 键在 defaults 里都有（否则该项永远取不到值）",
+      onlySpec.length === 0, `只在 spec：${onlySpec.join(", ") || "（无）"}`);
+    ok("★★★★ 每个 defaults 键在 spec 里都有（否则那一项在面板上根本看不见，却影响行为）",
+      onlyDef.length === 0, `只在 defaults：${onlyDef.join(", ") || "（无）"}`);
+
+    // ── ② ★★★★ **每个键都必须真有消费者**（面板不许说谎）──
+    //
+    //   ★ 判据：把 `SETTING_SPECS` 与 `settingDefaults` 两块**从源码里挖掉**，
+    //     剩下的代码里若还能找到这个**标识符**，才算"有消费者"。
+    //   ★★★ 为什么不能用"数 `"key"` 出现几次"（我第一版就是那样，**当场假红**）：
+    //     · 布尔项的消费形态是 `cfg.incrementalCompact` / `currentSettings().X`
+    //       —— **点号访问，不出现引号**；字符串搜索永远找不到它 ⇒
+    //       20 个真实存在的消费者被判成"空承诺"（**假的失败**）。
+    //     本机纪律第 11 条：**"看起来没做"要先分清「没做」与「做了但没被记对」**。
+    const stripBlock = (src, startMark, endMark) => {
+      const a = src.indexOf(startMark);
+      if (a < 0) return src;
+      const b = src.indexOf(endMark, a);
+      return b < 0 ? src : src.slice(0, a) + src.slice(b);
+    };
+    let body = libSrc;
+    body = stripBlock(body, "const SETTING_SPECS = [", "const SETTING_GROUPS = [");
+    body = stripBlock(body, "function settingDefaults() {", "\nfunction ");
+    const noConsumer = [];
+    for (const k of specs.map((s) => s.key)) {
+      // ★ 词边界匹配标识符（`numOf("x")`、`cfg.x`、`settings.x` 都能命中）
+      if (!new RegExp("\\b" + k + "\\b").test(body)) noConsumer.push(k);
+    }
+    ok("★★★★★ 每个设置项都**真有消费者**（面板上改了必须真生效，否则是空承诺）",
+      noConsumer.length === 0,
+      noConsumer.join("、"));
+
+    // ── ③ 每个数值项必须有完整边界（min 与 max 都要有）──
+    const noRange = specs
+      .filter((s) => s.kind === "number" && !(Number.isFinite(s.min) && Number.isFinite(s.max)))
+      .map((s) => s.key);
+    ok("★★★ 每个数字项都有 min 与 max（没边界的数会被夹取逻辑放进 -∞~+∞）",
+      noRange.length === 0, noRange.join("、"));
+
+    // ── ④ 文案纯文本（面板不解析 markdown，星号会原样显示）──
+    const md = [];
+    for (const s of specs) {
+      for (const f of ["label", "hint"]) {
+        const v = s[f];
+        if (typeof v === "string" && /\*\*|`|\[[^\]]+\]\([^)]+\)/.test(v)) md.push(`${s.key}.${f}`);
+      }
+    }
+    ok("★★★ 设置项文案是纯文本（面板按纯文本渲染，markdown 会原样显示成语法）",
+      md.length === 0, md.join("、"));
+
+    // ── ⑤ ★★★★ 边界**只有一个出口**：spec 就是校验的那一份 ──
+    //
+    //   ★ 改造前 `normalizeSettings` 手抄了 min/max（两处各一份 ⇒ 会分叉）。
+    //     这条断言用**行为**证明已统一：把一个值设成越界数，
+    //     被夹到的值**必须等于 spec.max**（若还有第二份边界，这里就会不等）。
+    {
+      const s = specs.find((x) => x.key === "capsuleMaxChars");
+      const bad = W.normalizeSettingsForTest({ capsuleMaxChars: 99_999_999 });
+      eq("★★★★★ 越界值被夹到 spec 里写的上限（证明校验与面板**读的是同一份边界**）",
+        bad.value?.capsuleMaxChars, s.max);
+      const lo = W.normalizeSettingsForTest({ capsuleMaxChars: 1 });
+      eq("★★★★ 过小值被夹到 spec 里写的下限", lo.value?.capsuleMaxChars, s.min);
+    }
+
+    // ── ⑥ ★★★★ 带 `scale` 的项：面板填人类单位、内部存基本单位 ──
+    {
+      const s = specs.find((x) => x.key === "triageOwedMaxAgeMs");
+      ok("★★★ 有时限的项声明了 scale（否则面板上会让人填毫秒）",
+        Number.isFinite(s?.scale) && s.scale === 60000, JSON.stringify(s?.scale));
+      const r = W.normalizeSettingsForTest({ triageOwedMaxAgeMs: 30 });
+      eq("★★★★ 面板填 30（分钟）⇒ 内部存 1800000（毫秒）",
+        r.value?.triageOwedMaxAgeMs, 30 * 60000);
     }
   }
 }

@@ -61,17 +61,51 @@ for (const [name, key] of marks) {
   if (!okk) allOk = false;
   console.log(`  ${okk ? "✓" : "✗"} ${name}：包内=${inPkg} 本地=${inLocal}`);
 }
-// 自检文件单独查（它在 tools/selftest.mjs 里，不在 lib/index.js）
-const testSrc = fs.readFileSync(path.join(pkg, "tools", "selftest.mjs"), "utf8");
-const selfTestMark = "口径：工具数 = 14";
-const stOk = testSrc.includes(selfTestMark) && fs.readFileSync("tools/selftest.mjs", "utf8").includes(selfTestMark);
-if (!stOk) allOk = false;
-console.log(`  ${stOk ? "✓" : "✗"} 口径自检（在 tools/selftest.mjs 里）`);
+// ★★★ 2026-10-12（D145）：**自检已不进包**（用户拍板：「用户确实不需要跑我们的质检，
+//   出 bug 了直接推送 issue 给我就可以了」）⇒ 这里**不能再假设包里有 `tools/selftest.mjs`**。
+//   ★ 实测：不改这一行的后果是**探针自己崩**（`ENOENT ... package/tools/selftest.mjs`）——
+//     而那是"探针坏了"，不是"包坏了"。★ 两者必须分清（纪律 6：夹具故障 ≠ 被测对象有问题）。
+//
+//   ★★ 判据改成**双向**：包里有它 ⇒ 必须与本地逐字节相同；
+//     包里没有它 ⇒ **必须确认是有意排除**（`files` 里整个 `tools/` 都不在）。
+//     ⇒ 这样"漏发了"与"有意排除"仍然分得开。
+const pkgToolsDir = path.join(pkg, "tools");
+const pkgHasSelftest = fs.existsSync(path.join(pkgToolsDir, "selftest.mjs"));
+const localTestSrc = fs.readFileSync("tools/selftest.mjs", "utf8");
+const pjFiles = pj.files ?? [];
+const toolsWhollyExcluded = !pjFiles.some((f) => f === "tools" || String(f).startsWith("tools/"));
 
-console.log("\n═══ 与本地工作树 ═══");
-console.log(`  lib/index.js 逐字节相同: ${libSrc === localSrc ? "★ 是" : "✗ 否"}`);
-console.log(`  tools/selftest.mjs 逐字节相同: ${testSrc === fs.readFileSync("tools/selftest.mjs", "utf8") ? "★ 是" : "✗ 否"}`);
+if (pkgHasSelftest) {
+  const testSrc = fs.readFileSync(path.join(pkgToolsDir, "selftest.mjs"), "utf8");
+  const selfTestMark = "口径：工具数 = 14";
+  const stOk = testSrc.includes(selfTestMark) && localTestSrc.includes(selfTestMark);
+  if (!stOk) allOk = false;
+  console.log(`  ${stOk ? "✓" : "✗"} 口径自检（在 tools/selftest.mjs 里）`);
+  console.log("\n═══ 与本地工作树 ═══");
+  console.log(`  lib/index.js 逐字节相同: ${libSrc === localSrc ? "★ 是" : "✗ 否"}`);
+  console.log(`  tools/selftest.mjs 逐字节相同: ${testSrc === localTestSrc ? "★ 是" : "✗ 否"}`);
+  if (libSrc !== localSrc || testSrc !== localTestSrc) allOk = false;
+} else {
+  // ★ 包里没有自检 ⇒ 只有"整个 tools/ 都被有意排除"才算对。
+  if (!toolsWhollyExcluded) allOk = false;
+  console.log(
+    `  ${toolsWhollyExcluded ? "✓" : "✗"} 自检**不在包里**，且 ` +
+      `${toolsWhollyExcluded ? "已确认是有意排除整个 tools/" : "但 files 里仍有 tools/ 条目 ⇒ 半坏状态"}`
+  );
+  console.log("\n═══ 与本地工作树 ═══");
+  console.log(`  lib/index.js 逐字节相同: ${libSrc === localSrc ? "★ 是" : "✗ 否"}`);
+  console.log(`  tools/selftest.mjs 不进包（设计如此，跳过比对）`);
+  if (libSrc !== localSrc) allOk = false;
+}
 
-console.log(`\n⇒ 预检${allOk && libSrc === localSrc ? " **通过**，可以发布" : " **未通过**，不要发布"}`);
+console.log(`\n═══ DSH STORE 的单文件上限（256 KiB）═══`);
+for (const f of files) {
+  const size = fs.statSync(path.join(pkg, f)).size;
+  const over = size > 262144;
+  if (over) allOk = false;
+  console.log(`  ${over ? "✗" : "✓"} ${size.toString().padStart(8)} B  ${f}${over ? "  ← 超 262144" : ""}`);
+}
+
+console.log(`\n⇒ 预检${allOk ? " **通过**，可以发布" : " **未通过**，不要发布"}`);
 fs.rmSync(tmp, { recursive: true, force: true });
-process.exit(allOk && libSrc === localSrc ? 0 : 1);
+process.exit(allOk ? 0 : 1);

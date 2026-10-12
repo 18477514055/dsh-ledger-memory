@@ -5122,7 +5122,11 @@ section("情形 26：四条压缩入口在日志里分得清");
   {
     const cases = [
       {
-        tag: "auto", src: "auto:70%", expect: "自动 70%",
+        // ★★ 2026-10-13（D159 §四）：期望值改成**按设置渲染**（默认 highFidelityCompactRatio=0.3）。
+        //   ★ 为什么必须改而不是放宽：这条断言**原来钉的是写死的旧文案**（"自动 70%"），
+        //     而写死正是缺陷本体 —— 实际线是 30%，日志却在说 70%。
+        //     ⇒ 现在它同时守住两件事：① 来源被正确记下；② 报出来的**百分比是真的**。
+        tag: "auto", src: "auto:70%", expect: "自动 30%",
         drive: async (run, agent) => {
           run.services.tokenMeter._total = 750; // 窗口 1000 ⇒ 0.75 ≥ 0.7
           await runPreStep(run, { agent, messages: [] });
@@ -7915,8 +7919,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 58（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 58);
-  eq("★ 口径：其中带「情形 N」编号的 = 57", numbered, 57);
+  eq("★ 口径：section 总数 = 59（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 59);
+  eq("★ 口径：其中带「情形 N」编号的 = 58", numbered, 58);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -9059,8 +9063,11 @@ section("情形 48：两次压缩重叠时，来源不许互相覆盖（队列�
     const lines = compactionLines48(root);
     eq("★★ 48a：两条压缩里程碑都记下了", lines.length, 2);
     ok(
-      "★★★ 48a：第一条是「自动 70%」—— ★ 这正是被单槽覆盖掉的那一条（事故本体）",
-      lines[0] !== undefined && lines[0].includes("自动 70%"),
+      // ★★ 2026-10-13（D159 §四）：期望值改成按设置渲染（默认线 0.3 ⇒ "自动 30%"）。
+      //   ★ 这条断言的本体（"第一条领到了自动那次、没被单槽覆盖"）不变 —— 只换了它认的字符串，
+      //     而新字符串**同时**证明了"百分比是按设置算的"。
+      "★★★ 48a：第一条是「自动 30%」（= 按当前设置渲染）—— ★ 这正是被单槽覆盖掉的那一条（事故本体）",
+      lines[0] !== undefined && lines[0].includes("自动 30%"),
       String(lines[0])
     );
     ok(
@@ -12543,6 +12550,163 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       /const totalMax = numOf\("triageKeepTotalMax", TRIAGE_KEEP_TOTAL_MAX\)/.test(src));
     ok("★★★★★ 63⑦ 超总量上限时丢**最旧的**并**如实计数**（沉默丢弃 = 下一个 D89）",
       /merged\.slice\(droppedOld\)/.test(src) && /droppedOld/.test(src));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  section("情形 64：D159/D160 真机缺陷修复（胶囊并集 + 指针落盘 + 标签动态化）");
+  //   三条都是**真机实测出来的**缺陷（D159），不是推理：
+  //     · 胶囊素材被覆盖：fada 应 13 条只收 2 条；跨 12 场 10 场盘上是 0 条；
+  //       `capsules.json` 47 场合计只剩 63 条（容量上限 1880）—— 39 场恰好 1 条。
+  //     · 压缩后没有指针：`shadowedIndex` 是纯内存 Map ⇒ 跨重启那次压缩**路标全丢**。
+  //     · 来源标签写死 70%：实际线 30% ⇒ 记录不准确（纪律 11 同型）。
+  //   ★ 判据分两层（D136 的教训：**函数对 ≠ 接线对**）：
+  //     ① 纯函数层（`mergeCapsuleMatter` / `shadowedIndexOf`）—— 语义对不对；
+  //     ② 接线层 —— 生产链路**真的调**它（摘掉调用点也必须红）。
+  {
+    // ── 64①：**修复本体** —— 内存比盘上少时，盘上那份不许变少 ────────────────
+    //
+    //   ★ 这是 D159 的病历本身：重启后内存只有 2 条、盘上有 13 条。
+    //     旧语义（替换）⇒ 盘上变 2 条（丢 11 条）；新语义（并集）⇒ 仍是 13 条 + 新增的 2 条。
+    const prevMatter = {
+      userMessages: Array.from({ length: 13 }, (_, i) => ({ at: `2026-10-12 10:0${i % 10}:00`, text: `旧原话${i}` })),
+      errors: [{ at: "2026-10-12 10:00:00", text: "旧报错" }],
+      artifacts: { "D:\\a.js": { op: "改", at: "2026-10-12 10:00:00", tool: "edit" } },
+    };
+    const memMatter = {
+      userMessages: [{ at: "2026-10-13 02:00:00", text: "重启后的新原话1" }, { at: "2026-10-13 02:01:00", text: "重启后的新原话2" }],
+      errors: [],
+      artifacts: new Map([["D:\\b.js", { op: "改", at: "2026-10-13 02:00:00", tool: "write" }]]),
+    };
+    const merged64 = mod.__test.mergeCapsuleMatter(prevMatter, memMatter, { userMax: 40, errorMax: 20 });
+    ok("★★★★★ 64① ★ 并集后**盘上那 13 条一条都不少**（D159 的病：旧语义会把 13 压成 2）",
+      merged64.userMessages.filter((x) => x.text.startsWith("旧原话")).length === 13,
+      `实得旧原话 ${merged64.userMessages.filter((x) => x.text.startsWith("旧原话")).length} 条（期望 13）`);
+    ok("★★★★★ 64① 且**新攒的 2 条也在**（只「少了就跳过」是不够的：新素材会被永久丢）",
+      merged64.userMessages.filter((x) => x.text.startsWith("重启后的新原话")).length === 2,
+      `实得新原话 ${merged64.userMessages.filter((x) => x.text.startsWith("重启后的新原话")).length} 条（期望 2）`);
+    ok("★★★★ 64① 旧报错也在（三桶**都**只增不减，不只是用户原话那一桶）",
+      merged64.errors.length === 1 && merged64.errors[0].text === "旧报错",
+      JSON.stringify(merged64.errors));
+    ok("★★★★ 64① 器物索引按**路径**并셔（旧路径与新路径都在，不是谁覆盖谁）",
+      Object.keys(merged64.artifacts).length === 2 &&
+        merged64.artifacts["D:\\a.js"] !== undefined && merged64.artifacts["D:\\b.js"] !== undefined,
+      JSON.stringify(Object.keys(merged64.artifacts)));
+
+    // ── 64②：同一路径冲突时取**更晚**的那次（否则"最后碰过"这个信息会失真）──
+    const merged64b = mod.__test.mergeCapsuleMatter(
+      { userMessages: [], errors: [], artifacts: { "D:\\c.js": { op: "读", at: "2026-10-12 09:00:00", tool: "read" } } },
+      { userMessages: [], errors: [], artifacts: new Map([["D:\\c.js", { op: "改", at: "2026-10-13 09:00:00", tool: "edit" }]]) },
+      { userMax: 40, errorMax: 20 },
+    );
+    ok("★★★★ 64② 同路径冲突取**更晚**那次操作（「最后碰过」不许失真）",
+      merged64b.artifacts["D:\\c.js"]?.op === "改" && merged64b.artifacts["D:\\c.js"]?.at === "2026-10-13 09:00:00",
+      JSON.stringify(merged64b.artifacts["D:\\c.js"]));
+
+    // ── 64③：去重按 `at+text`（同一批素材重复喂**不许翻倍**；但**同文本不同时间不许误并**）──
+    //
+    //   ★★ 这一条被**反向验证救过一次**（纪律 10：摘掉修复必须看得见红）：
+    //     第一版只测"同一句重复喂不许翻倍" ⇒ 把去重键从 `at+text` 换成**只按 text**
+    //     竟然**一条都不红** ⇒ 那是**假绿**：两种键在那个夹具下表现相同。
+    //   ★ 真正有区分力的场景是**对偶的那一面** —— 用户在不同时刻说**同一句话**
+    //     （本机真实存在：「继续」「继续工作」「先做一」反复出现，实测 fada 一场里
+    //     `继续工作` / `先做一` 都是真实条目）。只按 text 去重会把它们**误判成同一条而丢掉**。
+    //   ⇒ 两个方向都要钉：① 完全相同的（at+text 都同）不许翻倍；② 同文本不同时间不许并成一条。
+    const dup = mod.__test.mergeCapsuleMatter(
+      { userMessages: [{ at: "t1", text: "同一句" }], errors: [], artifacts: {} },
+      { userMessages: [{ at: "t1", text: "同一句" }], errors: [], artifacts: {} },
+      { userMax: 40, errorMax: 20 },
+    );
+    ok("★★★★ 64③ 完全相同的条目重复喂**不许翻倍**（按 `at+text` 去重，与 `hydrateCapsuleMemory` 同一把尺子）",
+      dup.userMessages.length === 1, `实得 ${dup.userMessages.length} 条（期望 1）`);
+    const dupB = mod.__test.mergeCapsuleMatter(
+      { userMessages: [{ at: "2026-10-13 01:00:00", text: "继续工作" }], errors: [], artifacts: {} },
+      { userMessages: [{ at: "2026-10-13 02:00:00", text: "继续工作" }], errors: [], artifacts: {} },
+      { userMax: 40, errorMax: 20 },
+    );
+    ok("★★★★★ 64③ ★ **同一句话在不同时间说，不许被误并成一条**（只按 text 去重就会丢 —— 本机真实存在这种原话）",
+      dupB.userMessages.length === 2, `实得 ${dupB.userMessages.length} 条（期望 2）`);
+
+    // ── 64④：**接线** —— 生产链路真的调了那个纯函数 ──────────────────────────
+    const src64 = readLibSource();
+    ok("★★★★★ 64④ `persistCapsuleMemory` **真的调用** `mergeCapsuleMatter`（函数对 ≠ 接线对）",
+      /const merged = mergeCapsuleMatter\(prev, mem, \{/.test(src64),
+      "★ 若改成别的写法而不再调它，这条要红 —— 否则就是 D136 那个「函数对、没人用」的坑");
+
+    // ── 64⑤：**落盘** —— 真写一次，再读回来核（"重启后还在不在"的硬判据）────
+    //
+    //   ★ 用**唯一 sid** 隔离：本用例的 sid 只在这里出现，不会与别的用例互相看见。
+    const sid64 = `session-d159-${Date.now()}-merge`;
+    mod.__test.persistCapsuleMemoryForTest(sid64, {
+      userMessages: [{ at: "2026-10-13 03:00:00", text: "先写进盘上的一条" }],
+      errors: [],
+      artifacts: new Map(),
+    });
+    // 模拟"重启后内存只有一条"⇒ 用**更少**的内存快照再写一次
+    mod.__test.persistCapsuleMemoryForTest(sid64, {
+      userMessages: [{ at: "2026-10-13 04:00:00", text: "重启后新收的一条" }],
+      errors: [],
+      artifacts: new Map(),
+    });
+    const after64 = mod.__test.capsuleStoreOf(sid64);
+    ok("★★★★★ 64⑤ ★ 模拟重启后落盘：盘上那条**仍在**（这是 D159 的真机复现路径）",
+      (after64?.userMessages ?? []).some((x) => x.text === "先写进盘上的一条"),
+      JSON.stringify((after64?.userMessages ?? []).map((x) => x.text)));
+    ok("★★★★ 64⑤ 新收的那条也进去了（是并集，不是「少的赢」也不是「多的赢」）",
+      (after64?.userMessages ?? []).some((x) => x.text === "重启后新收的一条"),
+      JSON.stringify((after64?.userMessages ?? []).map((x) => x.text)));
+
+    // ── 64⑥：**D160 指针落盘** —— 关掉内存（模拟重启）后仍能渲染出 `ledger_recall` ──
+    //
+    //   ★ 这是 D160 的判据：真机那次压缩**跨了重启** ⇒ 内存里的索引没了 ⇒
+    //     压缩后第一条注入里**一句"原文去哪读"都没有**。
+    ///  ★ 测法：直接读**落盘**那份（`shadowedStoreForTest`），
+    ///    再用一个**空内存**的 state 渲染 ⇒ 还能出 `ledger_recall({from,to})` 才算修好。
+    const sid64b = "sid-d160-inv"; // 与情形 45 用过的 sid 不重叠
+    const st64 = { shadowedIndex: new Map() };
+    mod.__test.recordShadowedIndex(
+      st64, sid64b,
+      {
+        session: {
+          log: [
+            { type: "compaction/summary", seq: 64001, time: Date.now(),
+              data: { shadowedRange: { start: 111, end: 222 }, shadowedSeqs: [111, 200, 222], shadowedTokenCount: 999, summary: [{ text: "s" }] } },
+          ],
+        },
+      },
+      "test",
+    );
+    const stFresh = { shadowedIndex: new Map() }; // ★ 空内存 = 模拟重启
+    const idxFresh = mod.__test.renderShadowedIndex(stFresh, sid64b);
+    ok("★★★★★ 64⑥ ★★ **内存空（模拟重启）时，索引仍能从盘上渲染出来**",
+      typeof idxFresh === "string" && idxFresh.includes("111") && idxFresh.includes("222"),
+      `长度=${String(idxFresh).length} 尾部=${String(idxFresh).slice(-300)}`);
+    ok("★★★★★ 64⑥ 且渲染里**带着 `ledger_recall` 的动作**（D46：恢复必须是「推」给模型的）",
+      /ledger_recall/.test(String(idxFresh)) && /seq 111–222/.test(String(idxFresh)),
+      String(idxFresh).slice(-400));
+    ok("★★★★ 64⑥ 落盘那份**真的存在**（不是只靠内存巧合渲染出来的）",
+      Array.isArray(mod.__test.shadowedStoreForTest(sid64b)) &&
+        mod.__test.shadowedStoreForTest(sid64b).some((x) => x.summarySeq === 64001),
+      JSON.stringify(mod.__test.shadowedStoreForTest(sid64b) ?? null).slice(0, 200));
+
+    // ── 64⑦：**标签按设置算**，不写死 70% ────────────────────────────────────
+    //
+    //   ★★ 判据只吃**代码**、不吃注释（纪律 2：判据的输入必须是被测对象自己产生的那部分）。
+    //     第一版写成"全文不许出现「自动（70% 水位）」" ⇒ **误伤两处注释**：
+    //       · L1493 是我为这个修复写的说明（引用了旧文案作对照）；
+    //       · L12606 是历史实测记录（记的是当时那次事故的真实文案）。
+    //     ⇒ 把注释剥掉再查，才是"渲染用的字符串里有没有写死"。
+    const srcNoComment64 = src64
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    ok("★★★★★ 64⑦ 三处渲染都走 `autoFullLabel()`，**代码里没有**写死的「70%」文案残留",
+      /autoFullLabel\(\)/.test(srcNoComment64) &&
+        /autoFullLabelBefore\(\)/.test(srcNoComment64) &&
+        !/"自动（70% 水位）"/.test(srcNoComment64) &&
+        !/"自动（70% 水位压缩前）"/.test(srcNoComment64) &&
+        !/"自动 70%"/.test(srcNoComment64),
+      "★ 写死的文案正是缺陷本体：实际线是 30%，记录却在说 70%（纪律 11 同型）");
+    ok("★★★★ 64⑦ 标签值**真的取自设置**（`numOf(\"highFidelityCompactRatio\", …)`）",
+      /numOf\("highFidelityCompactRatio", HIGH_FIDELITY_COMPACT_RATIO\)/.test(src64));
   }
 }
 

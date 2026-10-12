@@ -5345,9 +5345,10 @@ section("情形 27：官方设置面板");
     eq("GET 状态码 200", r.status, 200);
     eq("GET ok", r.body.ok, true);
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
-    eq("★ 回报了三十六项元数据（D141 新增 minCompressPoints）", r.body.specs?.length, 36);
+    // ★★★★ 2026-10-13（D157/D158）：36 → **37**（新增 `triageKeepTotalMax`）。
+    eq("★ 回报了三十七项元数据（D158 新增 triageKeepTotalMax）", r.body.specs?.length, 37);
     ok(
-      "★★ 三十六项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
+      "★★ 三十七项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
       JSON.stringify([...r.body.specs.map((s) => s.key)].sort()) ===
         JSON.stringify([
           "autoCompact", "blockHistoryMax", "blockInjection", "capsuleArtifactMax",
@@ -5357,7 +5358,7 @@ section("情形 27：官方设置面板");
           "incrementalCompact", "logBriefChars", "logDefaultLimit", "logLevels",
           "maxActiveLines", "maxArchiveList", "maxReadChars", "minCompressPoints", "mode", "nudgeMinRatio",
           "pressureTiers", "recallMaxChars", "requireFlushBeforeCompact", "shadowedIndexMax",
-          "triageKeepMax", "triageOwedMaxAgeMs", "turnEndOffer", "userMsgMaxChars",
+          "triageKeepMax", "triageKeepTotalMax", "triageOwedMaxAgeMs", "turnEndOffer", "userMsgMaxChars",
           "weightDoneCap", "weightMustInject", "weightPrincipleScore",
         ]),
       JSON.stringify(r.body.specs.map((s) => s.key))
@@ -7889,7 +7890,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 36（D141 新增 minCompressPoints）", settingKeys.length, 36);
+  eq("★ 口径：设置项数 = 37（D158 新增 triageKeepTotalMax）", settingKeys.length, 37);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
   const SUBS = ["status", "show", "init", "update", "archive", "compact", "light", "log", "mode", "lock", "handoff", "triage"];
@@ -7914,8 +7915,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 57（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 57);
-  eq("★ 口径：其中带「情形 N」编号的 = 56", numbered, 56);
+  eq("★ 口径：section 总数 = 58（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 58);
+  eq("★ 口径：其中带「情形 N」编号的 = 57", numbered, 57);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -12502,6 +12503,46 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       "★ 找不到该条件 ⇒ 可能被 `if (false && …)` 之类硬关掉，或条件被改漏");
     ok("★★★★ 62⑩ 增量总开关 `enableDelta` 也**真的读** `incrementalCompact`（两处口径同源）",
       /_deltaCfg\.incrementalCompact === true/.test(src));
+  }
+
+  section("情形 63：D157/D158 逐回合义务（不拦压缩）+ 分流单累积");
+  {
+    const src = readLibSource();
+    // ★★★★★ 情形 63（D157/D158）：**逐回合义务** 与 **分流单累积**
+    // ═══════════════════════════════════════════════════════════════════════════
+    //   两条都是用户当场定的规矩，必须由断言钉住（否则下次改动会静默改掉行为）：
+    //     · D157"每条回复结束前必须落账+分流" ⇒ 但**不许做成闸门**（47% 回合没写 ⇒ D59 前科）
+    //     · D158"全量压缩要把**现有所有**分流一起压" ⇒ keep 必须**累积**，不能单槽覆盖
+    // ═══════════════════════════════════════════════════════════════════════════
+    ok("★★★★★ 63① 逐回合义务**真的记账**（`turnObligation` 有写入点）",
+      /state\.turnObligation\.set\(key, rec\)/.test(src) &&
+      /rec\.wrote = true/.test(src) && /rec\.triaged = true/.test(src));
+    ok("★★★★★ 63② 回合末**判定并重置**（`turn/end` 分支存在）",
+      /else if \(t === "turn\/end"\)/.test(src) && /state\.turnObligation\.set\(key, \{ wrote: false, triaged: false \}\)/.test(src));
+    // ★ 63③：判据不能靠"两个词在 200 字符内"这种脆弱启发式（第一版就是这么写的，
+    //   反向验证当场证明它**抓不到**"把义务接进闸门"那种改法）。
+    //   ⇒ 改成**结构性判据**：把 `flushBeforeCompact` 的函数体切出来，
+    //     要求它**通篇不含** `turnObligation`。那才是"义务绝不参与闸门"的真正含义。
+    const gateBody = src.match(/function flushBeforeCompact\([\s\S]*?\n\}/);
+    ok("★★★★★ 63③ ★ **义务绝不拦压缩**（用户要强制，但 D59 前科要求留逃生口）——" +
+      "闸门函数体里**一处都不许出现** `turnObligation`",
+      gateBody !== null && !/turnObligation/.test(gateBody[0]),
+      "★ 若闸门读了它，就是「没写台账就不许压」⇒ 47% 的回合会卡死（D59 形态）");
+    ok("★★★★ 63④ 回合义务提醒**每回合只说一次**（否则每步注入 ⇒ prompt 缓存每步全冷）",
+      // ★ 判据要**吃到守卫条件本身**（第一版只测"声明存在" ⇒ 声明留着、条件删掉也照样绿）。
+      /if \(!reminded && \(pend !== undefined \|\| needWrite \|\| needTriage\)\) \{/.test(src) &&
+      /cur\.reminded = true/.test(src));
+    // ★★★ D158：keep 桶必须**累积**（原来是 `set(sid, {items: keep})` 单槽覆盖）
+    ok("★★★★★ 63⑤ ★ 分流单**累积**而不是覆盖（D158 用户当场指出的缺陷）——" +
+      "出现 `[...prev.items]` 合并写法，且**不存在**旧的单槽覆盖写法",
+      /\[\.\.\.prev\.items\]/.test(src) &&
+      !/state\.triageKeep\.set\(String\(sid\), \{ at, items: keep \}\)/.test(src),
+      "★ 旧写法 `set(sid, {at, items: keep})` 会让**每回合的分流只活最后一次**");
+    ok("★★★★ 63⑥ 累积有**两层上限**：单次 `triageKeepMax` + 总量**真的取用** `triageKeepTotalMax`",
+      // ★ 第一版只测"两个词出现过" ⇒ 把取用处换成常数也照样绿（设置项成了摆设）。
+      /const totalMax = numOf\("triageKeepTotalMax", TRIAGE_KEEP_TOTAL_MAX\)/.test(src));
+    ok("★★★★★ 63⑦ 超总量上限时丢**最旧的**并**如实计数**（沉默丢弃 = 下一个 D89）",
+      /merged\.slice\(droppedOld\)/.test(src) && /droppedOld/.test(src));
   }
 }
 

@@ -4112,16 +4112,18 @@ section("情形 23：70% 高保真压缩");
     }
 
     // 第一次 pre-step（注入台账），水位还没到
-    run.services.tokenMeter._total = 500;
+    // ★★★★★ 2026-10-13（D155）：默认线从 0.70 改成 **0.30**（全量为主力）
+    //   ⇒ 50%（=500）**已经过线**了，所以这一挡要改成"明确低于线"的水位来测"不该压"。
+    run.services.tokenMeter._total = 250;
     const d1 = await runPreStep(run, { agent, messages: [] });
     eq("50% 档：有注入", d1.messages.length, 1);
-    eq("50% 时不该压缩", run.compacted.length, 0);
+    eq("★ 25%（低于默认线 30%）时不该压缩", run.compacted.length, 0);
 
-    // 推到 75% ⇒ 会在本步注入里告知"即将压缩"
-    run.services.tokenMeter._total = 750;
+    // 推到 35% ⇒ 过线（30%）⇒ 会在本步注入里告知"即将压缩"
+    run.services.tokenMeter._total = 350;
     const d2 = await runPreStep(run, { agent, messages: [] });
     const t2 = d2.messages.map((m) => m.content.map((c) => c.text).join("")).join("\n");
-    ok("★ 70% 档的注入里说明插件即将压缩", /高保真压缩/.test(t2), t2.slice(0, 400));
+    ok("★★★ 过线（35% ≥ 默认 30%）的注入里说明插件即将压缩", /高保真压缩/.test(t2), t2.slice(0, 400));
     ok("★ 并告知 AI「压缩会自动发生、你不需要做任何事」", /不需要.*做任何事|自动发生/.test(t2), t2.slice(0, 400));
     eq("★ pre-step 里**不**压缩（agent 此时是 running）", run.compacted.length, 0);
 
@@ -5251,7 +5253,12 @@ section("情形 27：官方设置面板");
     ok("★ 返回里没有 issues", r.issues === undefined, JSON.stringify(r.issues));
     eq("★ 归一化后 turnEndOffer = true", r.value.turnEndOffer, true);
     eq("★ 没给的键补成默认值（highFidelityCompact）", r.value.highFidelityCompact, true);
-    eq("★ 默认水位是 0.7", r.value.highFidelityCompactRatio, 0.7);
+    // ★★★★★ 2026-10-13（D155）：默认水位 0.7 → **0.30**（用户拍板"全量为主力、压在 30%"）。
+    //   ★ 这条断言刻意**保持会红**：它是"改动必须被看见"的那一类 ——
+    //     默认值一改，所有会话的压缩行为就变了，绝不能悄悄发生。
+    eq("★★★★★ 默认水位是 0.30（D155：全量为主力、把水位压在 30%）", r.value.highFidelityCompactRatio, 0.3);
+    // ★★★★★ 2026-10-13（D155）：增量默认**关**（它是"浅折 + 昂贵 + 抬地板"的那条路）。
+    eq("★★★★★ 增量压缩默认关（D155：改由回合末全量承担）", r.value.incrementalCompact, false);
     eq("★ 默认行数上限与常量一致", r.value.maxActiveLines, 300);
     ok(
       "★ 默认档位是 0.3/0.5/0.7",
@@ -7169,8 +7176,17 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-nudge-only");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      // ★ 这里**故意用默认设置**（轻推 20 / 兜底 40）—— 这正是用户在用的配置。
-      mod.apply(run.ctx, {});
+      // ★★★★★ 2026-10-13（D155）：**本用例测的是"轻推"这件旧机制，必须钉住旧前提**。
+      //
+      //   ★ 为什么必须显式给（否则红的是"夹具没跟上默认值"，不是被测对象坏了）：
+      //     轻推（`nudge`）的**存在目的**是"提醒模型去做**增量**压缩"。
+      //     而 D155 之后 **增量默认关**、主力改成"回合末自动全量" ⇒
+      //     轻推在默认配置下**已无对象**（模型不再需要被提醒去压）。
+      //   ⇒ 这条用例保留，是为了守住"**万一用户把增量重新打开**时，轻推仍按 D117 的
+      //     口径工作（节点语气 + 不按涨幅 + 只推一次）"—— 即它是**增量模式专属**的用例。
+      //   ★★ 所以这里显式 `incrementalCompact: true`（＝把这个用例的前提写进夹具），
+      //      并**把全量线抬到 0.75**，使"水位 0.50"确实落在"轻推区间、未到全量线"。
+      mod.apply(run.ctx, { incrementalCompact: true, highFidelityCompactRatio: 0.75 });
       const sid = "session-delta000-0100"; // ★ sid 全局唯一
       const agent = mkDeltaAgent(root, sid, 7);
       priceNodes(run, agent, 40);
@@ -12468,6 +12484,24 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       !/^\s*text = line\.trimStart\(\);\s*$/m.test(src),
       "★ 判据是**双向**的：① 追加写法存在 ② **裸覆盖写法一处都不许有**" +
         "（反向验证 G 就是靠第②条才变红的 —— 只测①的话，改掉一处仍有另一处兜着 ⇒ 假绿）");
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ★★★★★ 62⑨⑩（D155）：**架构开关必须自洽** —— 改默认值不能留下语义不一致
+    //
+    //   ★ 本轮真踩到（自检当场抓出，34 条红）：把全量线 0.75 → **0.30** 之后，
+    //     「增量让路给全量」那条判据（`pressure.ratio >= hfLine`）**自动变成了 30% 就触发**
+    //     ⇒ 模型主动 `mode:"light"` 与 `/ledger light` **全被拦住**（看起来像"轻量压缩坏了"）。
+    //   ★ 教训：**一个常量被多处判据引用时，改它 = 改所有引用它的判据的语义。**
+    //     ⇒ 让路逻辑必须**与增量开关同生共死**：增量关 ⇒ 没有抢跑者 ⇒ 让路无对象。
+    //   ★ 这两个断言就是那条耦合的守卫：谁把其中一个改掉，另一个当场红。
+    // ═══════════════════════════════════════════════════════════════════════════
+    const yieldCond = src.match(/\n  if \(\s*\n?\s*!forced &&\s*\n?\s*settings\.incrementalCompact === true/);
+    ok("★★★★★ 62⑨ 「增量让路」的条件里**必须含 `settings.incrementalCompact === true`**" +
+      "（增量关 ⇒ 让路无对象；否则水位一过全量线就会把手动 light 也拦住）",
+      yieldCond !== null,
+      "★ 找不到该条件 ⇒ 可能被 `if (false && …)` 之类硬关掉，或条件被改漏");
+    ok("★★★★ 62⑩ 增量总开关 `enableDelta` 也**真的读** `incrementalCompact`（两处口径同源）",
+      /_deltaCfg\.incrementalCompact === true/.test(src));
   }
 }
 

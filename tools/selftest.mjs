@@ -7919,8 +7919,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 60（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 60);
-  eq("★ 口径：其中带「情形 N」编号的 = 59", numbered, 59);
+  eq("★ 口径：section 总数 = 61（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 61);
+  eq("★ 口径：其中带「情形 N」编号的 = 60", numbered, 60);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -12877,6 +12877,127 @@ section("情形 65：D161 压缩后「该重注」的标记不许只活在内存
     `实得 ${(srcNoCmt65.match(/Math\.round\(numOf\("highFidelityCompactRatio"/g) ?? []).length} 处（期望 1）`);
 
   rmrf(root65);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★ 情形 66（D163）：**索引行也是"记录"，它不许印内部键、不许丢指针**
+//
+//   ★ 起因（真机实测，逐字取证）：
+//     重启后那条注入里，被压段索引行是这么写的 ——
+//       `- seq 55675–56462（330 个节点，10-13 03:26，auto:70%） ⇒ 摘要 seq 56470 …`
+//     ★★ 而**同一份注入**的胶囊段头部（胶囊文件 03:26 那份）写的是
+//       「自动（**30%** 水位）」—— **同一拍，两个数字**。
+//     ★ 实际生效线是 `highFidelityCompactRatio: 0.3`（30%）。
+//
+//   ★ 这是 D159 的同型**第四次**复发，且形态不同 ⇒ 上一次的守卫**必然抓不到**：
+//     · D159 修的三处是**字面量**（`"自动（70% 水位）"`）；
+//     · 这里是**变量插值** `${x.source}` ⇒ 拿 `"auto:70%"` 去 grep **源码**，
+//       命中不了这一处（只命中 pushHfSource / 比较 / 注释）。
+//     ⇒ 判据必须**按"渲染出来的字符串"查**，而不是按字面量查源码。
+//
+//   ★ 第二个缺口（同一族病，一并守住）：**全量那条路记索引时丢了 `capRel`**。
+//     · 增量（L13194）传了 `{capRel: …}`，全量（L13530）**没传** ⇒ 索引行里
+//       **没有**「逐字原件」指针（现场那行确实没有）。
+//     · 后果：模型只知道"原文在日志里"（要自己过滤），
+//       不知道"同一份历史的成品（胶囊）已分好类" —— 正是 D85 要修的事，全量这条路没修到。
+//     · 根因与 D85 一模一样：`captureCapsuleBeforeCompact` 先跑、路径就在手里，**却没传**。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 66：被压段索引行不许印内部键（auto:70%）且必须带逐字原件指针（D163）");
+{
+  const src66 = readLibSource();
+
+  // ── 66①：**来源标签必须走唯一出口** —— 判据落在"渲染出的字符串"上 ──────────
+  //
+  //   ★ 为什么不直接断言源码里有 `hfSourceShort(`：那证明不了**渲染结果**对
+  //     （「函数对 ≠ 接线对」，D136 的两层断言）。所以这一组**两种都钉**：
+  //     ①-甲 渲染结果里没有内部键；①-乙 源码里那一行真的走了出口。
+  const st66 = { shadowedIndex: new Map() };
+  const agent66 = {
+    session: {
+      log: [
+        {
+          type: "compaction/summary",
+          seq: 66001,
+          time: Date.now(),
+          data: {
+            shadowedRange: { start: 10, end: 20 },
+            shadowedSeqs: [10, 15, 20],
+            shadowedTokenCount: 12345,
+            summary: [{ text: "摘要" }],
+          },
+        },
+      ],
+    },
+  };
+  // ★ 故意用**生产写进去的那个内部键** `auto:70%`（这也是真机那条记录的取值）。
+  mod.__test.recordShadowedIndex(st66, "sid-d163", agent66, "auto:70%");
+  const idx66 = String(mod.__test.renderShadowedIndex(st66, "sid-d163"));
+
+  ok("★★★★★ 66① 索引行**不印内部键** `auto:70%`（它是对外契约的键，不是给人看的标签）",
+    !idx66.includes("auto:70%") && !idx66.includes("auto:"),
+    `★ 真机那条注入就是印着它 —— 而同一份注入的胶囊头写的是 30%（同一拍两个数字）。实得：${idx66.slice(-260)}`);
+
+  ok("★★★★★ 66① 索引行印的是**按当前设置算**的百分比（默认 0.3 ⇒ 「自动 30%」）",
+    idx66.includes(`自动 ${mod.__test.autoFullPct()}%`),
+    `期望含「自动 ${mod.__test.autoFullPct()}%」；实得：${idx66.slice(-260)}`);
+
+  // ★ 反向：把设置改掉 ⇒ 渲染**跟着变**（证明它真读设置，不是又一个写死的 30）。
+  const run66cfg = makeCtx({});
+  mod.apply(run66cfg.ctx, { highFidelityCompactRatio: 0.55 });
+  const idx66b = String(mod.__test.renderShadowedIndex(st66, "sid-d163"));
+  ok("★★★★ 66① 百分比**真的取自设置**：把线改成 0.55 ⇒ 索引行跟着变成「自动 55%」",
+    idx66b.includes("自动 55%") && !idx66b.includes("自动 30%"),
+    `实得：${idx66b.slice(-260)}`);
+
+  // ── 66②：**全量那条路也必须带 `capRel`**（增量那条已由 45④ 守着）──────────
+  //
+  //   ★ 判别力：摘掉 L13530 那处的 `capRel` ⇒ 下面这条当场红。
+  //   ★ 判据吃**源码里那一行的实参**（不是整个文件），以免被增量的那一处蒙混过关：
+  //     两处都调用 `recordShadowedIndex`，必须**逐个**检查。
+  const calls66 = src66.match(/recordShadowedIndex\(\s*state[\s\S]*?\);/g) ?? [];
+  const fullCall66 = calls66.find((c) => /auto:full/.test(c));
+  ok("★★★★★ 66② 全量那条记索引时**传了 `capRel`**（原来只传 source ⇒ 索引行缺「逐字原件」指针）",
+    fullCall66 !== undefined && /capRel/.test(fullCall66),
+    `★ 真机的全量索引行确实没有该指针（同一份注入的胶囊段却是完整的）。实得：${String(fullCall66).slice(0, 220)}`);
+
+  ok("★★★★ 66② 增量那条**同样**传了（两条收口都不许丢 —— D59：计数/记录必须放全，否则必漏一路）",
+    calls66.some((c) => /auto:delta/.test(c) && /capRel/.test(c)),
+    `共找到 ${calls66.length} 处 recordShadowedIndex 调用`);
+
+  // ★★ 66②b：**负向对照** —— 真不给 `capRel` 时，渲染不许编一个假路径出来。
+  //   （这一条是 45④③ 的对偶面，放在这里是因为本情形改的正是"传不传"这件事。）
+  const st66c = { shadowedIndex: new Map() };
+  mod.__test.recordShadowedIndex(st66c, "sid-d163-nocap", agent66, "auto:70%");
+  const idx66c = String(mod.__test.renderShadowedIndex(st66c, "sid-d163-nocap"));
+  ok("★★★★ 66②b 负向对照：没有 `capRel` 时**不许编路径**（不出现 `capsules/undefined` 这类）",
+    !/undefined/.test(idx66c) && idx66c.includes("seq"),
+    `实得：${idx66c.slice(-260)}`);
+
+  // ── 66③：L0 里程碑的来源标签**也走同一出口**（接线断言）────────────────────
+  //
+  //   ★ 为什么必须单独钉它：L0 那处原来是**第二张**「内部键 → 中文标签」映射表。
+  //     我在 D163 里把它收敛进了 `hfSourceShort`，但**行为完全不变**
+  //     （四种入口的 26b 断言改前改后都是绿的）⇒ 那一步**没有任何判别力**。
+  //   ★ 按纪律 10：**摘一处不红 ⇒ 要么断言太弱、要么修复冗余**。
+  //     这里的选择是"补断言"而不是"撤修复" —— 因为两张表的危险是**将来**
+  //     改标签时只改一处（D159 的病根正是"多处各自写同一个值"）。
+  //   ★ 这是**接线断言**（D136 的两层：函数对 ≠ 接线对）：
+  //     光有 `hfSourceShort` 这个函数不算数，必须**真的被两个渲染点调用**。
+  //
+  //   ★★★ 这条的第一版是**假绿**（反向验证 M2 当场抓到，必须记下来）：
+  //     我写的是 `/hfSourceShort\(src\)/.test(src66)` —— 而它在 `lib/index.js` 里
+  //     **匹配到两处**：L1555 的**函数定义** `function hfSourceShort(src) {`
+  //     与 L4326 的**真调用**。⇒ 摘掉真调用之后，**定义那一行仍在匹配** ⇒ 绿灯照在 bug 上。
+  //     ★★ 这与台账 §7 记的那个坑**完全同型**（数 `section(` 时把函数定义算进去，
+  //       最后改成锚行首 `^section\(`）——**同一条教训今天又犯了一次**。
+  //     ⇒ 修法：**先把定义行剥掉，再查调用**（"剥离用的标记绝不能出现在被剥离的内容里"）。
+  //   ★ 判别力：把 L4326 改回内联映射 ⇒ 这条当场红（已验证：M2 摘掉后本情形红）。
+  const src66NoDef = src66.replace(/^\s*function\s+hfSourceShort\([^\n]*\n/m, "");
+  ok("★★★★ 66③ L0 里程碑的来源标签**也调用 `hfSourceShort`**（不许留第二张映射表 —— 两张表必然分叉）",
+    /hfSourceShort\(src\)/.test(src66NoDef),
+    "★ 若摘掉这处接线，行为断言 26b 仍是绿的（改前改后一样）⇒ 只有这一条能看见红。" +
+      "★ 判据已剥掉函数**定义**行（第一版没剥 ⇒ 定义把真调用顶掉了，假绿）");
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

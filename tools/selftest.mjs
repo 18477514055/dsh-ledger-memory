@@ -13018,16 +13018,83 @@ section("情形 66：被压段索引行不许印内部键（auto:70%）且必须
     s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const cpfRaw66 = src66.match(/function capsulePathFor\([\s\S]*?\n\}/)?.[0] ?? "";
   const cpf66 = stripComments66(cpfRaw66);
-  ok("★★★★ 66④ 兜底指针指向**真实落盘目录**（`logDirOf`/`_ledger-log`），不是 `_ledger-archive`",
-    !/archiveRel\s*\?\?\s*"_ledger-archive"/.test(cpf66),
+  // ★★★★★ D165：这条判据的**对象换了** —— 从"兜底函数体内有没有旧写法"
+  //   改成"**唯一出口** `capsuleDirRel` 用的是哪一处取目录"。
+  //   ★ 为什么必须换（不是放宽）：D164 之后 `capsulePathFor` 已改为**委托**
+  //     给唯一出口 ⇒ 它体内**本来就不该**再有 `logDirOf`（有了反而说明它又自己算了一套）。
+  //     ⇒ 原来那条"兜底体内必须有 `logDirOf`"在新结构下**必然假红**。
+  //   ★ 判据跟着**事实**走，不是把断言改松：新对象更严 —— 唯一出口一旦用回
+  //     `info.archiveRel`，本条当场红。
+  const cdrRaw66 = src66.match(/function capsuleDirRel\([\s\S]*?\n\}/)?.[0] ?? "";
+  const cdr66 = stripComments66(cdrRaw66);
+  ok("★★★★ 66④ 唯一出口取的是**真实落盘目录**（`logDirOf`），不是 `_ledger-archive`",
+    /logDirOf\(info\)/.test(cdr66) && !/archiveRel/.test(cdr66),
     "★ 实测：胶囊全在 `_ledger-log/<期>/capsules`；`_ledger-archive` 下 0 个、目录不存在。实得：" +
-      cpf66.slice(0, 200));
+      cdr66.replace(/\s+/g, " ").slice(0, 220));
 
-  // ★★ 66④b：**落盘与兜底必须走同一个取目录的函数**（不许各写一套）。
-  //   ★ 这是"唯一出口"判据的又一例：两处各自算目录 ⇒ 必然分叉（本次就是分叉的后果）。
-  ok("★★★★ 66④b 兜底目录与真落盘共用同一取法（`logDirOf`）—— 不许各算一套",
-    /logDirOf\(info\)/.test(cpf66),
-    `实得函数体：${cpf66.slice(0, 260)}`);
+  // ★★ 66④b：**兜底不许自己算** —— 它必须**委托**给唯一出口。
+  //   ★ 这条同时挡住两种退化：① 兜底又写回 `path.join(...)`；
+  //     ② 唯一出口被删掉、兜底退化成内联（那样 66⑥ 会红、这条也会红，两道）。
+  ok("★★★★ 66④b 兜底**委托**给唯一出口（`capsuleDirRel`）—— 它自己不许再拼目录",
+    /capsuleDirRel\(/.test(cpf66),
+    `实得兜底函数体：${cpf66.replace(/\s+/g, " ").slice(0, 260)}`);
+
+  // ── 66⑤/⑥/⑦：★ D165 —— 「同一个目录不许算两遍」，**判据必须是行为** ──────────
+  //
+  //   ★★★ 为什么上面 66④/66④b 不够（反向验证当场抓到的**假绿**）：
+  //     那两条只看"函数体里有没有出现 `logDirOf` / 有没有出现旧写法" ——
+  //     属于**接线**判据，看不见**算出来的值**。
+  //     实测：把 `path.join(dir, stamp.dir, "capsules")` 里的 `"capsules"`
+  //     换成 `"NOPE"` ⇒ 算出的目录根本不存在 ⇒ **两条判据全绿**。
+  //     （这正是 D164 的病根：值改了、**结构没改**。）
+  //   ⇒ 按本项目两层断言纪律（D136：函数对 ≠ 接线对）：
+  //     **接线**（用了哪个函数）与**值**（算出什么）必须各钉一遍。
+  //
+  //   ★ 判据吃**被测对象自己产生的东西**（纪律 2）：真清单 + 真相对路径，
+  //     不走整条压缩链路（那会掺进压缩编排等无关变量）。
+  const relInfo66 = {
+    manifest: { logDir: "_ledger-log", archiveDir: "_ledger-archive", archiveWeekMode: "month" },
+  };
+  const AT66 = new Date(2026, 9, 13, 12, 0, 0); // 2026-10-13 → 2026-10/week2
+  const dirRel66 = mod.__test.capsuleDirRel(relInfo66, AT66);
+  ok("★★★★★ 66⑤ 唯一出口算出的目录**就是真机那个**（`_ledger-log/2026-10/week2/capsules`）",
+    dirRel66 === "_ledger-log/2026-10/week2/capsules",
+    `实得：${JSON.stringify(dirRel66)}　★ 若哪天目录规则变了，这条会告诉你改了哪`);
+
+  ok("★★★★★ 66⑤b 唯一出口返回的是**正斜杠**的相对路径（markdown 里可复制粘贴，不会被当转义符吃掉）",
+    typeof dirRel66 === "string" && !dirRel66.includes("\\"),
+    `实得：${JSON.stringify(dirRel66)}　★ 旧兜底返回的是反斜杠版，与落盘那条**不是同一个字符串**`);
+
+  // ★★★ 66⑥：兜底指针与唯一出口**逐字节一致** —— 这是 D165 的**核心判据**。
+  //   ★ 为什么用"逐字节相等"而不是"看起来都指向 _ledger-log"：
+  //     旧代码两处都能拼出 `_ledger-log\…\capsules`，**看着都对**，却是两份实现。
+  //     相等判据能抓住任何一处分叉（改常量、改分隔符、改分桶规则）。
+  //   ★ 判别力：让 `capsulePathFor` 自己再 `path.join(...)` 一遍 ⇒ 本条当场红。
+  const viaFallback66 = mod.__test.capsulePathFor(relInfo66, AT66.getTime());
+  ok("★★★★★ 66⑥ 兜底指针与唯一出口**逐字节相同**（同一个目录不许算两遍）",
+    viaFallback66 === dirRel66,
+    `唯一出口=${JSON.stringify(dirRel66)}　兜底=${JSON.stringify(viaFallback66)}`);
+
+  // ★★ 66⑦：**负向对照** —— 没启用日志（`logDir` 缺失）时，两处都必须**如实留空**，
+  //   绝不许编一个 `undefined/capsules` 出来（D164 那条"宁可留空也不编路径"的另一半）。
+  const noLog66 = { manifest: { archiveDir: "_ledger-archive", archiveWeekMode: "month" } };
+  ok("★★★★ 66⑦ 没启用日志时唯一出口与兜底**都返回 undefined**（如实留空，绝不编路径）",
+    mod.__test.capsuleDirRel(noLog66, AT66) === undefined &&
+      mod.__test.capsulePathFor(noLog66, AT66.getTime()) === undefined,
+    `唯一出口=${JSON.stringify(mod.__test.capsuleDirRel(noLog66, AT66))}　` +
+      `兜底=${JSON.stringify(mod.__test.capsulePathFor(noLog66, AT66.getTime()))}`);
+
+  // ★★ 66⑧：**结构性**判据 —— 三处调用点**都不许再自己拼目录**。
+  //   ★ 与 66⑥ 是两层：66⑥ 钉"现在算得一样"，本条钉"将来也没机会各算一套"
+  //     （只要有人把字面量 `"capsules"` 或 `path.join(dir, …` 写回调用点，当场红）。
+  const persistRaw66 = src66.match(/function persistCapsule\([\s\S]*?\n\}/)?.[0] ?? "";
+  const persistNoC66 = stripComments66(persistRaw66);
+  ok("★★★★ 66⑧ 真落盘那处**已不再自己拼目录**（改走 `capsuleDirRel`，且不再出现字面量 `\"capsules\"`）",
+    /capsuleDirRel\(/.test(persistNoC66) && !/["']capsules["']/.test(persistNoC66),
+    `实得：${persistNoC66.replace(/\s+/g, " ").slice(0, 300)}`);
+  ok("★★★★ 66⑧b 兜底那处**已不再自己拼目录**（同上：值对了还不够，结构也要收口）",
+    /capsuleDirRel\(/.test(cpf66) && !/["']capsules["']/.test(cpf66),
+    `实得：${cpf66.replace(/\s+/g, " ").slice(0, 300)}`);
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

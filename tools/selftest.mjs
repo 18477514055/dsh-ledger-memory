@@ -7919,8 +7919,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 59（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 59);
-  eq("★ 口径：其中带「情形 N」编号的 = 58", numbered, 58);
+  eq("★ 口径：section 总数 = 60（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 60);
+  eq("★ 口径：其中带「情形 N」编号的 = 59", numbered, 59);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -8268,7 +8268,15 @@ section("情形 42：D61 胶囊素材跨重启（进程内 Map ⇒ 重启清空�
     );
 
     // ② ★★★ 核心：**内存为空**（= 重启后一条新事件都没有）+ 盘上有 ⇒ 必须建出来
-    const emptyMem = new Map(); // 完全空的内存胶囊
+    //
+    //   ★★★★ 2026-10-13（D162）：夹具**必须是真形状**！
+    //     原来这里写的是 `new Map()` —— 而 `Map` **自带 `set`**，
+    //     生产的 `createCapsuleMemory()` 恰好**没有 `set`** ⇒ 这一条**绿了整整几轮**，
+    //     而生产路径一直抛 TypeError（被 catch 吞掉）⇒ **D61 的解药从未生效**。
+    //     ⇒ ★ 纪律 8：**夹具前提错了，全绿就是假绿**；
+    //       ★ 而且**反向验证抓不到**（摘掉修复确实会红）—— 它证明不了"装上去真的对"。
+    //   ★ 判据：夹具用的容器**必须由生产同一个构造函数造出来**（纪律 2）。
+    const emptyMem = mod.__test.createCapsuleMemoryForTest();
     const n = mod.__test.hydrateCapsuleMemory(emptyMem, sid);
     const built = emptyMem.get(sid);
     ok(
@@ -8280,6 +8288,19 @@ section("情形 42：D61 胶囊素材跨重启（进程内 Map ⇒ 重启清空�
         errors: built.errors?.length,
         artifacts: built.artifacts instanceof Map ? built.artifacts.size : `非Map(${typeof built.artifacts})`,
       })}`
+    );
+    // ★★★★ 42d-形状：真容器必须**可读可写**（D162 本体）
+    //
+    //   ★ 这条断言在**修 D162 之前必红**：`createCapsuleMemory()` 当时没有 `set`，
+    //     `hydrateCapsuleMemory` 内部那句 `capsule.set(...)` 抛 TypeError ⇒ 上面那条也红。
+    //   ★ 为什么把它**单列一条**（而不是只靠上面那条）：两者失败的含义不同 ——
+    //     上条失败 = "补回来的内容不对"；本条失败 = "**容器接口本身不匹配**"。
+    //     混在一起会让人先去查内容，而真因在接口（★ 本次就是这么绕了一圈）。
+    ok(
+      "★★★★ 42d：真容器**必须可读可写**（`set` 与 `get` 对称）—— " +
+        "D162：缺 `set` ⇒ `hydrateCapsuleMemory` 抛 TypeError 被吞 ⇒ D61 的解药从未生效",
+      typeof emptyMem.set === "function" && typeof emptyMem.get === "function",
+      `set=${typeof emptyMem.set} get=${typeof emptyMem.get}`
     );
     // ③ 形状必须与 `consume` 建立的一致 —— 否则下游按 Map 调 `.has()` 会抛
     ok(
@@ -8566,10 +8587,22 @@ section("情形 45：被压段可回读（索引推行 + 逐字原文 + 含推�
   };
   // ★★★ 第一次：走**压缩后重注**那条路（它内部会以 "official" 补记索引 —— 官方 80% 压缩的真路）。
   const injAfter45 = await run45Pre();
-  // ★★★ 第二次：`armed` 旗子已被上面那次消费 ⇒ 这次走**常规注入**路。
+  // ★★★ 第二次：走**常规注入**那条路。
   //   ★ 为什么必须单独测这条路：我第一版只测了第一次，结果**把常规路径的推行摘掉，
   //     自检依然全绿**（摘一处不红 ⇒ 断言太弱，纪律第 10 条）。而常规路才是常态
   //     —— 压缩后那一次注入很快会被后续回合覆盖掉，索引要**常驻**才符合 D46。
+  //
+  //   ★★★★ 2026-10-13（D161）**夹具修正**：原来这里只是"再调一次"，
+  //     靠的是**当时的一个真缺陷** —— 重注分支**没有回写指纹** ⇒ 第二步误判"内容变了"
+  //     ⇒ 又注一遍，于是这条断言"绿"了。
+  //     而 D161 修复**把指纹写回去了**（正确的行为：重注不该让下一步重复整份注入，
+  //     那会白烧 ~5000 tok 并**打穿 prompt 缓存**）⇒ 这一步自然变成"没变化就不注"
+  //     ⇒ 本断言红。
+  //   ⇒ ★ 这正是纪律 8 的形态：**夹具踩着被测对象的一个 bug 才走到它要测的那条路**
+  //     （"绿灯是照在 bug 上的"）。修法是**换一个真实、合法**的触发方式，
+  //     **不是**放宽断言：常规注入的真正触发条件是"**内容变了**"。
+  //   ★ 与真实使用完全同形：模型写一次台账 ⇒ 内容变 ⇒ 下一步必然是一次常规注入。
+  fs.writeFileSync(path.join(root45, "LEDGER.md"), "# 台账\n\n## 目标\n可回读（已更新）\n", "utf8");
   const injText45 = await run45Pre();
   // 再看钩子（纯渲染）—— 它是"索引长什么样"的**辅助**判据，不是主判据。
   const st45 = { shadowedIndex: new Map() };
@@ -12708,6 +12741,142 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
     ok("★★★★ 64⑦ 标签值**真的取自设置**（`numOf(\"highFidelityCompactRatio\", …)`）",
       /numOf\("highFidelityCompactRatio", HIGH_FIDELITY_COMPACT_RATIO\)/.test(src64));
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★ 情形 65（D161）：**压缩后重注的标记不许只活在内存里**
+//
+//   ★ 起因（真机实测，不是推理）：本会话日志里 `compaction/end` = seq 55682（02:43:46），
+//     `session/end-seed` = 02:44:37（进程结束），新进程首条 `request/header` = 02:45:47。
+//     新进程里那条注入（seq 55689）**四个分支标语一个都不含**
+//     （「上下文刚被压缩」/「高保真胶囊（」/「本轮台账的变化」）⇒ 走的是**普通注入**。
+//   ★ 根因是**三个内存态**，`state.reinject` 只是主因：
+//     · `state.reinject`（L12326 Map）—— 压缩后"该重注"的标记，重启即空；
+//     · `state.capsuleSnapshot` —— 压缩前抓的胶囊快照；
+//     · `capsuleMemory`（`createCapsuleMemory` 的 `bySid`）—— 逐字素材本身。
+//     ⇒ 后两个空掉之后，`renderCapsule(info, undefined)` 直接返回 `undefined` ⇒ **胶囊为空**。
+//   ★★ 这正是 D160 那条判据的**同型复发**：
+//     「**只要一样东西是「压缩后唯一的路标」，它就不许只活在内存里**」——
+//     我拿它修了 `shadowedIndex`，**却漏了 `reinject`**。
+//
+//   ★ 为什么判据要从**会话日志**推出（而不是再落一个盘）：
+//     ① 日志是内核的**只追加真源**、跨重启仍在，推出来的结论天然跨重启有效；
+//     ② 它**自消费** —— 重注一旦写进日志，`lastInjectSeq > lastCompactSeq` ⇒ 下次不再触发，
+//        不需要额外的"删除时机"（本项目栽过的正是"漏了删除时机"这类接线）；
+//     ③ **零新增持久化** ⇒ 不多一个会与真源分叉的文件。
+//   ★★ 为什么**绝不做文本匹配**：台账正文里**自己就含**「上下文刚被压缩」这几个字
+//     （那条注入的尾部契约里写着）⇒ 拿文本当判据会**假阳性**。
+//     ★ 这是本项目纪律第 2 条的老坑：**判据的输入必须是被测对象自己产生的那部分**。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 65：D161 压缩后「该重注」的标记不许只活在内存里（跨重启仍要重注 + 补回胶囊）");
+{
+  const src65 = readLibSource();
+
+  // ── 65①：判据**真的读会话日志**，且**按 seq 比较**、不做文本匹配 ──────────
+  ok("★★★★★ 65① 重注判据**真的读会话日志**（`agent?.session?.log`），不是只看内存 Map",
+    /function compactVsInject\(/.test(src65) && /session\?\.log/.test(src65),
+    "★ 只看 `state.reinject` ⇒ 跨一次重启，压缩后的那次重注**静默不发生**（D161 真机实测）");
+  const cviBody = src65.match(/function compactVsInject\([\s\S]*?\n\}/);
+  ok("★★★★★ 65① 判据**按 seq 大小比较**（`lastCompactSeq` / `lastInjectSeq`），且**一处文本匹配都没有**",
+    cviBody !== null &&
+      /lastCompactSeq/.test(cviBody[0]) &&
+      /lastInjectSeq/.test(cviBody[0]) &&
+      !/上下文刚被压缩/.test(cviBody[0]) &&
+      !/高保真胶囊/.test(cviBody[0]),
+    "★ 台账正文里自己就含「上下文刚被压缩」⇒ 文本判会假阳性（纪律 2）");
+
+  // ── 夹具：模拟真实内核 —— 注入与压缩事件**都会被追加进 `session.log`** ────
+  //
+  //   ★ 为什么必须把注入也放进夹具的日志里：真实内核就是这么做的
+  //     （本会话实测：注入 seq 55689 就在日志里，`type=user/message`、
+  //      `data.source.kind=project-ledger-notes`）。
+  //   ★ 夹具前提若错，全绿就是假绿（纪律 8）—— 这条尤其重要：
+  //     若夹具不把注入记进日志，"自消费"这条性质**根本测不出来**。
+  const mkLogAgent = (sid, cwd, log) => ({ session: { header: { id: sid, cwd }, id: sid, log } });
+  const noteAt = (seq) => ({ type: "user/message", seq, data: { source: { kind: "project-ledger-notes" } } });
+
+  const root65 = tmpProject("d161");
+  fs.writeFileSync(path.join(root65, "LEDGER.md"), "# 台账\n\n## 目标\nX\n", "utf8");
+  fs.writeFileSync(
+    path.join(root65, ".dsh-ledger.json"),
+    JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a" }),
+    "utf8"
+  );
+
+  // ── 65②：**跨重启**（全新 state、日志留着）⇒ 必须重注，且走"压缩后"那条路 ──
+  const sid65 = "s-d161-restart";
+  const log65 = [
+    noteAt(5), // 压缩**之前**有过注入 —— 它不算数（否则每条历史注入都会挡掉重注）
+    { type: "compaction/start", seq: 10, data: {} },
+    { type: "compaction/end", seq: 11, data: {} },
+  ];
+  const run65 = makeCtx({ withCompaction: true });
+  mod.apply(run65.ctx, {}); // ★ 全新进程：state.reinject 是空的（这就是"重启"）
+  const agent65 = mkLogAgent(sid65, root65, log65);
+  const inj65 = await runPreStep(run65, { agent: agent65 });
+  const text65 = inj65.messages[0]?.content?.[0]?.text ?? "";
+  ok("★★★★★ 65② 跨重启后走的是**压缩后重注**那条路（不是普通注入）—— 真机那次走的正是普通注入",
+    text65.includes("上下文刚被压缩"),
+    `实得前 120 字符：${text65.slice(0, 120)}`);
+
+  // ── 65②b：**负向对照** —— 日志里没有压缩事件时，绝不许走"压缩后"那条路 ──────
+  //
+  //   ★ 为什么必须有这一条（纪律 10：**摘一处不红，要么断言太弱、要么修复冗余**）：
+  //     65② 原本还有一条断言是"跨重启后 messages.length === 1"。它在**修复前后都是绿的**
+  //     —— 因为全新进程的 `fingerprint` 是空的 ⇒ 普通注入照样产出 1 条。
+  //     ⇒ **它没有区分力**，不能拿来当"修复起作用"的证据（留着就是假绿）。
+  //   ★ 真正有区分力的对偶面是：**判据不许恒真**。若谁把 `compactVsInject` 改成
+  //     无条件 `return true`，所有断言都会绿、而行为已经错了 —— 这条专治那个。
+  const sid65n = "s-d161-nocmpt";
+  const log65n = [noteAt(5), noteAt(6)]; // 有注入、**没有** compaction/end
+  const run65n = makeCtx({ withCompaction: true });
+  mod.apply(run65n.ctx, {});
+  const inj65n = await runPreStep(run65n, { agent: mkLogAgent(sid65n, root65, log65n) });
+  const text65n = inj65n.messages[0]?.content?.[0]?.text ?? "";
+  ok("★★★★★ 65②b 负向对照：日志里**没有压缩事件**时，不许走「压缩后重注」那条路（判据不许恒真）",
+    !text65n.includes("上下文刚被压缩"),
+    `★ 实得：${text65n.slice(0, 120)}`);
+
+  // ── 65③：重注**写进日志**之后 ⇒ 自消费，不再注（否则每步都注、缓存每步全冷）──
+  log65.push(noteAt(12));
+  const again65 = await runPreStep(run65, { agent: agent65 });
+  eq("★★★★ 65③ 重注进了日志之后**不再重注**（自消费 —— 否则每步都注，prompt 缓存每步全冷）",
+    again65.messages.length, 0);
+
+  // ── 65④：跨重启重注时，**胶囊素材要从盘上补回来**（否则只有台账、没有逐字原话）──
+  const sid65b = "s-d161-capsule";
+  mod.__test.persistCapsuleMemoryForTest(sid65b, {
+    userMessages: [{ at: "2026-10-13 03:00:00", text: "盘上的旧原话-必须被补回" }],
+    errors: [],
+    artifacts: new Map(),
+  });
+  const log65b = [noteAt(5), { type: "compaction/end", seq: 11, data: {} }];
+  const run65b = makeCtx({ withCompaction: true });
+  mod.apply(run65b.ctx, {});
+  const inj65b = await runPreStep(run65b, { agent: mkLogAgent(sid65b, root65, log65b) });
+  const text65b = inj65b.messages[0]?.content?.[0]?.text ?? "";
+  ok("★★★★★ 65④ 跨重启重注时**胶囊素材从盘上补回**（否则重启后那次重注只有台账、逐字原话全丢）",
+    text65b.includes("盘上的旧原话-必须被补回"),
+    `实得：${text65b.slice(0, 200)}`);
+
+  // ── 65⑤：`renderAfterCompaction` 的文案**也不许写死 70%** ─────────────────
+  //
+  //   ★ 与 64⑦ 同一个病（纪律 11：记录存在 ≠ 记录准确）：实际线是 **30%**，
+  //     而这里写着「本插件在上下文水位到 **70%** 时主动执行了一次压缩」。
+  //   ★ 判据只吃**代码**、不吃注释（剥掉两种注释再查）—— 与 64⑦ 同一把尺子。
+  const srcNoCmt65 = src65.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  ok("★★★★ 65⑤ `renderAfterCompaction` 的文案也走**唯一出口**（原来写死 **70%**，实际线 30%）",
+    !/\*\*70%\*\*/.test(srcNoCmt65) &&
+      /\*\*\$\{autoFullPct\(\)\}%\*\*/.test(srcNoCmt65),
+    "★ 写死的文案正是缺陷本体：口径 30%、记录说 70%（D159 第三条那个病的第二个漏点）");
+  ok("★★★★★ 65⑤b 水位线的**数字只有一个出口**（`autoFullPct()`）——" +
+    "三处渲染各自 `Math.round(numOf(...)*100)` 就是 D159 的同型复发" +
+    "（★ 加这条的当天我又内联了一遍，被抓的就是它）",
+    (srcNoCmt65.match(/Math\.round\(numOf\("highFidelityCompactRatio"/g) ?? []).length === 1,
+    `实得 ${(srcNoCmt65.match(/Math\.round\(numOf\("highFidelityCompactRatio"/g) ?? []).length} 处（期望 1）`);
+
+  rmrf(root65);
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

@@ -12998,6 +12998,36 @@ section("情形 66：被压段索引行不许印内部键（auto:70%）且必须
     /hfSourceShort\(src\)/.test(src66NoDef),
     "★ 若摘掉这处接线，行为断言 26b 仍是绿的（改前改后一样）⇒ 只有这一条能看见红。" +
       "★ 判据已剥掉函数**定义**行（第一版没剥 ⇒ 定义把真调用顶掉了，假绿）");
+
+  // ── 66④：★ 兜底指针**必须指向真实落盘目录**（`_ledger-log`，不是 `_ledger-archive`）──
+  //
+  //   ★★ 这是**真机核对**才发现的一条，且踩的是**准确性**底线：
+  //     · `persistCapsule` 真落盘到 `logDirOf(info)` = **`_ledger-log/<期>/capsules`**
+  //       （实测：本项目那 60+ 份胶囊**全都在 `_ledger-log` 下**）；
+  //     · 而兜底 `capsulePathFor` 用的是 `info.archiveRel` = **`_ledger-archive`**
+  //       ⇒ 实测该路径下 **0 个胶囊、连目录都不存在**。
+  //     ★ 两个目录本来就不同名：`.dsh-ledger.json` 里 `archiveDir` 与 `logDir` 是两个键。
+  //   ★ 为什么这比"没有指针"更糟：兜底**恰好只在写盘失败 / 没启用日志 / 在容器根**时生效
+  //     —— 那些情况下本来就拿不到真路径，而它**又指向一个不存在的地方**。
+  //     模型照抄那个路径去读 ⇒ **什么都读不到**，而台账上写着"逐字原件在这"。
+  //   ★ 判别力：把 `capsulePathFor` 改回 `info.archiveRel` ⇒ 这条当场红。
+  //   ★★ 判据**必须剥掉注释**（纪律 2）：第一版没剥 ⇒ 我在修复注释里引用了旧写法
+  //      （`这里原来写 info.archiveRel ?? "_ledger-archive"`）⇒ **注释把代码判成红的**。
+  //      这与 64⑦ 记的坑**同型**（那次是"全文不许出现「自动（70% 水位）」"误伤两处注释）。
+  const stripComments66 = (s) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const cpfRaw66 = src66.match(/function capsulePathFor\([\s\S]*?\n\}/)?.[0] ?? "";
+  const cpf66 = stripComments66(cpfRaw66);
+  ok("★★★★ 66④ 兜底指针指向**真实落盘目录**（`logDirOf`/`_ledger-log`），不是 `_ledger-archive`",
+    !/archiveRel\s*\?\?\s*"_ledger-archive"/.test(cpf66),
+    "★ 实测：胶囊全在 `_ledger-log/<期>/capsules`；`_ledger-archive` 下 0 个、目录不存在。实得：" +
+      cpf66.slice(0, 200));
+
+  // ★★ 66④b：**落盘与兜底必须走同一个取目录的函数**（不许各写一套）。
+  //   ★ 这是"唯一出口"判据的又一例：两处各自算目录 ⇒ 必然分叉（本次就是分叉的后果）。
+  ok("★★★★ 66④b 兜底目录与真落盘共用同一取法（`logDirOf`）—— 不许各算一套",
+    /logDirOf\(info\)/.test(cpf66),
+    `实得函数体：${cpf66.slice(0, 260)}`);
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

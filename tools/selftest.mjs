@@ -7853,8 +7853,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 50（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 50);
-  eq("★ 口径：其中带「情形 N」编号的 = 49", numbered, 49);
+  eq("★ 口径：section 总数 = 51（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 51);
+  eq("★ 口径：其中带「情形 N」编号的 = 50", numbered, 50);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -11556,6 +11556,99 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       a[0]?.hash === a2[0]?.hash && a[0]?.hash !== b[0]?.hash,
       `稳定=${a[0]?.hash === a2[0]?.hash} 敏感=${a[0]?.hash !== b[0]?.hash}`
     );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // ★★★ 情形 56：D135 **区块权重 — 通用标准 v2**
+  //
+  //   ★ 用户要求"**给一个通用标准来让不同模型计算权重**" ⇒ 标准的全部价值在**可移植**。
+  //   ★★★ 所以本情形的核心断言是那一条：**尺度必须握在插件手里** ——
+  //     模型只答是/否 ⇒ 同样的答案在任何模型下都得到**同一个分**。
+  //     ★ 反向验证（§八 ②）已实证：若把判据换成"认关键词"，必注比例从 ~30% 飙到 62%。
+  //   ★ 底线（D135 §二）：**不确定 ⇒ 当必注** ⇒ `undefined`（模型没答）必须被**回报**出来。
+  // ═══════════════════════════════════════════════════════════════════════════
+  section("情形 56：D135 区块权重通用标准（是/否 + 插件算分）");
+  {
+    const W = mod.__test;
+
+    // ── ① 尺度在插件手里：同样的答案 ⇒ 同一个分（与"谁答的"无关）
+    const ansAllYes = { q1: true, q2: true, q3: true, q4: true };
+    eq("★★★ 56①：四个都答「是」⇒ 分 = 35+25+20+10 = **90**（由插件算式定，与模型无关）", W.weightFromAnswers(ansAllYes).score, 90);
+    eq("★★ 56①：四个都答「否」⇒ **0**", W.weightFromAnswers({ q1: false, q2: false, q3: false, q4: false }).score, 0);
+    // ★ 真正的"通用"判据：同一个答案集被算两次，必须完全一样（确定性）
+    eq("★★★ 56①：同一答案算两次 ⇒ **完全一样**（否则不同模型不可对齐）",
+      JSON.stringify(W.weightFromAnswers(ansAllYes)), JSON.stringify(W.weightFromAnswers(ansAllYes)));
+
+    // ── ② ★★★ 底线：模型**没答**（undefined）必须被如实回报 ⇒ 调用方才能退化成"全注"
+    const partial = W.weightFromAnswers({ q1: true });
+    eq("★★★ 56②：只答了 Q1 ⇒ 只拿 35 分（**没答的不给分**，不许默认成「是」）", partial.score, 35);
+    ok(
+      "★★★ 56②：且**如实列出哪些没答**（否则调用方无从判断「要不要退化成全注」）",
+      Array.isArray(partial.unanswered) && partial.unanswered.join(",") === "q2,q3,q4",
+      JSON.stringify(partial.unanswered)
+    );
+    // ★ 反向验证：把"没答"当"是"的实现 ⇒ 这条必红
+    ok(
+      "★★★ 56②：而**全答**时 unanswered 必须为空（两个方向都测）",
+      W.weightFromAnswers(ansAllYes).unanswered.length === 0,
+      JSON.stringify(W.weightFromAnswers(ansAllYes).unanswered)
+    );
+
+    // ── ②b ★★★★ 本设计**最核心的主张**：尺度必须握在插件手里
+    //   ★ 反向验证当场抓到：把实现改成"直接收模型给的 `score`" ⇒ **自检一条都不红**
+    //     ⇒ 也就是说"不问量表分"这个决定**当时没有任何断言在守**。
+    //   ⇒ 补这条：**模型塞多少分都不好使**，分数只能由 four-bool 算出。
+    //     ★ 这是"不同模型可对齐"在代码里的**可执行形式**。
+    ok(
+      "★★★★ 56②b：模型**自己塞分**（`score:999`）**必须无效** —— 分数只能由是/否算出",
+      W.weightFromAnswers({ q1: true, score: 999 }).score === 35,
+      `传入 score:999 后得到 ${W.weightFromAnswers({ q1: true, score: 999 }).score}（应 35）`
+    );
+    ok(
+      "★★★★ 56②b：且答案**只认布尔** —— 塞字符串「是」等一律不算（否则模型可以用自由文本改分）",
+      W.weightFromAnswers({ q1: "是", q2: "true", q3: 1 }).score === 0,
+      `得到 ${W.weightFromAnswers({ q1: "是", q2: "true", q3: 1 }).score}（应 0）`
+    );
+
+    // ── ③ 第 0 步机械判据：元数据**强制归零**（哪怕内容看起来很重要）
+    const metaBlock = W.splitBlocks("## 变更登记（插件自动维护）\n\n- 很长的记录\n- 绝不能丢\n").find((b) => /变更登记/.test(b.heading ?? ""));
+    ok("★★ 56③ 前提：拿到「变更登记」那个块", metaBlock !== undefined);
+    eq(
+      "★★★ 56③：元数据 ⇒ **强制 0**（实测它每轮必变 ⇒ 不是项目知识；哪怕正文含「绝不能」）",
+      W.mechanicalWeight(metaBlock, { writes: 99, changed: true, newest: true }).score,
+      0
+    );
+
+    // ── ④ 机械判据：从未被改 ⇒ +20；最近新增 ⇒ +15（方向**反**于"变动频率"）
+    const normal = { heading: "## 目标", text: "## 目标\nY\n", hash: "x", lines: 2 };
+    eq("★★★ 56④：跨 ≥3 次写入**从未变** ⇒ +20（实测：变动频率与重要性**负相关**）",
+      W.mechanicalWeight(normal, { writes: 5, changed: false, newest: false }).score, 20);
+    eq("★★★ 56④：**最近新增** ⇒ +15（当前在做的事）",
+      W.mechanicalWeight(normal, { writes: 5, changed: true, newest: true }).score, 15);
+    eq("★★ 56④：**历史不明** ⇒ 不给分也不扣分（保守：不把不确定当「长期有效」）",
+      W.mechanicalWeight(normal, undefined).score, 0);
+
+    // ── ⑤ 阈值与目录
+    eq("★★ 56⑤：必注阈值 = 70（D135 §九）", W.mustInjectThreshold(), 70);
+    const toc = W.renderToc([normal], { headingMaxChars: 40 });
+    // ★ 目录里**去掉 `#` 前缀**（目录是纯文本索引；`#` 只占字符、不增信息）
+    //   ⇒ 断言按**去掉前缀后**的标题查（我第一版写的是 `/## 目标/` ⇒ 假红，已修）。
+    ok("★★ 56⑤：目录含标题 + 行数 + 哈希前缀（模型据此知道「这块我见过没」）",
+      /目标/.test(toc) && /2 行/.test(toc) && /#x/.test(toc), toc.slice(0, 160));
+    // ★ 标题必须被截断（否则目录成本失控）
+    //   ⚠️⚠️ 这个断言我**写错两次**，都是同一个病 —— **禁的连缀长度正好等于截断后的长度**：
+    //     ① 第一版禁"5 连" ⇒ 40 字符**恰好**是 5 个（假红，已修）
+    //     ② 第二版禁"8 连" ⇒ 40 字符**又恰好**是 8 个（假红）
+    //   ⇒ 正解：禁 **9 连**（40 字符只放得下 8 个 ⇒ 只有"完全没截断"才会出现 9 连）。
+    //   ★ 教训（通用）：**断言里出现的字面量长度，绝不能等于被测阈值本身** ——
+    //     否则它测的是"阈值算得准不准"，而不是"有没有截断"。
+    const longB = { heading: `## ${"很长的标题".repeat(12)}`, text: "x", hash: "abc12345", lines: 1 };
+    const tocl = W.renderToc([longB], { headingMaxChars: 40 });
+    ok("★★★ 56⑤：标题**必须截断**（不截断时目录要 1413 字符 = 每块都付的固定成本）",
+      tocl.includes("…") && !tocl.includes("很长的标题".repeat(9)),
+      tocl.slice(0, 120));
+    eq("★★ 56⑤：空块列表 ⇒ 目录为空串（不是一行空标题）", W.renderToc([], {}), "");
   }
 }
 

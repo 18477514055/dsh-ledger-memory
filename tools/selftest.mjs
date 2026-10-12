@@ -7853,8 +7853,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 51（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 51);
-  eq("★ 口径：其中带「情形 N」编号的 = 50", numbered, 50);
+  eq("★ 口径：section 总数 = 52（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 52);
+  eq("★ 口径：其中带「情形 N」编号的 = 51", numbered, 51);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -11620,17 +11620,21 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       0
     );
 
-    // ── ④ 机械判据：从未被改 ⇒ +20；最近新增 ⇒ +15（方向**反**于"变动频率"）
+    // ── ④ ★★★★ 2026-10-12（D136）**原「跨 ≥3 次写入从未变 ⇒ +20」已删除** ──────
+    //   ★ 为什么删（实测，不是口味）：用真实变更史跑（只改 1 块、其余没动）
+    //     ⇒ 25 块里 **23 块**都满足"从未变" ⇒ 全体 +20 ⇒ 必注比例 35% → **69.5%**，
+    //     而它**什么也没挑出来**（"变更登记"、老小节、铁律全都同样 +20）。
+    //   ★★ 所以这条断言**反过来守**：它**不许**再给分（给了就是那场退化的复发）。
     const normal = { heading: "## 目标", text: "## 目标\nY\n", hash: "x", lines: 2 };
-    eq("★★★ 56④：跨 ≥3 次写入**从未变** ⇒ +20（实测：变动频率与重要性**负相关**）",
-      W.mechanicalWeight(normal, { writes: 5, changed: false, newest: false }).score, 20);
+    eq("★★★ 56④：**「从未被改」不再单独给分**（实测它让 23/25 块一起 +20 ⇒ 无区分力）",
+      W.mechanicalWeight(normal, { writes: 5, changed: false, newest: false }).score, 0);
     eq("★★★ 56④：**最近新增** ⇒ +15（当前在做的事）",
       W.mechanicalWeight(normal, { writes: 5, changed: true, newest: true }).score, 15);
     eq("★★ 56④：**历史不明** ⇒ 不给分也不扣分（保守：不把不确定当「长期有效」）",
       W.mechanicalWeight(normal, undefined).score, 0);
 
     // ── ⑤ 阈值与目录
-    eq("★★ 56⑤：必注阈值 = 70（D135 §九）", W.mustInjectThreshold(), 70);
+    eq("★★★ 56⑤：必注阈值 = **50**（用户 D136 拍板：「我建议是改成 50 分注入」）", W.mustInjectThreshold(), 50);
     const toc = W.renderToc([normal], { headingMaxChars: 40 });
     // ★ 目录里**去掉 `#` 前缀**（目录是纯文本索引；`#` 只占字符、不增信息）
     //   ⇒ 断言按**去掉前缀后**的标题查（我第一版写的是 `/## 目标/` ⇒ 假红，已修）。
@@ -11649,6 +11653,132 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       tocl.includes("…") && !tocl.includes("很长的标题".repeat(9)),
       tocl.slice(0, 120));
     eq("★★ 56⑤：空块列表 ⇒ 目录为空串（不是一行空标题）", W.renderToc([], {}), "");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // ★★★★★ 情形 57：D136 **区块定位 = 相对位置**（多维度秩融合 / 权重可变）
+  //
+  //   ★ 用户逐字（本轮最关键的一句）：
+  //     *"区块的定位主要是**相对位置**，所以除了时间，很多方面也可以借助相对概念"*；
+  //     以及 *"权重应该是可变的，正在处理的东西与所有底线与原则毫无疑问是高分，
+  //     已处理的、已过期的低分，时间是打分标准之一"*、*"注意时间不是**绝对时间**，
+  //     而是**相对时间顺序**"*。
+  //
+  //   ★★★ 本情形要守的**四件事**（每件都对应一次实测失败）：
+  //     ① 元数据 **恒 0**（融合分不许把它抬起来）；
+  //     ② 原则/底线 ⇒ **恒 ≥ 保底**（"毫无疑问是高分"）；
+  //     ③ 已处理/已完成 ⇒ **封顶低分**（"已处理的低分"）；
+  //     ④ ★★★ **判据必须是相对的** —— 这是本情形存在的首要理由：
+  //        我第一版是"绝对分求和"（+20/+15/...）⇒ 实测必注 **69.5%**，因为
+  //        「从未变 ⇒ +20」在真实台账里**23/25 块同时成立** ⇒ 全体抬分 = **零区分力**。
+  //        ⇒ 断言要求：**同一批块整体平移时间戳，名次与分数不许变**（相对性 = 平移不变）。
+  // ═══════════════════════════════════════════════════════════════════════════
+  section("情形 57：D136 相对位置融合（权重可变 / 时间取相对序）");
+  {
+    const W = mod.__test;
+    const mk = (h, t) => ({ heading: h, text: t, hash: W.fnv1a(t), lines: t.split("\n").length });
+    const A = mk("## 甲", "## 甲\n甲的内容\n");
+    const B = mk("## 乙", "## 乙\n乙的内容\n");
+    const C = mk("## 丙", "## 丙\n丙的内容\n");
+    const three = [A, B, C];
+
+    // ── ① 元数据恒 0（哪怕模型全答「是」、时间最新）──
+    const meta = [mk("## 变更登记（插件自动维护）", "## 变更登记（插件自动维护）\n- x\n")];
+    const mAns = new Map([[0, { q1: true, q2: true, q3: true, q4: true }]]);
+    const mHist = new Map([[meta[0].hash, { writes: 9, changed: true, newest: true, lastChangedAt: 9e12 }]]);
+    const wm = W.weightBlocks(meta, mAns, mHist, 9e12)[0];
+    eq("★★★★ 57①：元数据 ⇒ **恒 0**（模型全答「是」+ 时间最新都不好使，融合分不参与）", wm.weight.score, 0);
+    eq("★★★ 57①：且标注出它是被归零的（便于排查，不靠猜）", wm.weight.capped, "zero");
+
+    // ── ② 原则/底线 ⇒ 恒 ≥ 保底（哪怕它是最旧、模型全答「否」）──
+    //   ⚠️⚠️ 反向验证第 5 轮抓到：我第一版用**单块**测 ⇒ 单块融合后**反正**是 100 分
+    //      ⇒ 把保底摘掉也照样绿 ⇒ **断言是空的**。
+    //      ⇒ 正解：放进**多块**列表，并让原则块在模型与时间两维上**都排最后**
+    //        （那才是"保底真的在抬它"的可观测条件）。
+    const P = mk("## 一、总纲", "## 一、总纲\n买下限不买上限\n");
+    const X = mk("## 甲", "## 甲\n新的\n");
+    const Y = mk("## 乙", "## 乙\n也新\n");
+    const p3 = [P, X, Y];
+    const pHist3 = new Map([
+      [P.hash, { writes: 2, changed: true, newest: false, lastChangedAt: 1_000 }],        // 最旧
+      [X.hash, { writes: 2, changed: true, newest: true, lastChangedAt: 9_000_000 }],      // 最新
+      [Y.hash, { writes: 2, changed: true, newest: false, lastChangedAt: 5_000_000 }],
+    ]);
+    const pAns3 = new Map([[0, { q1: false, q2: false, q3: false, q4: false }], [1, { q1: true, q2: true, q3: true, q4: true }], [2, { q1: true, q2: true }]]);
+    const wp = W.weightBlocks(p3, pAns3, pHist3, 9_000_000)[0];
+    ok("★★★★ 57②：原则/底线**在最差条件下（模型全「否」+ 时间最旧）仍 ≥ 保底**（用户：「毫无疑问是高分」）",
+      wp.weight.score >= W.principleScore(), `得到 ${wp.weight.score}，保底 ${W.principleScore()}`);
+    // ★ 并证明"抬"是真的发生了：它比同表里**融合分**算出来的值高
+    ok("★★★★ 57②：且它**确实被抬过** —— 融合分本身远低于保底（否则这条断言测不出东西）",
+      wp.weight.fused < W.principleScore(),
+      `融合分 ${wp.weight.fused} vs 保底 ${W.principleScore()}`);
+    eq("★★★ 57②：且保底高过必注阈值（否则原则仍会被挤成「只进目录」）",
+      wp.weight.score >= W.mustInjectThreshold(), true);
+
+    // ── ③ 已处理/已完成 ⇒ 封顶低分（哪怕模型全答「是」、时间最新）──
+    const doneB = [mk("## ✅ 已完成（正文见 DECISIONS，别再重做）", "## ✅ 已完成（正文见 DECISIONS，别再重做）\n旧账\n")];
+    const dHist = new Map([[doneB[0].hash, { writes: 9, changed: false, newest: false, lastChangedAt: 9e12 }]]);
+    const wd = W.weightBlocks(doneB, new Map([[0, { q1: true, q2: true, q3: true, q4: true }]]), dHist, 9e12)[0];
+    ok("★★★★ 57③：已处理/已完成 ⇒ **封顶低分**（用户：「已处理的、已过期的低分」）——哪怕模型全答「是」",
+      wd.weight.score <= W.doneCap(), `得到 ${wd.weight.score}，封顶 ${W.doneCap()}`);
+    ok("★★★ 57③：封顶值必须**低于必注阈值**（否则「已完成」仍会被注入）",
+      W.doneCap() < W.mustInjectThreshold(), `封顶 ${W.doneCap()} vs 阈值 ${W.mustInjectThreshold()}`);
+
+    // ── ④ ★★★★★ 判据必须是**相对**的（本情形存在的首要理由）───────────────
+    //   ★★ 判据：**整批时间戳一起平移**（全部 +1000 天）⇒ 名次与分数**必须完全不变**。
+    //      · 相对实现 ⇒ 不变（✓）；绝对时长实现 ⇒ 全部被判"陈旧" ⇒ 分数变（红）。
+    //   ★ 这条正是用户那句"**不是绝对时间，而是相对时间顺序**"的可执行形式。
+    const t0 = 1_700_000_000_000;
+    const histRel = new Map([
+      [A.hash, { writes: 5, changed: false, newest: true, lastChangedAt: t0 + 300 }],
+      [B.hash, { writes: 5, changed: false, newest: false, lastChangedAt: t0 + 200 }],
+      [C.hash, { writes: 5, changed: false, newest: false, lastChangedAt: t0 + 100 }],
+    ]);
+    const shift = 1000 * 86400e3;
+    const histAbs = new Map([...histRel].map(([k, v]) => [k, { ...v, lastChangedAt: v.lastChangedAt + shift }]));
+    const before = W.weightBlocks(three, undefined, histRel, t0 + 300).map((b) => b.weight.score);
+    const after = W.weightBlocks(three, undefined, histRel, t0 + 300 + shift).map((b) => b.weight.score);
+    eq("★★★★ 57④：**整批时间一起平移 ⇒ 分数一字不变**（相对判据的判据；绝对时长实现必红）",
+      JSON.stringify(after), JSON.stringify(before));
+    ok("★★★★ 57④：且「最新那块」确实排第一（相对序真的在起作用，不是恒等函数）",
+      before[0] >= before[1] && before[1] >= before[2], JSON.stringify(before));
+    // ★ 顺序也必须在：最早那块的 lastChangedAt 用绝对值看是"很多天前"，但它**相对**仍是第 3
+    const shifted = W.weightBlocks(three, undefined, histAbs, t0 + 300 + shift).map((b) => b.weight.score);
+    eq("★★★★ 57④：**换成绝对时间值（整体 +1000 天）⇒ 分数仍与相对版一字相同**（顺序才是判据）",
+      JSON.stringify(shifted), JSON.stringify(before));
+
+    // ── ⑤ 并列者必须**均分名次**（fractional ranking）────────────────────
+    //   ★★ 实测根因：我第一版用 dense rank ⇒ **24 块并列"最旧"就全部拿第 2 名**
+    //      ⇒ 位置 0.958 ⇒ 人人近满分 ⇒ 必注 **82.2%**。取平均名次后它们落在区间中点。
+    const same = [mk("## 甲", "## 甲\n1\n"), mk("## 乙", "## 乙\n2\n"), mk("## 丙", "## 丙\n3\n")];
+    const sameHist = new Map(same.map((b) => [b.hash, { writes: 3, changed: false, newest: false, lastChangedAt: t0 }]));
+    const rk = W.ranksOf(same.map((b) => ({ key: b.hash, value: 7 })), (a, b) => b - a);
+    void rk;
+    const tie = W.ranksOf([{ key: "a", value: 5 }, { key: "b", value: 5 }, { key: "c", value: 5 }, { key: "d", value: 1 }], (a, b) => b - a);
+    eq("★★★★ 57⑤：三个并列者 ⇒ 名次取**区间中点**（1.0，而不是 dense rank 的 0）", tie.get("a"), 1);
+    eq("★★★★ 57⑤：且**最差那个仍是最后一个名次**（3）——并列不许把差异抹平", tie.get("d"), 3);
+    ok("★★★ 57⑤：并列者拿到**同一个**名次（不许强行分先后）",
+      tie.get("a") === tie.get("b") && tie.get("b") === tie.get("c"), JSON.stringify([...tie]));
+
+    // ── ⑥ 缺维 ⇒ 只对**已有**的维度求平均，不按 0 计 ────────────────────
+    //   ★ 否则"没有变更史"会被当成"最差"，那是凭空扣分（与 D135 的保守口径一致）。
+    //   ⚠️⚠️ 反向验证第 5 轮抓到**两次**，值得记下来（两种错法不同）：
+    //     ① 第一版用"有奖励历史的块"作对照 ⇒ 差异来自**奖励**而不是缺值 ⇒ 测不出东西；
+    //     ② 第二版用"最差历史"作对照 ⇒ 仍测不出，因为**"最差"与"缺失"的正确差别
+    //        不是次序，而是分母**：跳过 ⇒ 分母只算**已有**维度；
+    //        当 0 ⇒ 分母算**全部**维度 ⇒ 分数被**统一拉低**。
+    //   ⇒ 正解：**全表都没有历史**，此时
+    //        · 正确（跳过）⇒ 分只由「模型 + 星」两维定 ⇒ 甲的 88 分
+    //        · 坏法（当 0）⇒ 分母多出 时间1.5 + 稳定0.8 ⇒ **被拉低到 56 分**
+    //      ⇒ 断言"甲 ≥ 70"就能把这两种实现分开（88 vs 56）。
+    const NA = mk("## 甲", "## 甲\n甲\n");
+    const NB = mk("## 乙", "## 乙\n乙\n");
+    const onlyModel = new Map([[0, { q1: true }], [1, { q1: false }]]);
+    const nh = W.weightBlocks([NA, NB], onlyModel, undefined, t0);
+    ok("★★★★ 57⑥：**全表都没有变更史 ⇒ 分只由「模型 + 星」定**（若把缺值当 0，分母变大 ⇒ 被拉低）",
+      nh[0].weight.score >= 70,
+      `甲 = ${nh[0].weight.score}（跳过缺值的实现 ≈88；把缺值当 0 的实现 ≈56）乙 = ${nh[1].weight.score}`);
   }
 }
 

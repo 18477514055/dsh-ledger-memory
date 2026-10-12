@@ -7764,8 +7764,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const selfSrc = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
   const sectionCalls = (selfSrc.match(/^section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 46（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 46);
-  eq("★ 口径：其中带「情形 N」编号的 = 45", numbered, 45);
+  eq("★ 口径：section 总数 = 47（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 47);
+  eq("★ 口径：其中带「情形 N」编号的 = 46", numbered, 46);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -10879,6 +10879,276 @@ section("情形 51：水位提醒必须给出动作（D125）");
     ""
   );
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 52：**写完台账之后立刻压缩，闸门必须放行**（D126，真机 bug 的回归）
+//
+//   真机现象（2026-10-12 14:19，我自己撞到）：
+//     刚 `ledger_write` 写完（返回 ok、revision 递增）+ 写了 L1，
+//     紧接着调 `ledger_compact {mode:"light"}` **连续两次**都被拦，理由是
+//     「**刚要求过你落盘，但还没写**」。
+//
+//   ★★ 为什么既有断言没抓到它（**这是本条存在的最重要理由**）：
+//     情形 28e 造 agent 时**没给 `requestContext`**（见它的 `5704` 行）⇒
+//     `measurePressure` 拿不到 `contextWindow` ⇒ 那条用例只证明了"**没落盘会被拦**"，
+//     **"落了盘就该放行"这一半从来没被测过**。
+//     ⇒ 一个"永远拦"的实现也能通过 28e。**半条断言 = 假绿。**
+//
+//   ⇒ 本情形补上另一半，并且**用真夹具**（makeCtx / runPreStep / flushLedger 都在本文件里）：
+//     ① 水位到档 ⇒ 发提醒（这一步会立 `flushOwedAt`）；
+//     ② `ledger_write` 真落盘；
+//     ③ 立刻调 `ledger_compact` ⇒ **必须不再因"没落盘"被拦**。
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 52：**先写台账、后收到提醒 ⇒ 压缩仍须放行**（D126，真机 bug 的回归）
+//
+//   真机现象（2026-10-12 14:19，我自己撞到）：
+//     `ledger_write` 写完（rev 递增）+ 写了 L1，紧接着调 `ledger_compact {mode:"light"}`
+//     **连续两次**都被拦，理由是「**刚要求过你落盘，但还没写**」。
+//
+//   ★★★ 根因（**时序**，不是"忘了写"）：
+//     `flushOwedAt` 是**水位提醒那一刻**设的，而那次 `ledger_write` 发生在**提醒之前**
+//     ⇒ `flushedAt <= owedAt` ⇒ 判成"还没写"。
+//     **可这一轮的进展我确实已经落盘了**（就在几分钟前）。
+//     ⇒ 这等于要求模型**恰好把写入排在提醒之后** —— 而那是个**它无法观测的顺序**：
+//       它只知道"我刚写过台账"，不可能知道"插件是在我写完之后才开口要的"。
+//
+//   ★★ 为什么既有断言没抓到它（**这是本条最重要的价值**）：
+//     情形 28e 造 agent 时**没给 `requestContext`** ⇒ `measurePressure` 拿不到
+//     `contextWindow` ⇒ 那条只能证明"**没落盘会被拦**"，
+//     "**落了盘就该放行**"这一半**从来没被测过**。
+//     ⇒ 一个"永远拦"的实现也能通过它。**半条断言 = 假绿。**
+//
+//   ⇒ 本情形精确复现那个时序，并断言**压缩必须真的发生**：
+//     ① `ledger_write` 落盘（此时**还没有**任何提醒 ⇒ 不欠账）；
+//     ② 水位到档 ⇒ 发提醒（**这一步之后** `flushOwedAt` 才有值，且 > `flushedAt`）；
+//     ③ 调 `ledger_compact` ⇒ ★ **必须放行**（本周期落过盘）。
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 52：**先写台账、后收到提醒 ⇒ 压缩仍须放行**（D126，真机 bug 的回归）
+//
+//   真机现象（2026-10-12 14:19，我自己撞到）：
+//     `ledger_write` 写完（rev 递增）+ 写了 L1，紧接着调 `ledger_compact {mode:"light"}`
+//     **连续两次**都被拦，理由是「**刚要求过你落盘，但还没写**」。
+//
+//   ★★★ 根因（**时序**，不是"忘了写"）：
+//     `flushOwedAt` 是**水位提醒那一刻**设的，而那次 `ledger_write` 发生在**提醒之前**
+//     ⇒ `flushedAt <= owedAt` ⇒ 判成"还没写"。
+//     **可这一轮的进展我确实已经落盘了**（就在几分钟前）。
+//     ⇒ 这等于要求模型**恰好把写入排在提醒之后**，那是一个**它无法观测的顺序**。
+//
+//   ★★ 为什么既有断言没抓到它（**这是本条最重要的价值**）：
+//     情形 28e 造 agent 时**没给 `requestContext`** ⇒ `measurePressure` 拿不到
+//     `contextWindow` ⇒ 那条只能证明"**没落盘会被拦**"，
+//     "**落了盘就该放行**"这一半**从来没被测过** ⇒ 一个"永远拦"的实现也能通过它。
+//     **半条断言 = 假绿。**
+//
+//   ★★★ 而我这条用例**第一版自己也写错了**（同一天，两处，都值得记）：
+//     ① 自建 agent 时 `surface.nodes` 留空、也没定价
+//        ⇒ **没有可压的节点** ⇒ `selectIncrementalRange` 返回 null ⇒ 编排不跑
+//        ⇒ `regionCalls === 0`；而那个 0 与闸门**毫无关系**（我撤掉修复它照样 0）。
+//     ② 想搬进情形 27 的块里复用夹具 —— 但 `section(...)` 是**顶层调用**，
+//        不能出现在另一个 section 的块内。
+//     ⇒ ★ 纪律 6：**夹具没走通时，绝不能把"夹具故障"当成"被测对象的问题"。**
+//     ⇒ 现在：**自带夹具**（照 `mkDeltaProj` / `mkDeltaAgent` / `priceNodes` 的
+//        已验证形状最小重建 —— 含成对的 user/assistant/tool-result 节点）。
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★ 情形 52：**先写台账、后收到提醒 ⇒ 压缩仍须放行**（D126，真机 bug 的回归）
+//
+//   真机现象（2026-10-12 14:19，我自己撞到）：
+//     `ledger_write` 写完（rev 递增）+ 写了 L1，紧接着调 `ledger_compact {mode:"light"}`
+//     **连续两次**都被拦，理由是「**刚要求过你落盘，但还没写**」。
+//
+//   ★★★ 根因（**时序**，不是"忘了写"）：
+//     `flushOwedAt` 是**水位提醒那一刻**设的，而那次 `ledger_write` 发生在**提醒之前**
+//     ⇒ `flushedAt <= owedAt` ⇒ 判成"还没写"。
+//     **可这一轮的进展我确实已经落盘了**（就在几分钟前）。
+//     ⇒ 这等于要求模型**恰好把写入排在提醒之后**，那是一个**它无法观测的顺序**。
+//
+//   ★★ 为什么既有断言没抓到它（**这是本条最重要的价值**）：
+//     情形 28e 造 agent 时**没给 `requestContext`** ⇒ `measurePressure` 拿不到
+//     `contextWindow` ⇒ 那条只能证明"**没落盘会被拦**"，
+//     "**落了盘就该放行**"这一半**从来没被测过** ⇒ 一个"永远拦"的实现也能通过它。
+//     **半条断言 = 假绿。**
+//
+//   ★★★ 而我这条用例**第一版自己也写错了**（同一天，两处，都值得记）：
+//     ① 自建 agent 时 `surface.nodes` 留空、也没定价
+//        ⇒ **没有可压的节点** ⇒ `selectIncrementalRange` 返回 null ⇒ 编排不跑
+//        ⇒ `regionCalls === 0`；而那个 0 与闸门**毫无关系**（我撤掉修复它照样 0）。
+//     ② 想搬进情形 27 的块里复用夹具 —— 但 `section(...)` 是**顶层调用**，
+//        不能出现在另一个 section 的块内。
+//     ⇒ ★ 纪律 6：**夹具没走通时，绝不能把"夹具故障"当成"被测对象的问题"。**
+//     ⇒ 现在：**自带夹具**（照 `mkDeltaProj` / `mkDeltaAgent` / `priceNodes` 的
+//        已验证形状最小重建 —— 含成对的 user/assistant/tool-result 节点）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D126）");
+{
+  /** 建一个有台账的项目 + 一套**合法的** surface（成对节点）。 */
+  const mkProj52 = (tag, rounds) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 目标\nY\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1,
+        active: "LEDGER.md",
+        decisions: "DECISIONS.md",
+        archiveDir: "_a",
+        maxActiveLines: 300,
+        logDir: "_ledger-log",
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+        revision: 0,
+      }),
+      "utf8"
+    );
+    // ★ 节点必须**成对**（user / assistant(tool-call) / tool/result），
+    //   否则"未回应的工具调用数"一路累加 ⇒ 所有切点都不平衡 ⇒ 永远返回 null。
+    const events = [];
+    let seq = 1;
+    for (let r = 0; r < rounds; r += 1) {
+      events.push({ type: "user/message", seq, data: { message: { role: "user", content: [] } } });
+      seq += 1;
+      events.push({
+        type: "assistant/message",
+        seq,
+        data: { message: { role: "assistant", content: [{ type: "tool-call", id: `c${seq}` }] } },
+      });
+      seq += 1;
+      events.push({ type: "tool/result", seq, data: { message: { role: "tool" } } });
+      seq += 1;
+    }
+    return { root, events };
+  };
+
+  const mkAgent52 = (root, sid, events) => {
+    const bySeq = new Map(events.map((e) => [e.seq, e]));
+    return {
+      session: {
+        header: { id: sid, cwd: root },
+        id: sid,
+        // ★★ 必须给 requestContext —— 闸门要靠它算水位（28e 缺这个，所以测不到另一半）
+        requestContext: () => ({ contextWindow: 1000 }),
+        surface: { nodes: events.map((e) => e.seq) },
+        eventAt: (s) => bySeq.get(s),
+      },
+      steer: () => {},
+    };
+  };
+
+  // ── 正例：**先写台账 → 后收到提醒** ⇒ 压缩必须放行 ──────────────────────
+  {
+    const { root, events } = mkProj52("gate-write-then-notice", 7);
+    const regionCalls = [];
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+    // ★ 兜底设成轻推线（本用例测闸门，不测"20 推 / 40 压"）
+    //   ★ 全量线设 0.75：水位 40% 时只发提醒、76% 时才排全量。
+    mod.apply(run.ctx, { deltaFallbackPoints: 20, highFidelityCompactRatio: 0.75, mode: "steady" });
+    const sid = "session-afterfl00-0002";
+    const agent = mkAgent52(root, sid, events);
+    run.services.tokenMeter._priced = events.map((e) => ({ seq: e.seq, tokens: 20 }));
+
+    // ① **先写台账**（此时还没有任何提醒 ⇒ `flushOwedAt` 无值）
+    await flushLedger(run, root, sid);
+
+    // ② ★★★ **让水位提醒真的发出去**（这才是立 `flushOwedAt` 的时刻）。
+    //   ★ 水位必须在 `NUDGE_MIN_RATIO(0.45)` **之下**，否则**轻推会先抢走 `text`**
+    //     ⇒ 水位提醒发不出去（它的门是 `text === undefined`）⇒ `flushOwedAt` 不立
+    //     ⇒ 承诺判据走不到（我第一版就栽在这：撤掉修复也不红 = 假绿）。
+    //   ★ 锚点 0.3 → 0.4 只涨 10 点（低于所有触发线）⇒ 编排早退、不压，只发提醒。
+    mod.__test.setAnchor({}, sid, 0.3);
+    run.services.tokenMeter._total = 400;   // 40% ≥ 0.3 档 ⇒ 发提醒；< 0.45 ⇒ 轻推不抢
+    await runPreStep(run, { agent, messages: [] });
+
+    // ③ ★★★ 真机那条路是**全量**（探针坐实 `###GATE mode=full`）：
+    //   水位抬到 76% ≥ 全量线 0.75 ⇒ 全量排队；等 idle 时执行 ⇒ 闸门在那里判定。
+    //   ★ 本周期已落过盘（① 那一步）⇒ D126 之后**必须放行**。
+    //
+    //   ★★★ 2026-10-12（我在这里错了 **6 次**，最后靠探针 `###PRESTEP/###SET/###STEP` 定的案，
+    //     全部记下来因为每一版都是"夹具前提错了"）：
+    //     ① `surface.nodes` 空 / 未定价 ⇒ 无可压节点；
+    //     ② 72% 撞默认全量线 ⇒ 增量让路；
+    //     ③ 计数器取错（`regionCalls` 只记增量，全量走 `run.compacted`）；
+    //     ④ 水位 40% 让"提醒发不出"（轻推抢走 `text`）；
+    //     ⑤ 提醒与压缩**同拍** ⇒ 被拦（那是对的，真机是不同拍）；
+    //     ⑥ ★ **抬高水位会再发一次 70% 档提醒 ⇒ `owedStep` 被刷新成当前拍**
+    //        ⇒ 空走一拍没用（探针逐字：`###PRESTEP 步号=2 / ###SET owedStep=2 /
+    //        ###PRESTEP 步号=3 / ###SET owedStep=3 / ###STEP owedStep=3 curStep=3`）。
+    //
+    //   ⇒ 最终做法：**不绕弯** —— 直接把这拍的水位设在**70% 档已经发过之后**，
+    //     再手工把 `flushOwedStep` 改成"上一拍"（这正是真机的状态：
+    //     提醒在 14:19:29 那拍发的，压缩在 14:19:41 那拍执行）。
+    //     ★ 这样测的是**闸门判据本身**，而不是"提醒怎么发出来的"（后者已由情形 12 覆盖）。
+    mod.__test.setAnchor({}, sid, 0.3);
+    // ★ 关键（第 7 版才对）：**发提醒的水位必须低于全量线 0.75** ——
+    //   ① 用 0.76 发提醒 ⇒ 那一拍就**同时**排全量 ⇒ 闸门在**本拍**判 ⇒ sameStep ⇒ 被拦
+    //      （探针逐字坐实：`###PRE 步号=3 / ###SET owedStep=3 / ###STEP owedStep=3 curStep=3`）；
+    //   ② 用 0.72 发提醒 ⇒ 到 0.7 档、但**低于全量线** ⇒ 只发提醒、不排全量；
+    //      下一步抬到 0.76 ⇒ 0.7 档**已经发过**（`fired` 集合留着）⇒ **不再发** ⇒
+    //      `owedStep` 停在上一拍 ⇒ 闸门看到"提醒是上拍发的" ⇒ **正是真机那个形态**。
+    run.services.tokenMeter._total = 720;   // 72%：到 0.7 档但 < 全量线 0.75
+    await runPreStep(run, { agent, messages: [] });   // ★ 提醒在这一拍发出（owedStep = 本拍）
+
+    // ② 抬到 **0.74** ⇒ 过全量线(0.70)、但 **低于水位旁路 0.75** ⇒ 全量排队且**真的过闸门**。
+    //   ★★★ 这一步我错了**第 7 次**，也是最隐蔽的一次：我原来用 **0.76**，
+    //     而 `FLUSH_GATE_BYPASS_RATIO = 0.75` ⇒ **0.76 ≥ 0.75 ⇒ 闸门在更早一行就放行了**
+    //     ⇒ **根本没走到 D126 那条判据** ⇒ 撤掉修复也不红（反向验证当场照出来）。
+    //   ★ 教训：夹具的水位**不能撞任何旁路**，否则测的是旁路、不是你要测的判据。
+    //     （本项目同类前科：D119 那次撞的是 `capLine` 的 0.75 上界。）
+    //   ★ 且此拍**不会再发提醒**（0.7 档已发过）⇒ owedStep 停在**上一拍** ⇒ 正是真机形态。
+    run.services.tokenMeter._total = 740;
+    await runPreStep(run, { agent, messages: [] });
+    await fire(run, "agent/status", { agent, status: "idle" }); // ★ 全量在这里执行
+
+    ok(
+      "② ★★★ **本周期落过盘 ⇒ 全量压缩必须真的发生**（不许再报「还没落盘」）",
+      // ★★★ 判据修正（我在这里错了第 4 次，值得记）：
+      //   `regionCalls` **只记 `compactRegion`**（增量那条），
+      //   而**全量**走的是 `compactNow` ⇒ 记在 `run.compacted` 里。
+      //   ⇒ 用 `regionCalls` 等全量的信号，**永远等不到**（它恒 0）。
+      //   ★ 这正是本项目那条纪律：**指标必须与被测对象同源** ——
+      //     拿增量的计数器去看全量，等于用错的尺子量。
+      run.compacted.length >= 1 || regionCalls.length >= 1,
+      "compacted=" + run.compacted.length + " regionCalls=" + regionCalls.length +
+        "；warnings=" + run.warnings.slice(-3).join(" | ").slice(0, 240)
+    );
+    ok(
+      "③ 且告警里**没有**「刚要求过你落盘，但还没写」",
+      !run.warnings.some((w) => String(w).includes("刚要求过你落盘")),
+      run.warnings.slice(-3).join(" | ")
+    );
+    rmrf(root);
+  }
+
+  // ── ★★ 反面对照：**本周期一次都没写** ⇒ **必须仍被拦** ─────────────────
+  //
+  //   ★ 成对存在的理由：只测正例的话，"一律放行"也能通过；
+  //     只测反例的话（既有 28e / 30c 就是），"一律拦"也能通过。
+  {
+    const { root, events } = mkProj52("gate-never-flushed", 7);
+    const rc2 = [];
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls: rc2 });
+    mod.apply(run.ctx, { deltaFallbackPoints: 20, mode: "steady" });
+    const sid = "session-afterfl00-0003";
+    const agent = mkAgent52(root, sid, events);
+    run.services.tokenMeter._priced = events.map((e) => ({ seq: e.seq, tokens: 20 }));
+
+    // ★ 故意**不** flushLedger：本周期一次都没写
+    run.services.tokenMeter._total = 720;
+    await runPreStep(run, { agent, messages: [] }); // 只发提醒
+    await run.registeredTools
+      .get("ledger_compact")
+      .execute({ mode: "light" }, { agent, session: agent.session, callId: "c-52b" });
+    await fire(run, "agent/status", { agent, status: "idle" });
+    await runPreStep(run, { agent, messages: [] });
+    eq("④ ★★ 反面对照：本周期**一次都没写** ⇒ **仍然必须被拦**（闸门没被改松）", rc2.length, 0);
+    rmrf(root);
+  }
+}
+
+
+
 
 }
 console.log(`${"═".repeat(64)}\n`);

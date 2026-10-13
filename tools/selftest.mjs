@@ -6693,8 +6693,25 @@ section("情形 27：官方设置面板");
       const root = mkDeltaProj("delta-yield");
       const regionCalls = [];
       const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
-      mod.apply(run.ctx, { /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */ });
-      const sid = "session-delta000-0008";
+      // ★★★★★ 2026-10-13（D171）：**前提必须显式写进夹具** —— 这里原先是空的 `{}`。
+      //
+      //   ★ 病灶（反向验证实测，不是推理）：D155 把 `incrementalCompact` 默认改成 **false**
+      //     ⇒ 让路那段的外层门 `settings.incrementalCompact === true` **根本不开**
+      //     ⇒ `runIncrementalCompact` **一次都没被调用** ⇒ `regionCalls===0` 是**平凡成立**
+      //     ⇒ ★ **把「让路」整块摘掉，这条断言照样绿**（判据没有判别力）。
+      //   ★ 硬证据（探针打点，全自检 1368 条）：
+      //       · 让路分支真正 return 的次数 = **0**
+      //       · 调用点门被检查 192 次，其中 `enableDelta=true` 仅 5 次，**且全靠 forcedLight 过门**。
+      //   ★ 这与 30d 后那例（`session-delta000-0100`）是**同一个修法**：把用例的**前提**
+      //     写进夹具，而不是靠"当时的默认值恰好合适"。
+      //   ★ 全量线**用默认值 0.3**（D155 的 `HIGH_FIDELITY_COMPACT_RATIO`）——
+      //     水位 0.70 确实 ≥ 它 ⇒ 让路判据命中。⚠️ 我第一版写成 `0.75`，那是**写反了**：
+      //     0.70 < 0.75 ⇒ 让路反而**不触发** ⇒ 断言会红，而红的是夹具自相矛盾。
+      mod.apply(run.ctx, {
+        /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */
+        incrementalCompact: true,
+      });
+      const sid = "session-delta000-0008-yield"; // ★ D171：与 30d 后那例（session-delta000-0008）**不许同名** —— 锚点按 sid 落盘、全用例共用一个沙箱家 ⇒ 同名必串
       const agent = mkDeltaAgent(root, sid, 7);
       // ★★★ 节点 token 必须**足够大**，否则这条断言是**摆设**（反向验证当场抓到过）：
       //   水位 700 ⇒ 保留 = (0.70−0.10)×1000 = **600** token。
@@ -6706,15 +6723,39 @@ section("情形 27：官方设置面板");
 
       await flushLedger(run, root, sid);
       // ★ 先把锚点定在低位（10%），再一口气升到 ≥ 70%
+      //
+      //   ★★★ 2026-10-13（D171）：**锚点必须显式设** —— 原来这里没有这一句，
+      //     它靠的是**同 sid 的上一个用例落盘留下的 0.1**（`flushLedger` 之后第一步
+      //     `since` 退化成整个水位，恰好也约 0.1）⇒ **判据靠别人的副作用成立**。
+      //     ⇒ 现在显式设，并**换掉重名的 sid**（见上）⇒ 本用例自足。
+      mod.__test.setAnchor({}, sid, 0.1);
       run.services.tokenMeter._total = 100;
       await runPreStep(run, { agent, messages: [] });
-      await flushLedger(run, root, sid);
       // 700 = 70% ⇒ 同时满足「涨够 20 点」**和**「到全量线」= 正是会饿死的那种情形
       run.services.tokenMeter._total = 700;
+      // ★★ 再落一次盘：`byNeed` 照旧要过**落盘闸门**（用户的铁律「先记台账再压」）。
+      await flushLedger(run, root, sid);
+      // ★★★★★ 2026-10-13（D172）**关键：本用例必须用 byNeed 驱动**。
+      //
+      //   ★ 可达性（**实测出来的，不是读代码猜的** —— 穷举四种 (forced, byNeed) 组合）：
+      //     让路块的守卫是 `!forced && settings.incrementalCompact === true && …`，
+      //     而**上面 L13115 的 `if (!forced && !byNeed) { …return… }` 会对所有"自动路径"
+      //     无条件 return** ⇒ ★ 让路块**只可能由 `byNeed` 到达**（模型主动调 `mode:"light"`），
+      //     自动路径**永远到不了**。
+      //   ⇒ 原来的夹具走的是**自动路径** ⇒ 既到不了让路、又因 `incrementalCompact` 默认关
+      //     连函数都进不去 ⇒ 那条 `regionCalls===0` 断言是**平凡成立**（假绿）。
+      //   ★ 这与 D155 §三-B「`runIncrementalCompact` 保留但**不再被自动调用**」完全一致：
+      //     自动那条现在**只做轻推、不做压缩**。
+      askAICompact(sid);
       const d = await runPreStep(run, { agent, messages: [] });
 
-      eq("★★★ 水位已到全量线 ⇒ 增量**让路**（一次 compactRegion 都不该调）", regionCalls.length, 0);
       const t = (d.messages ?? []).map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok(
+        "★★★★★ 30h 前提：注入里**真的出现了「让路」回执** —— 它才证明「前提成立」",
+        /让路/.test(t) && /这次没压/.test(t),
+        t.slice(0, 800)
+      );
+      eq("★★★ 水位已到全量线 ⇒ 增量**让路**（一次 compactRegion 都不该调）", regionCalls.length, 0);
       ok(
         "★★★ 而全量那条**照常排队**（注入里说「即将执行一次高保真压缩」）—— 让路不等于谁也不压",
         /即将执行一次高保真压缩/.test(t),
@@ -7650,7 +7691,10 @@ section("情形 27：官方设置面板");
   //     改代码/加探针而忘了改这条 ⇒ **当场变红**，而不是静默漂移。
   //   ★★ 2026-10-13：新增 `tools/_probe-d170-reverse.mjs`（D170 的反向验证）⇒ 31 → **32**。
   //     这条守护**当场变红**提醒了我，正是它该有的样子（不是障碍）。
-  const DANGEROUS_EXPECTED = 32;
+  //   ★★ 2026-10-13（D171/D172）：再新增 `_probe-d171-reverse.mjs` + `_probe-d172-reverse.mjs`
+  //     ⇒ 32 → **34**。★ 同样**当场变红**提醒——**它连"我加了自己的验证工具"都算得清清楚楚**，
+  //     这正是它存在的意义（凡是会改写 lib/index.js 的东西，一个都不许漏进发布包）。
+  const DANGEROUS_EXPECTED = 34;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`

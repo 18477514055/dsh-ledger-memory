@@ -7919,8 +7919,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 62（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 62);
-  eq("★ 口径：其中带「情形 N」编号的 = 61", numbered, 61);
+  eq("★ 口径：section 总数 = 63（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 63);
+  eq("★ 口径：其中带「情形 N」编号的 = 62", numbered, 62);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -13240,6 +13240,126 @@ section("情形 67：失败的压缩不许算「压缩发生了」（D166/D167�
   ok("★★★★★ 67⑤b 译注**没有**占用 `hint`（那个字段是短工具名、被当行内代码渲染且被精确断言）",
     !/hint:\s*advice/.test(src67b),
     "★ 若写成 `hint: advice` ⇒ 命令入口渲染成 `建议：\\`多行文本\\`` ⇒ 两处契约同时破");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 情形 68：D168 —— **跨重启后，用户原话不许被静默丢弃**（2026-10-13）
+//
+//   真机（不是构造出来的）：fada 会话的 `capsules.json` 里
+//     · `errors`  更新到 13:23:44；
+//     · `artifacts` 记到 14:41:27（本回合我正在建的探针文件全进了）；
+//     · `userMessages` **停在 03:05:23** —— 而 03:27:40 / 04:28:46 / 13:18:49 / 14:25:27
+//       四条**真原话都在会话日志里**（`kind:"user"`，形状与在册的那五条逐字相同）。
+//   ⇒ 同一个进程、同一分钟、同一判据，**只有用户原话这一桶停摆**。
+//
+//   根因：记录形状被**搭了两遍**且不一样 ——
+//     · `createCapsuleMemory().rec()`      ⇒ 有 `seenMsgIds`；
+//     · `hydrateCapsuleMemory()` 内存空时 ⇒ **漏了** `seenMsgIds`；
+//   而 `consume()` 里**只有用户原话**读 `seenMsgIds`（报错/器物索引不碰它）
+//   ⇒ 抛 TypeError ⇒ 被 `session/event` 那层**故意**的 catch 静默吞掉。
+//   ⇒ 修法：唯一构造出口 `newCapsuleRecord()`（两处都调它）。
+//
+//   ★ 判据设计（两条，缺一不可 —— 抄 D136 的"两层断言"）：
+//     ① **行为**：跨重启 hydrate 之后，新用户原话**必须**能被 consume（这条能抓住 bug 本身）；
+//     ② **形状**：hydrate 建出的记录，键集必须与 `rec()` 建的**逐字相同**
+//        （只修今天这一处也能让 ① 变绿；② 防的是"下次再加字段又分叉"）。
+//   ★ 防上一轮那两个坑：
+//     · 不用 boilerplate 里出现过的字符串当"针"；
+//     · `ok()` 的 detail 一律用 `String(...)` 包住（`JSON.stringify(undefined)` 会让整个自检崩）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 68：跨重启后用户原话不许被静默丢弃（D168）");
+{
+  const show68 = (v) => String(JSON.stringify(v));
+  // 唯一 sid，避免碰到别的用例残留的沙箱 `capsules.json`（同 64/65/66/67 的做法）。
+  const SID68 = "session-d168-unique-0001";
+
+  const userEvent68 = (id, text) => ({
+    type: "user/message",
+    time: Date.now(),
+    data: { role: "user", source: { kind: "user" }, id, content: [{ type: "text", text }] },
+  });
+  const errEvent68 = () => ({
+    type: "tool/result",
+    time: Date.now(),
+    data: { message: { isError: true, content: [{ type: "text", text: "Error: marker-D168-err" }] } },
+  });
+
+  // ── 68①：先造"重启前"那一份（由 consume 建记录，即生产的正常路径）──────
+  const before68 = mod.__test.createCapsuleMemoryForTest();
+  before68.consume(SID68, userEvent68("u-d168-1", "重启前的原话甲"));
+  before68.consume(SID68, userEvent68("u-d168-2", "重启前的原话乙"));
+  mod.__test.persistCapsuleMemoryForTest(SID68, before68.get(SID68));
+  eq("★★★★ 68① 前置：重启前这一份有 2 条原话（下面的 hydrate 才有东西可补）",
+    before68.get(SID68).userMessages.length, 2);
+
+  // ── 68②：模拟重启 —— 全新的内存（Map 随进程消失），盘上那份还在 ──────────
+  const after68 = mod.__test.createCapsuleMemoryForTest();
+  ok("★★★★ 68② 前置：新进程的内存里**没有**这场会话（与真机重启一致）",
+    after68.get(SID68) === undefined, show68(after68.get(SID68)));
+
+  const hydrated68 = mod.__test.hydrateCapsuleMemory(after68, SID68);
+  ok("★★★★ 68②b hydrate 真的把盘上素材补了回来（否则下面测的是空壳）",
+    hydrated68 > 0, `hydrate 返回 ${show68(hydrated68)}（期望 > 0）`);
+
+  // ── 68③ ★★★ 行为判据：补水之后，**新的用户原话必须记得下** ──────────────
+  //   这是本情形最核心的一条：它正是真机上"停摆"的那个动作。
+  let consumed68 = null;
+  let threw68 = null;
+  try {
+    consumed68 = after68.consume(SID68, userEvent68("u-d168-3", "重启后的新原话丙"));
+  } catch (e) {
+    threw68 = e;
+  }
+  ok("★★★★★ 68③ ★ 跨重启 hydrate 之后，**新的用户原话必须能进胶囊**（真机缺陷就是在这里抛 TypeError 被吞掉）",
+    threw68 === null && consumed68 === true,
+    threw68 === null
+      ? `consume 返回 ${show68(consumed68)}（期望 true）`
+      : `抛了 ${threw68?.constructor?.name}: ${threw68?.message}`);
+
+  //   并核"确实进了桶"（只断言"没抛"还不够 —— 函数可能静默 return false）。
+  const um68 = after68.get(SID68)?.userMessages ?? [];
+  ok("★★★★★ 68③b 且那条原话**真的进了** `userMessages`（不是静默 return false）",
+    um68.some((x) => String(x.text).includes("重启后的新原话丙")),
+    `现有 ${show68(um68.length)} 条：${show68(um68.map((x) => x.text).slice(0, 4))}`);
+
+  // ── 68④：负向对照 —— 报错那条路**从来不读** `seenMsgIds`（解释真机的"不对称"）──
+  //   保它不是为了功能，而是把真机症状**写进判据**：这条绿而 68③ 红，才对得上现场。
+  let errOk68 = null;
+  try {
+    errOk68 = after68.consume(SID68, errEvent68());
+  } catch (e) {
+    errOk68 = `THREW: ${e?.message}`;
+  }
+  ok("★★★★ 68④ 负向对照：报错原文那条路**不读** `seenMsgIds` ⇒ 即使在坏记录上也照常入库（这正是真机「报错在动、原话停摆」的机制）",
+    errOk68 === true, `consume 返回 ${show68(errOk68)}（期望 true）`);
+
+  // ── 68⑤ ★★★ 形状判据：hydrate 建的记录，键集必须与 `rec()` 的**逐字相同** ──
+  //   ★ 为什么这条必须独立存在：只给 hydrate 补一个 `new Set()` 也能让 68③ 变绿，
+  //     但"同一个形状搭两遍"的病还在 ⇒ 下次再加字段必分叉（D164/D165 同族）。
+  const freshRec68 = mod.__test.createCapsuleMemoryForTest();
+  freshRec68.consume("session-d168-shape-0002", userEvent68("u-d168-4", "形状基准"));
+  const recKeys = Object.keys(freshRec68.get("session-d168-shape-0002")).sort();
+  const hydKeys = Object.keys(after68.get(SID68)).sort();
+  eq("★★★★★ 68⑤ hydrate 建出的记录，键集必须与 `rec()` 建的**逐字一致**（防「同一个形状搭两遍」再分叉）",
+    hydKeys.join(","), recKeys.join(","));
+
+  // ── 68⑥ ★★★ 接线判据：**不许再有第二个地方手搭这个形状** ────────────────
+  //   ★ 口径（两头都要防，D164 的教训）：
+  //     · 太宽 ⇒ 把 `newCapsuleRecord` 自己那句也算进去 ⇒ 假红；
+  //     · 太窄 ⇒ 漏掉 hydrate 那处 ⇒ 假绿。
+  //   ⇒ 数的是「**对象字面量里直接出现 `seenMsgIds:`**」这个形状，
+  //     它只应出现在唯一构造出口里；`hydrate` / `rec` 都只许**调函数**。
+  const src68 = readLibSource()
+    .replace(/\/\*[\s\S]*?\*\//g, "")   // 剥块注释（防止我自己的注释把代码判红/判绿）
+    .replace(/^\s*\/\/.*$/gm, "");      // 剥行注释
+  const litCount68 = (src68.match(/seenMsgIds:\s*new Set\(\)/g) ?? []).length;
+  eq("★★★★★ 68⑥ 全库只有一个地方**直接构造**这个记录形状（唯一出口 `newCapsuleRecord`）",
+    litCount68, 1);
+  ok("★★★★★ 68⑥b 且两处调用点都**走**那个唯一出口（不是各搭各的）",
+    /function newCapsuleRecord\(\)/.test(src68) &&
+      /live = newCapsuleRecord\(\);/.test(src68) &&
+      /r = newCapsuleRecord\(\);/.test(src68),
+    "★ 期望：定义 1 处 + hydrate 与 rec 各调 1 次");
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

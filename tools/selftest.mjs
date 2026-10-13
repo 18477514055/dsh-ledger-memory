@@ -7648,7 +7648,9 @@ section("情形 27：官方设置面板");
   //     它只判"扫到了东西"，**数字漂了没人管** —— 台账写 26、实际 31，白白错了半天。
   //   ★ 修法：**把具体数字写进断言**。数字变了必须同步改这里（与情形 43 的口径断言同型）：
   //     改代码/加探针而忘了改这条 ⇒ **当场变红**，而不是静默漂移。
-  const DANGEROUS_EXPECTED = 31;
+  //   ★★ 2026-10-13：新增 `tools/_probe-d170-reverse.mjs`（D170 的反向验证）⇒ 31 → **32**。
+  //     这条守护**当场变红**提醒了我，正是它该有的样子（不是障碍）。
+  const DANGEROUS_EXPECTED = 32;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
@@ -7919,8 +7921,9 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 63（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 63);
-  eq("★ 口径：其中带「情形 N」编号的 = 62", numbered, 62);
+  // ★★ 2026-10-13：新增情形 69（D170）⇒ 63 → **64**；带编号 62 → **63**。
+  eq("★ 口径：section 总数 = 64（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 64);
+  eq("★ 口径：其中带「情形 N」编号的 = 63", numbered, 63);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -13360,6 +13363,133 @@ section("情形 68：跨重启后用户原话不许被静默丢弃（D168）");
       /live = newCapsuleRecord\(\);/.test(src68) &&
       /r = newCapsuleRecord\(\);/.test(src68),
     "★ 期望：定义 1 处 + hydrate 与 rec 各调 1 次");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 情形 69：同一个「胶囊上限」不许有两个出处（D170）
+//
+//   真机缺陷（本轮**普查 D168 那一族**时抓到，且是**跑出来的、不是读代码推的**）：
+//     同一个"胶囊收几条原话"的上限有两个出处，且**只有一条带归档**：
+//       · `consume()`   —— 常量 `CAPSULE_USER_MSG_MAX`(=40)，溢出 ⇒ 交给 `drainEvicted` 归档；
+//       · `hydrate()` —— 设置项 `numOf("capsuleUserMsgMax")`，溢出 ⇒ **直接 slice 掉**。
+//     实测（设置调到 5）：consume 照旧收 12 条，重启后 hydrate **静默砍到 5 条**，
+//       而 `drainEvicted` **拿回 0 条** ⇒ 那 7 条既不在内存、也没进归档 ⇒ **无声消失**；
+//     实测（设置调到 200）：consume 仍只收 40 条 ⇒ **面板调了完全没用**（空承诺）。
+//
+//   ★ 判据设计（两层，抄 D136 的纪律 —— **行为**与**形状/接线**分开断言）：
+//     ① **行为**（69①~④）：设置调小/调大两侧都真生效；溢出**必进归档通道**；盘上**只增不减**。
+//     ② **形状**（69⑤~⑦）：旧的双出处写法**已不存在**；上限只有一个出口；
+//        且**存储侧硬上限 ≥ 设置项 max**（这条防将来有人调大设置上限而静静丢数据）。
+//   ★ 防两个老坑：
+//     · `ok()` 的 detail 一律 `String(...)` 包住（`JSON.stringify(undefined)` 会让整个自检崩）；
+//     · 断言用唯一 sid，避开别的用例在沙箱 `capsules.json` 里留下的残留。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 69：胶囊上限不许有两个出处（D170）");
+{
+  const show69 = (v) => String(JSON.stringify(v));
+  const userEvent69 = (id, text, t) => ({
+    type: "user/message",
+    time: t,
+    data: { role: "user", source: { kind: "user" }, id, content: [{ type: "text", text }] },
+  });
+
+  // ── 69① 设置调**小**：consume 侧必须遵守（旧代码只认常量 40）────────────────
+  const run69a = makeCtx();
+  mod.apply(run69a.ctx, { capsuleUserMsgMax: 5 });
+  const SID69A = "session-d170-unique-A";
+  const mem69a = mod.__test.createCapsuleMemoryForTest();
+  const t0 = Date.now() - 3600_000;
+  for (let i = 1; i <= 12; i++) mem69a.consume(SID69A, userEvent69(`u-d170-a${i}`, `原话-A${i}`, t0 + i * 1000));
+  eq("★★★★★ 69① 设置 = 5 ⇒ consume 只留 5 条（旧代码固定留 40，面板是空承诺）",
+    mem69a.get(SID69A).userMessages.length, 5);
+
+  // ── 69② ★ 被挤出的一定进归档通道（这是"无声消失"的反面，最核心的一条）──────
+  const ev69a = mem69a.drainEvicted();
+  eq("★★★★★ 69② 被挤出的 7 条**全部进了归档通道**（旧代码 hydrate 那侧直接丢，drainEvicted = 0）",
+    ev69a.length, 7);
+  //   并核方向：留最新、挤出最旧（数组是"新→旧"，`slice(cap)` 切尾部 = 最旧）。
+  //   ★ 我第一版把这条断言写反了（写成"挤出最新"）—— 实测代码才是对的。
+  //     这正是纪律 7：**结论与已手工验证的事实冲突时，先怀疑尺子**。
+  ok("★★★★ 69②b 留的是最新 5 条（A8~A12）",
+    [...mem69a.get(SID69A).userMessages.map((x) => x.text)].sort().join(",") ===
+      ["原话-A10", "原话-A11", "原话-A12", "原话-A8", "原话-A9"].sort().join(","),
+    `实际 ${show69(mem69a.get(SID69A).userMessages.map((x) => x.text))}`);
+
+  // ── 69③ ★★★ 跨重启 hydrate 也遵守设置 —— 且**必须让盘上比上限多** ──────────
+  //   ★★ 反向验证 M3 当场证明这条**第一版写错了**：我原来让盘上只有 5 条，
+  //     于是"上限 5"与"上限 40"都给出 5 条 ⇒ **判据没有判别力**（摘掉修复也不红）。
+  //     这正是 D170 这一族的老坑：**夹具没走到有差别的那条路上，全绿就是假绿**（纪律 8）。
+  //   ⇒ 改成真机那个形状：先按**大**上限攒满 60 条落到盘上，
+  //     再把设置调**小**到 5 重启 ⇒ 盘上(60) > 常量(40) > 设置(5)，两者必然不同。
+  const SID69C = "session-d170-unique-C";
+  const run69c = makeCtx();
+  mod.apply(run69c.ctx, { capsuleUserMsgMax: 200 });
+  const mem69c0 = mod.__test.createCapsuleMemoryForTest();
+  for (let i = 1; i <= 60; i++) mem69c0.consume(SID69C, userEvent69(`u-d170-c${i}`, `原话-C${i}`, t0 + i * 1000));
+  mod.__test.persistCapsuleMemoryForTest(SID69C, mem69c0.get(SID69C));
+  eq("★★★★ 69③ 前置：盘上有 60 条（比设置(5)与常量(40)都多 ⇒ 下面两条才有判别力）",
+    mod.__test.capsuleStoreOf(SID69C).userMessages.length, 60);
+
+  mod.apply(run69c.ctx, { capsuleUserMsgMax: 5 }); // ← 调小，然后重启
+  const after69c = mod.__test.createCapsuleMemoryForTest();
+  mod.__test.hydrateCapsuleMemory(after69c, SID69C);
+  eq("★★★★★ 69③b 跨重启 hydrate 遵守设置 ⇒ 内存只留 5 条（若两侧不同源会留 40 条）",
+    after69c.get(SID69C).userMessages.length, 5);
+  //   ★★ 而且被挤出的 55 条**必须进归档通道** —— 这正是 D170 真机上"无声消失"的那一段。
+  eq("★★★★★ 69③c 且 hydrate 挤出的 55 条**全部进了归档通道**（旧代码 drainEvicted = 0，无声消失）",
+    after69c.drainEvicted().length, 55);
+
+  // ── 69④ ★★★ 盘上**只增不减**（D159 不变量，从反方向守）─────────────────────
+  //   设置从 200 调回 5 时，内存按 5 截，而**盘上那份 60 条不许被砍成 5**。
+  const run69b = makeCtx();
+  mod.apply(run69b.ctx, { capsuleUserMsgMax: 200 });
+  const SID69B = "session-d170-unique-B";
+  const mem69b = mod.__test.createCapsuleMemoryForTest();
+  for (let i = 1; i <= 60; i++) mem69b.consume(SID69B, userEvent69(`u-d170-b${i}`, `原话-B${i}`, t0 + i * 1000));
+  eq("★★★★ 69④ 设置 = 200 ⇒ consume 收满 60 条（不再被硬编码的 40 卡住）",
+    mem69b.get(SID69B).userMessages.length, 60);
+  mod.__test.persistCapsuleMemoryForTest(SID69B, mem69b.get(SID69B));
+  eq("★★★★ 69④b 盘上写进了 60 条", mod.__test.capsuleStoreOf(SID69B).userMessages.length, 60);
+
+  mod.apply(run69b.ctx, { capsuleUserMsgMax: 5 }); // ← 调回 5
+  const mem69c = mod.__test.createCapsuleMemoryForTest();
+  mod.__test.hydrateCapsuleMemory(mem69c, SID69B);
+  mod.__test.persistCapsuleMemoryForTest(SID69B, mem69c.get(SID69B));
+  eq("★★★★★ 69④c ★ 设置调回 5 后，**盘上仍是 60 条**（内存截断不许打穿盘上；旧代码会砍成 5）",
+    mod.__test.capsuleStoreOf(SID69B).userMessages.length, 60);
+  eq("★★★★ 69④d 而内存里只有 5 条（策略上限只在内存侧生效）",
+    mem69c.get(SID69B).userMessages.length, 5);
+
+  // ── 69⑤ ★ 形状：旧的双出处写法**已不存在** ────────────────────────────────
+  const src69 = readLibSource()
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  ok("★★★★★ 69⑤ 旧常量 `CAPSULE_STORE_MAX` 已彻底消失（它是第二个出处的载体）",
+    !/CAPSULE_STORE_MAX/.test(src69), "★ 期望：0 处（已由 CAPSULE_STORE_USER_HARD_MAX 取代）");
+  //   上限直读只许剩**出口函数体里那一处**。
+  eq("★★★★★ 69⑥ 用户原话上限只剩一个出处（源码里直读设置只 1 处 = `capsuleUserMsgMaxOf`）",
+    (src69.match(/numOf\(\s*"capsuleUserMsgMax"/g) ?? []).length, 1);
+  eq("★★★★ 69⑥b 报错上限同样只剩一个出处（对称，免得只修一半）",
+    (src69.match(/numOf\(\s*"capsuleErrorMax"/g) ?? []).length, 1);
+  ok("★★★★ 69⑦ 一切原话截断都走 `trimUserMessagesInPlace()`（归档逻辑只有一份）",
+    (src69.match(/trimUserMessagesInPlace\(/g) ?? []).length >= 3,
+    `实际 ${show69((src69.match(/trimUserMessagesInPlace\(/g) ?? []).length)} 次（期望 ≥3）`);
+  ok("★★★★ 69⑦b 归档路径只有一个出处 `userMsgArchiveRel()`（旧代码渲染侧自己拼、还编了 `_ledger-archive`）",
+    /function userMsgArchiveRel\(/.test(src69) && !/archiveRel \?\? "_ledger-archive"/.test(src69));
+
+  // ── 69⑧ ★★ 存储侧硬上限必须 ≥ 设置项 max（防将来调大设置上限而**静静丢数据**）──
+  //   为什么单开一条：这一条是"值之间的关系"，上面那些"结构已收口"的断言**看不见它**。
+  //   若有人把 spec 的 max 从 200 调到 500 而忘了硬上限，**只有这条会红**。
+  const specs69 = mod.__test.settingSpecsForTest();
+  const umSpec69 = specs69.find((s) => s.key === "capsuleUserMsgMax");
+  const erSpec69 = specs69.find((s) => s.key === "capsuleErrorMax");
+  const hardUm69 = mod.__test.capsuleStoreHardMaxForTest?.().userMax;
+  const hardEr69 = mod.__test.capsuleStoreHardMaxForTest?.().errorMax;
+  ok("★★★★★ 69⑧ 存储侧原话硬上限 ≥ 设置项 max（否则调大设置 ⇒ 盘上写不下 ⇒ 打穿「只增不减」）",
+    Number.isFinite(hardUm69) && hardUm69 >= umSpec69.max,
+    `硬上限=${show69(hardUm69)} 设置 max=${show69(umSpec69.max)}`);
+  ok("★★★★ 69⑧b 报错侧同理", Number.isFinite(hardEr69) && hardEr69 >= erSpec69.max,
+    `硬上限=${show69(hardEr69)} 设置 max=${show69(erSpec69.max)}`);
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

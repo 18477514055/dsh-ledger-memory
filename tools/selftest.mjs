@@ -7919,8 +7919,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  eq("★ 口径：section 总数 = 61（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 61);
-  eq("★ 口径：其中带「情形 N」编号的 = 60", numbered, 60);
+  eq("★ 口径：section 总数 = 62（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 62);
+  eq("★ 口径：其中带「情形 N」编号的 = 61", numbered, 61);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   ok(
@@ -13095,6 +13095,151 @@ section("情形 66：被压段索引行不许印内部键（auto:70%）且必须
   ok("★★★★ 66⑧b 兜底那处**已不再自己拼目录**（同上：值对了还不够，结构也要收口）",
     /capsuleDirRel\(/.test(cpf66) && !/["']capsules["']/.test(cpf66),
     `实得：${cpf66.replace(/\s+/g, " ").slice(0, 300)}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 情形 67：D166/D167 —— **失败的压缩不许被当成"压缩发生了"**（2026-10-13）
+//
+//   真机（13:18，用户报"手动点压缩不太行了"）：
+//     · `compaction/end` 带着 `error:"Stream ended without finish_reason"`（provider 断流）；
+//     · 该时段**没有 `compaction/summary` 事件** ⇒ 摘要从未生成 ⇒ 压确实没发生；
+//     · 而紧随的注入却写着「## 上下文刚被压缩」「本插件在 30% 时主动执行了一次压缩」。
+//   ⇒ 两条独立缺陷：
+//     · **D167**：判据只认 `compaction/end` **存在**、不看它**有没有 error** ⇒ 谎报。
+//     · **D166**：内核把所有 summary 阶段失败**一律**说成 "could not produce a smaller
+//       summary"（字面像"没东西可压"）⇒ 我们原样转述 ⇒ 用户分不清「重试就行」与「按了也白按」。
+//
+//   ★ 判据吃**被测对象自己产生的东西**（纪律 2）：直接喂**内核真实事件形状**
+//     （`{type:"compaction/end", data:{error}}`）—— 形状取自真机日志，不是我编的。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 67：失败的压缩不许算「压缩发生了」（D166/D167）");
+{
+  // ── 67①：唯一出口的分档 —— 三个形状各断言一次 ─────────────────────────────
+  const okEnd = { type: "compaction/end", seq: 1, data: { compactionId: "x", turn: null } };
+  const badEnd = {
+    type: "compaction/end",
+    seq: 2,
+    data: { compactionId: "y", turn: null, error: "Stream ended without finish_reason" },
+  };
+  // ★ 真机那次失败的**逐字形状**（从 fada 会话日志 seq=57721 抄下来的）。
+  ok("★★★★★ 67① 成功的 `compaction/end`（无 `error` 键）⇒ 判为成功",
+    mod.__test.compactionEndSucceeded(okEnd) === true, JSON.stringify(okEnd.data));
+  ok("★★★★★ 67①b ★ **失败**的 `compaction/end`（带 `error`）⇒ **不许**判成功",
+    mod.__test.compactionEndSucceeded(badEnd) === false, JSON.stringify(badEnd.data));
+  ok("★★★★ 67①c 别的类型（含 `user/message`）⇒ 一律不是「压缩成功」",
+    mod.__test.compactionEndSucceeded({ type: "user/message", seq: 3, data: {} }) === false &&
+      mod.__test.compactionEndSucceeded(undefined) === false);
+
+  // ── 67②：**行为**判据 —— 失败那次**不得**触发重注 ──────────────────────────
+  //   ★ 这是本情形**最核心**的一条：它直接钉住真机那个谎报。
+  //     夹具形状照抄真机：一次失败压缩（seq 更大）+ 一次更早的正常注入。
+  const agent67 = {
+    session: {
+      log: [
+        { type: "user/message", seq: 100, data: { source: { kind: "project-ledger-notes" }, content: [{ type: "text", text: "注入" }] } },
+        // ★ 失败压缩，seq 更大 ⇒ 旧判据会判"压缩在注入之后" ⇒ 谎报重注。
+        { type: "compaction/end", seq: 200, data: { compactionId: "z", turn: null, error: "Stream ended without finish_reason" } },
+      ],
+    },
+  };
+  ok("★★★★★ 67② ★ **只有失败压缩**时，`compactVsInject` **不许**说「该重注」（这就是真机那次谎报）",
+    mod.__test.compactVsInject(agent67) === false,
+    `实得 ${JSON.stringify(mod.__test.compactVsInject(agent67))}（期望 false）`);
+
+  // ★ 正向对照：把同一个事件改成**成功**（只去掉 `error`）⇒ 必须变 true。
+  //   这一条防的是"一刀切成 false"——那样 67② 会假绿。
+  const agent67b = {
+    session: {
+      log: [
+        { type: "user/message", seq: 100, data: { source: { kind: "project-ledger-notes" }, content: [{ type: "text", text: "注入" }] } },
+        { type: "compaction/end", seq: 200, data: { compactionId: "z", turn: null } },
+      ],
+    },
+  };
+  ok("★★★★★ 67②b 正向对照：同一个事件**去掉 `error`** ⇒ 必须判「该重注」（证明 67② 不是一刀切）",
+    mod.__test.compactVsInject(agent67b) === true,
+    `实得 ${JSON.stringify(mod.__test.compactVsInject(agent67b))}（期望 true）`);
+
+  // ── 67③：接线断言 —— **两处**消费者都必须走唯一出口 ────────────────────────
+  //   ★ 与 66③ 同一个病（D163 那次栽在"定义被算成调用"）⇒ 这里先剥定义行再匹配。
+  //   ★ 为什么必须查**两处**：`armReinject`（旁听路径，L14894）与 `compactVsInject`
+  //     （判据路径）是**两条独立的路**，只修一条 = 另一半仍会谎报。
+  const src67 = readLibSource();
+  const src67NoDef = src67
+    .replace(/^\s*function\s+compactionEndSucceeded\([^\n]*\n/m, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const callSites67 = (src67NoDef.match(/compactionEndSucceeded\(/g) ?? []).length;
+  ok("★★★★★ 67③ `compactionEndSucceeded` 被**至少两处**调用（判据路 + 旁听路，缺一条就漏一半谎报）",
+    callSites67 >= 2, `实得 ${callSites67} 处（已剥掉函数定义与注释）`);
+  ok("★★★★ 67③b 源码里**不再**有「只判类型不判 error」的旧写法残留",
+    !/event\?\.type === "compaction\/end"\s*\)\s*\{\s*$/.test(src67NoDef),
+    "★ 旧写法：`if (event?.type === \"compaction/end\") { armReinject(...) }` —— 没有 error 判据");
+
+  // ── 67④：D166 —— 内核那句误导标签必须被**摊开真因** ───────────────────────
+  //   ★ 用**真机那次异常的形状**：`ManualCompactionError("summary", "...", {cause})`。
+  //
+  //   ★★★ 真因字符串**必须是唯一的、"套路文本"里不可能出现的**（本情形第二处踩坑）：
+  //     · 第一版我拿真机那串 `Stream ended without finish_reason` 当针 ——
+  //       而我的译注里**恰好有一句举例**也写着它（`（如 \`Stream ended…\`）`）
+  //       ⇒ 即使把真因整段丢掉，断言**照样绿**（**假绿**，M4 反向验证当场抓到）。
+  //     · 这正是纪律 4「**剥离用的标记本身绝不能出现在被剥离的内容里**」的新形态：
+  //       针出现在**样板文本**里 ⇒ 判据分不清"真因带出来了"与"只是举例里有"。
+  //     ⇒ 换成不可能出现在样板里的唯一标记，并在**夹具侧**独立生成（不吃被测对象的输出）。
+  const UNIQUE_CAUSE_67 = "UNIQUE-CAUSE-MARKER-9f3a-D166";
+  const e67 = new Error("manual compaction could not produce a smaller summary");
+  e67.code = "summary";
+  e67.cause = new Error(UNIQUE_CAUSE_67);
+  const note67 = mod.__test.compactionFailureAdvice(e67);
+  //   ★ 防御：被测对象返回 `undefined` 时**要出一个干净的 FAIL**，不许让自检**崩**。
+  //     （第一版直接 `JSON.stringify(note67).slice(...)` —— 而 `JSON.stringify(undefined)`
+  //       返回的是 **`undefined` 这个值**（不是字符串）⇒ `.slice` 抛 TypeError
+  //       ⇒ **整个自检挂掉**、连"通过 N 项"那行都不打印 ⇒ 反向验证读不到结果。
+  //     ★ 这个坑只在 M3 变异下才暴露 —— 也就是说：**判据自己有崩溃路径时，
+  //       "反向验证看得见红"这件事本身就不成立**。用 `String(...)` 兜住。）
+  const show = (v) => String(JSON.stringify(v));
+  const note67s = typeof note67 === "string" ? note67 : "";
+  ok("★★★★★ 67④ 内核那句「could not produce a smaller summary」被加译注（点明它是**固定文案**）",
+    /固定文案/.test(note67s),
+    `实得：${show(note67).slice(0, 200)}`);
+  ok("★★★★★ 67④b 译注里带**真因逐字**（`cause.message`），而不是复述内核那句",
+    note67s.includes(UNIQUE_CAUSE_67),
+    `针=${UNIQUE_CAUSE_67}；实得：${show(note67).slice(0, 240)}`);
+
+  // ★ 负向对照两条（防"给所有错误硬加尾巴"）：
+  const eBusy = new Error("manual compaction requires an idle agent with no waking queued work");
+  eBusy.code = "busy";
+  ok("★★★★ 67④c **负向**：`busy` 那档原文已经说清楚了 ⇒ **不加**译注（不给好句子硬加尾巴）",
+    mod.__test.compactionFailureAdvice(eBusy) === undefined,
+    `实得：${show(mod.__test.compactionFailureAdvice(eBusy))}`);
+
+  const eNoCause = new Error("manual compaction could not produce a smaller summary");
+  eNoCause.code = "summary";
+  const noteNoCause = mod.__test.compactionFailureAdvice(eNoCause);
+  const noteNoCauseS = typeof noteNoCause === "string" ? noteNoCause : "";
+  ok("★★★★ 67④d **负向**：`summary` 但**取不到 `cause`** ⇒ 如实说「内核没把真因带出来」，绝不替它编一个",
+    /内核没把真因带出来/.test(noteNoCauseS) && !noteNoCauseS.includes(UNIQUE_CAUSE_67),
+    `实得：${show(noteNoCause).slice(0, 200)}`);
+
+  // ── 67⑤：D166 的**接线** —— 译注必须真的进了回报，且**不许**占用 `hint` ──────
+  //   ★ `hint` 有两条既有契约：命令入口当**行内代码**渲染、自检按**精确值**断言。
+  //     塞多行说明会同时打破两处 ⇒ 这条钉"另开字段"。
+  //   ★★ 第一版这条是**假红**（记下来，纪律 7）：我用
+  //     `/result = await compaction\.compactNow\([\s\S]*?\n  \}/` 抓 catch 块，
+  //     而第一个 `\n  }` 其实是**`try` 的收口** ⇒ 只抓到一行 ⇒ 断言看不到 `causeNote`
+  //     （而源码里明明有）。⇒ 改成**取一个窗口再剥注释**，不靠括号配对猜边界。
+  const src67b = readLibSource();
+  const cnow = src67b.indexOf("await compaction.compactNow(");
+  const window67 = cnow < 0 ? "" : src67b
+    .slice(cnow, cnow + 2600)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  ok("★★★★ 67⑤ catch 收口处**确实带出了 `causeNote`**（不是只在函数里定义、没人用）",
+    /causeNote:/.test(window67) && /compactionFailureAdvice\(e\)/.test(window67),
+    `实得片段：${window67.replace(/\s+/g, " ").slice(0, 300)}`);
+  ok("★★★★★ 67⑤b 译注**没有**占用 `hint`（那个字段是短工具名、被当行内代码渲染且被精确断言）",
+    !/hint:\s*advice/.test(src67b),
+    "★ 若写成 `hint: advice` ⇒ 命令入口渲染成 `建议：\\`多行文本\\`` ⇒ 两处契约同时破");
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

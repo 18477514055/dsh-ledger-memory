@@ -15,8 +15,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = "D:/Deepseek工作区/20-DSH插件/04-其余插件/10.项目台账";
+// ★★ 2026-10-15（D216）：原来硬编码本机绝对路径 ⇒ 改成**从本文件位置推**（跨机器都对、且不泄露本机路径）。
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CAPS = path.join(ROOT, "_ledger-log/2026-10/week2/capsules");
 const BT = String.fromCharCode(96);
 const RESTART = new Date("2026-10-11T05:30:22+08:00").getTime();

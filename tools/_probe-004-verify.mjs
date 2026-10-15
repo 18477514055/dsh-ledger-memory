@@ -15,8 +15,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = "D:/Deepseek工作区/20-DSH插件/04-其余插件/10.项目台账";
+// ★★ 2026-10-15（D216）：原来硬编码本机绝对路径 ⇒ ① 会公开在仓库上；
+//   ② 别人 clone 下来必然跑不了（假失败）。⇒ 改成**从本文件位置推**（跨机器都对）。
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => fs.readFileSync(p, "utf8");
 const exists = (p) => fs.existsSync(p);
 

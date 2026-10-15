@@ -11,6 +11,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import zlib from "node:zlib";
 
 function loadEvents(F) {
@@ -99,7 +100,7 @@ function scanOne(label, F, verbose) {
   return bad.length;
 }
 
-const ROOT = "C:\\Users\\24239\\.dsh\\sessions";
+const ROOT = path.join(os.homedir(), ".dsh", "sessions");
 function findLogs() {
   const out = [];
   const walk = (d) => {

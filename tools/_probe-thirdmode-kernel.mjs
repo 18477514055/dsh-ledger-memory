@@ -16,7 +16,15 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-const ASAR = "C:\\Users\\24239\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\app.asar";
+// ★★ 2026-10-15（D216）：原来硬编码本机用户名路径 ⇒ 改成从环境推（跨机器都对、且不泄露本机路径）。
+//   ★ 官方端 app.asar 在 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\app.asar`。
+const ASAR = path.join(
+  process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local"),
+  "Programs",
+  "DeepSeek Harness",
+  "resources",
+  "app.asar"
+);
 const OUT = path.join(os.tmpdir(), "dsh-asar-prune");
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });

@@ -15,6 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
+import { fileURLToPath } from "node:url";
 
 const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 const decodeAll = (buf) => {
@@ -28,7 +29,8 @@ const decodeAll = (buf) => {
   return Buffer.concat(out).toString("utf8");
 };
 
-const ROOT = "D:/Deepseek工作区/20-DSH插件/04-其余插件/10.项目台账";
+// ★★ 2026-10-15（D216）：原来硬编码本机绝对路径 ⇒ 改成**从本文件位置推**（跨机器都对、且不泄露本机路径）。
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const LOGDIR = path.join(ROOT, "_ledger-log/2026-10/week2");
 const fmt = (ms) => new Date(ms).toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" });
 

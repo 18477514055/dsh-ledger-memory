@@ -88,10 +88,10 @@
       },
       "dshOperations": {
         "0.2.0-rc.2": {
-          "install": "unknown",
-          "start": "unknown",
-          "uninstall": "unknown",
-          "rollback": "unknown"
+          "install": "passed",
+          "start": "passed",
+          "uninstall": "passed",
+          "rollback": "passed"
         }
       },
       "profiles": [

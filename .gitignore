@@ -1,6 +1,11 @@
 # ── 只提交插件本体；开发过程记录留在本机（含私有项目名与本机路径）──
 LEDGER.md
 DECISIONS.md
+# ★ 2026-10-14（D203）：卡片化之后，决策正文住在 `decisions/`（一卡一文件，203 张）。
+#   它与上面的 `DECISIONS.md` **是同一类内容**（开发过程记录）⇒ 忽略规格必须一致，
+#   否则迁移会把 203 份开发记录一起带进仓库（违背"只提交插件本体"）。
+decisions/
+lessons/
 .dsh-ledger.json
 _ledger-log/
 _ledger-archive/

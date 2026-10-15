@@ -1,6 +1,6 @@
 {
   "name": "dsh-ledger-memory",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "台账记忆（Ledger Memory）：为 DSH 提供工程化的项目记忆 —— 台账的检测/注入/归档/Git 配合，活动日志（L0–L4），三层上下文压缩与逐字胶囊落盘，两种压缩模式（正常推进 / 反复追究），把对话锁定到某个项目目录（跨重启保持），以及跨会话的交接单闭环。可回溯、可追查。",
   "keywords": [
     "dsh",
@@ -53,6 +53,50 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    },
+    "compatibility": {
+      "dsh": ">=0.1.2-alpha.2",
+      "dshReleases": {
+        "rc.7": "unknown",
+        "rc.8": "unknown",
+        "0.1.1-rc.1": "unknown",
+        "0.1.1-rc.2": "unknown",
+        "0.1.2-alpha.2": "compatible",
+        "0.1.2-alpha.3": "compatible",
+        "0.1.2-alpha.4": "compatible",
+        "0.1.2-alpha.5": "compatible",
+        "0.1.2-rc.1": "compatible",
+        "0.1.3-alpha.1": "unknown",
+        "0.1.3-alpha.2": "unknown",
+        "0.1.5-alpha.1": "unknown",
+        "0.1.5-alpha.2": "unknown",
+        "0.1.5-rc.1": "unknown",
+        "0.1.5-rc.2": "unknown",
+        "0.1.5-rc.3": "unknown",
+        "0.1.6-alpha.1": "unknown",
+        "0.1.6-alpha.2": "unknown",
+        "0.1.7-alpha.1": "unknown",
+        "0.1.7-alpha.2": "unknown",
+        "0.1.7-rc.1": "unknown",
+        "0.1.7-rc.2": "unknown",
+        "0.2.0-rc.1": "compatible",
+        "0.2.0-rc.2": "compatible",
+        "0.2.1-alpha.1": "unknown",
+        "0.2.1-alpha.2": "unknown",
+        "0.2.1-alpha.3": "unknown"
+      },
+      "dshOperations": {
+        "0.2.0-rc.2": {
+          "install": "unknown",
+          "start": "unknown",
+          "uninstall": "unknown",
+          "rollback": "unknown"
+        }
+      },
+      "profiles": [
+        "desktop",
+        "web"
       ]
     }
   },

@@ -21,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  * 本文件所在目录（**已解码**）。
  *
  * ★ 为什么必须用 `fileURLToPath` 而不是 `new URL(...).pathname`：
- *   本机路径里有中文（`D:\Deepseek工作区\…`），而 `.pathname` 拿到的是
+ *   本机路径里有中文（如 `D:\Example工作区\…`），而 `.pathname` 拿到的是
  *   **百分号编码**的串（`Deepseek%E5%B7%A5%E4%BD%9C%E5%8C%BA`）。
  *   `import()` 能容忍它（所以旧代码一直没暴露问题），但 `fs.readFileSync`
  *   **不能** —— 情形 27 读 `lib/client.js` 时当场 ENOENT。
@@ -61,7 +61,7 @@ function readLibSource() {
  * 背景（2026-10-10）：项目锁改成"跨重启保持"之后，`ledger_lock` 会往
  *   `$DSH_HOME\plugin-data\dsh-ledger-memory\locks.json` **落盘**。
  *   而自检用假 ctx 直接跑 `lib/index.js` ⇒ 一旦某个用例摸到 `ledger_lock`，
- *   就会**往用户真实的家 `C:\Users\24239\.dsh` 里写文件**。
+ *   就会**往用户真实的家 `<家目录>\.dsh` 里写文件**。
  *   ★ 这是"测试污染真实环境"，比测试失败严重得多（用户的家是红线区）。
  *
  * ⇒ 在**导入 `lib/index.js` 之前**把 `DSH_HOME` 指到一个临时目录。
@@ -724,7 +724,7 @@ section("情形 1：全新项目的检测与提示");
   // ★ 2026-10-10：新增 `ledger_lock`（把会话锁到某个项目目录）⇒ 13 → 14 个工具。
   // ★ 2026-10-11：新增 `ledger_recall`（把被压段的逐字原文按需读回，含 reasoning）
   //   ⇒ 14 → 15 个工具（承 D79：压缩后要能回溯原文，而不只是摘要）。
-  eq("注册了 15 个工具（新增 ledger_recall）", run.registeredTools.size, 15);
+  eq("注册了 21 个工具（D181 ledger_goals · D191 原则授权 · D192 经验教训 · D199 老文件迁移 · D202 多维索引）", run.registeredTools.size, 21);
   for (const n of [
     "ledger_status",
     "ledger_init",
@@ -1093,7 +1093,7 @@ section("情形 6b：/ledger 裸敲弹选择卡片");
   // ★ 2026-10-10：加了 `handoff`（写交接单）⇒ 8 项变 9 项。
   // ★ 2026-10-10：加了 `mode`（切压缩模式）⇒ 9 项变 10 项。
   // ★ 2026-10-10：加了 `lock`（把会话锁到某个项目目录）⇒ 10 项变 11 项。
-  eq("卡片列全十一个子命令（含 compact / light / handoff / mode / lock）", run.asked[0].request.questions[0].options.length, 11);
+  eq("卡片列全十二个子命令（D180 新增 principles）", run.asked[0].request.questions[0].options.length, 12);
   eq("点「显示活跃台账」⇒ 真的执行 show", r1.kind, "success");
   ok("返回的是台账正文", r1.text.includes("项目台账"), r1.text.slice(0, 150));
   // ★ 关键：卡片里选出来的，与手打 `/ledger show` 必须**一模一样**
@@ -1247,7 +1247,7 @@ section("情形 7：服务缺失与容错");
     console.log(`        apply 抛了：${e.message}`);
   }
   ok("没有 commands 服务时 apply 不抛错", !threw);
-  eq("没有 commands 时工具仍注册", run.registeredTools.size, 15);
+  eq("没有 commands 时工具仍注册", run.registeredTools.size, 21);
   rmrf(initedRoot);
 }
 
@@ -1312,9 +1312,9 @@ section("情形 9：候选名判定必须保守");
   rmrf(root);
 }
 
-// ── 情形 10：容器工作区（本机 `D:\Deepseek工作区` 的真实误报）──────────────
+// ── 情形 10：容器工作区（本机 `D:\Example工作区` 的真实误报）──────────────
 //
-// 真实事故：`D:\Deepseek工作区` 自己没有 `.git`、没有台账，但有 `AGENTS.md`，
+// 真实事故：`D:\Example工作区` 自己没有 `.git`、没有台账，但有 `AGENTS.md`，
 // 且二层子目录里有 3 个独立仓库 ⇒ 旧版 `isFreshProject` 判真，每次会话都劝用户
 // `git init`。往这里 init 会把所有子项目卷进错误的父仓库。
 section("情形 10：容器工作区不许被当成新项目");
@@ -1598,10 +1598,26 @@ section("情形 12：上下文水位分档提醒");
     !t5.includes("自动执行一次高保真压缩"),
     t5.slice(0, 400)
   );
+  // ★★★★★ 2026-10-13（D174）：**这条断言改写了 —— 它原先守着旧架构。**
+  //
+  //   旧断言：`/兜底|安全网/` —— 它要求 70% 档里出现"兜底/安全网"字样。
+  //   ★ 那是 **D129**（轻量为主）时代的产物：那时"压"是**模型**的活、
+  //     插件那次全量叫"兜底"。用户 **D155** 已把全量改成**主力**（回合末自动做）——
+  //     此时再把它叫"兜底"，**语义就反了**（主力被说成安全网）。
+  //   ⇒ 断言必须跟着架构换：现在该守的是
+  //     **"这一档必须如实告诉模型：压缩会在回合末自动发生、你不需要动手"**。
+  //   ★ 这正是本文件自己记过的教训（D125 那条）：
+  //     **"旧断言可以守着旧的错误行为"** —— 改行为时若不同步改它，它会把你拦回去。
+  //   ★★ 但**信息不许丢**（旧断言的价值要保留）：仍要守"压缩后逐字胶囊会重注回来"。
   ok(
-    "★★ 70% 档仍如实说明插件会兜底（安全网不能因为改了措辞就消失）",
-    /兜底|安全网/.test(t5),
-    t5.slice(0, 400)
+    "★★★ 70% 档**如实说明压缩会在回合末自动完成**（D155 架构：全量是主力，不是兜底）",
+    /回合结束之后|回合末|回合结束后/.test(t5) && /全量压缩/.test(t5),
+    t5.slice(0, 500)
+  );
+  ok(
+    "★★★ 70% 档**明确告诉模型「不要自己去调压缩工具」**（旧文案正好相反，是它中途压的起因）",
+    /不需要你动手|不要为了腾地方|不需要操心/.test(t5),
+    t5.slice(0, 500)
   );
   ok("★ 70% 档说明压缩后会把逐字胶囊注回来（所以基本无感）", t5.includes("逐字胶囊"), t5.slice(0, 400));
   ok("★ 70% 档点名 ledger_checkpoint 只在真有必要时才打扰用户", t5.includes("ledger_checkpoint"));
@@ -2368,7 +2384,7 @@ section("情形 14：活动日志");
 // ── 情形 15：从容器工作区开着会话时，用 root 点名子项目 ──────────────────────
 //
 // ★ 这一组来自一次真实卡壳（2026-10-08）：本插件的项目根取 session.header.cwd，
-//   而用户经常从**容器工作区**（如 D:\Deepseek工作区）开会话，真实项目在它的子目录里。
+//   而用户经常从**容器工作区**（如 `D:\Example工作区`）开会话，真实项目在它的子目录里。
 //   没有 root 参数，那种会话里**任何**台账工具都只能指向容器根 —— 而容器根恰恰是
 //   禁止初始化的目录，于是插件对它最主要的那些项目全都不可用。
 section("情形 15：root 参数（容器里的子项目）");
@@ -5350,15 +5366,16 @@ section("情形 27：官方设置面板");
     eq("GET ok", r.body.ok, true);
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
     // ★★★★ 2026-10-13（D157/D158）：36 → **37**（新增 `triageKeepTotalMax`）。
-    eq("★ 回报了三十七项元数据（D158 新增 triageKeepTotalMax）", r.body.specs?.length, 37);
+    // ★★★★★ 2026-10-13（D179）：37 → **38**（新增 `hardMaintenanceGate`，收尾维护硬门）。
+    eq("★ 回报了三十八项元数据（D179 新增 hardMaintenanceGate）", r.body.specs?.length, 38);
     ok(
-      "★★ 三十七项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
+      "★★ 三十八项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
       JSON.stringify([...r.body.specs.map((s) => s.key)].sort()) ===
         JSON.stringify([
           "autoCompact", "blockHistoryMax", "blockInjection", "capsuleArtifactMax",
           "capsuleErrorChars", "capsuleErrorMax", "capsuleMaxChars", "capsuleStoreSessions",
           "capsuleUserMsgChars", "capsuleUserMsgMax", "changeRegisterMax", "deltaRemovePoints",
-          "deltaTriggerPoints", "highFidelityCompact", "highFidelityCompactRatio",
+          "deltaTriggerPoints", "hardMaintenanceGate", "highFidelityCompact", "highFidelityCompactRatio",
           "incrementalCompact", "logBriefChars", "logDefaultLimit", "logLevels",
           "maxActiveLines", "maxArchiveList", "maxReadChars", "minCompressPoints", "mode", "nudgeMinRatio",
           "pressureTiers", "recallMaxChars", "requireFlushBeforeCompact", "shadowedIndexMax",
@@ -7694,7 +7711,105 @@ section("情形 27：官方设置面板");
   //   ★★ 2026-10-13（D171/D172）：再新增 `_probe-d171-reverse.mjs` + `_probe-d172-reverse.mjs`
   //     ⇒ 32 → **34**。★ 同样**当场变红**提醒——**它连"我加了自己的验证工具"都算得清清楚楚**，
   //     这正是它存在的意义（凡是会改写 lib/index.js 的东西，一个都不许漏进发布包）。
-  const DANGEROUS_EXPECTED = 34;
+  //   ★★ 2026-10-13（D173/D174）：新增 `_probe-d174-reverse.mjs`（本轮合同修复的反向验证）
+  //     ⇒ 34 → **35**。★ 又是**当场变红**提醒的（反向验证那一跑里就有它）。
+  //   ★★ 2026-10-13（D176/D177）：新增 `_probe-d176-177-reverse.mjs` ⇒ 35 → **36**。
+  //   ★★ 2026-10-13（D179）：新增 `_probe-d179-reverse.mjs`（硬门反向验证）⇒ 36 → **37**。
+  //   ★★ 2026-10-13（D180）：新增 `_probe-d180-reverse.mjs`（授权守卫反向验证）⇒ 37 → **38**。
+  //   ★★ 2026-10-13（D181）：新增 `_probe-d181-reverse.mjs`（目标树"结构推导"反向验证）⇒ 38 → **39**。
+  //     独立复算：`_probe-*.mjs` 中同时含 `writeFileSync(LIB` 的 = **39** 个，与这里一致。
+  //   ★★ 2026-10-13（D182）：新增 `_probe-d182-reverse.mjs`（索引只追加 + 官方保存的两向反向验证）
+  //     ⇒ 39 → **40**。★ 它**当场变红**提醒了我 —— 而且摘除实验里它也一起红，
+  //       因为探针自己就是"会改写 lib/index.js"的那一类（它做的正是备份→改→跑→还原）。
+  //   ★★ 2026-10-13（D183）：新增 `_probe-d183-reverse.mjs`（流水的三条语义承诺）⇒ 40 → **41**。
+  //     ★ 又**当场变红**提醒 —— 这个守卫每次都会在我加反向验证工具时响一下，正是它该有的样子。
+  //   ★★ 2026-10-14（D184）：新增 `_probe-d184-precedence.mjs`（压缩后必注块反转的取证）⇒ 41 → **42**。
+  //     ★ 同样当场变红。★★ 而**只读的那几个探针**（`_probe-d184-excerpt.mjs` /
+  //       `-pull-behavior2.mjs` / `-must-blocks.mjs`）**没有被算进来** —— 因为它们不写源码。
+  //       这正是这条判据该有的精度：**数的是"会改写源码的"，不是"所有探针"**。
+  //   ★★ 2026-10-14（D184 反向验证）：再新增 `_probe-d184-reverse.mjs` ⇒ 42 → **43**。
+  //     ★ 它再次**当场变红**提醒（我都已经知道会这样了，它还是精确地数到了）。
+  //   ★★ 2026-10-14（D187）：新增 `_probe-d187-reverse.mjs`（两条权限区分）⇒ 43 → **44**。
+  //     ★ 同样当场变红。★★ 而**只读探针仍然不算**（`_probe-d186-memory-audit.mjs` /
+  //       `_probe-d188-init-undefined.mjs` / `_probe-d185-*.mjs` 都只读）——
+  //       **这条判据的精度就在这：数的是"会改写源码的"，不是"所有探针"**。
+  //   ★★ 2026-10-14（D193）：新增 `_probe-d193-reverse.mjs`（approve 接线的四向反向验证）
+  //     ⇒ 44 → **45**。★ 它**又一次当场变红**提醒我（这个守卫每次都会响，正是它该有的样子）。
+  //     ★★ 顺带说清一个**容易数错的地方**：D193 另外还新增了**三个探针**
+  //       （`_probe-d193-approve-wired.mjs` 行为取证 / `_probe-d189-apply-wired.mjs` 早先那个 /
+  //        `_probe-d192-toolcount-window.mjs`），但**只有 reverse 那个会写源码** ⇒ **只它 +1**。
+  //       ⚠️ 我这次**自己数岔过一次**：PowerShell 里只认 `writeFileSync(LIB` 一种写法 ⇒ 数出 32，
+  //          而这个自发现判据认**三种**写法（含 `"lib/index.js"` 字面量）⇒ 真值 45。
+  //          ★ **两个数不一致时以判据自己报的为准**，并去核对"哪一种写法被漏了"——
+  //            这正是"取不到值先怀疑取法"（纪律 3）。
+  //   ★★ 2026-10-14（D194）：新增 `_probe-d194-entrypoints.mjs`（注册点取行号）⇒ 45 → **46**。
+  //     ★★★ **这一条是"假阳性"，我特意留下来并说明**：
+  //       `_probe-d194-entrypoints.mjs` **只读**（它只 `readFileSync`），但它**在源码里写了路径字面量**
+  //       `"lib/index.js"` ⇒ 命中了本判据的第三条模式（`/["'`]lib[\\/]index\.js["'`]/`）。
+  //       ★ 判据是**有意放宽**的（原注释：「宁可多报（让人看一眼），不可漏报」）——
+  //         漏一个就是把危险脚本发给用户，多报一个只是让人看一眼。
+  //     ⇒ 所以正解是**把数字改成 46 并记明原因**，**不是**去改写探针绕开判据
+  //       （那正是"改夹具让断言变绿"的反面教材；判据放宽是设计，不是 bug）。
+  //     ★ 真正的安全保证在**下面那条**：每个扫到的文件都必须**不在打包清单里** ——
+  //       而打包清单只有 7 个文件（含 selftest.mjs）⇒ 这 47 个一个都进不去。
+  //   ★★ 2026-10-14（D194 反向验证）：新增 `_probe-d194-reverse.mjs`（真的写源码）⇒ 46 → **47**。
+  //     ★ 它**又当场变红**提醒（这个守卫每次都在我加反向验证工具时响，正是它该有的样子）。
+  //     ⚠️ 现在 47 个里有 **1 个确定的假阳性**（`_probe-d194-entrypoints.mjs`，只读，只是提到了路径字面量）。
+  //        已知且接受：判据刻意"宁可多报"，而真正的闸门是"这些文件都不在打包清单里"。
+  //   ★★ 2026-10-14（D196 反向验证）：新增 `_probe-d196-reverse.mjs`（真的写源码）⇒ 47 → **48**。
+  //     ★ 再次当场变红（每次都这样，这就是它的用法）。
+  //   ★★ 2026-10-14（D200 反向验证）：新增 `_probe-d200-wordb-guard-reverse.mjs`
+  //     （它**真的**把 `lib/index.js` 退回坏版本再还原）⇒ 48 → **49**。
+  //     ★ 第三次当场变红 —— 这个守卫每次都在我加"反向验证"工具时响，**正是它该有的样子**
+  //       （那种工具天生会写源码，所以天生该被算进来）。
+  //   ★★ 2026-10-14（D203 反向验证）：新增 `_probe-d203-sof-reverse.mjs`
+  //     （它在 %TEMP% 副本上把 `lib/index.js` 退回坏版本）⇒ 49 → **50**。
+  //     ★ 第四次当场变红 —— 同上，"反向验证"工具天生会写源码、天生该被算进来。
+  //   ★★ 2026-10-15（D210 反向验证）：新增 `_probe-d210-reverse.mjs`
+  //     （它把 `lib/index.js` 逐处退回坏版本、每一处都跑一次自检）⇒ 50 → **51**。
+  //     ★ 第五次当场变红 —— 同上，这个守卫每次都在我加"反向验证"工具时响，**正是它该有的样子**。
+  //     ★★ 而 D210 另外新增的 `_probe-d210-delivery-gap.mjs` **不计数**：
+  //       它**只读**（建临时项目、跑 pre-step、算指纹），**一个字节都不写源码**
+  //       ⇒ 不在"会改写源码的"这个集合里（判据数的是危险的那一类，不是所有探针）。
+  //   ★★ 2026-10-15（D211 反向验证）：新增 `_probe-d211-reverse.mjs`
+  //     （它把 `lib/index.js` 逐处退回坏版本、每一处都跑一次自检）⇒ 51 → **52**。
+  //     ★ 第六次当场变红 —— 同上，这个守卫每次都在我加"反向验证"工具时响，**正是它该有的样子**。
+  //     ★★ 而 D211 另外那个 `_probe-d211-broadcast.mjs` **不计数**：它**只读**
+  //       （建临时项目、跑 pre-step、按按钮），**一个字节都不写源码**。
+  //   ★★ 2026-10-15（D214/D215 反向验证）：新增 `_probe-d215-reverse.mjs`
+  //     （它在 `%TEMP%` 副本上把 `lib/index.js` 逐处退回坏版本、每一处都跑一次自检）
+  //     ⇒ 52 → **53**。★ 第七次当场变红 —— 同上，这个守卫每次都在我加"反向验证"工具时响。
+  //     ★★ 而 D214 那四个探针（`-compact-trace` / `-queue-moment` / `-turn-idle-axis` /
+  //       `-failed-end`）**都不计数**：它们**只读**（解会话日志、打时间轴），
+  //       一个字节都不写源码 ⇒ 不在"会改写源码的"这个集合里。
+  //   ★★ 2026-10-15（D216）：新增两个探针 ⇒ 53 → **55**。★ 第八次当场变红 —— 同上，这个守卫
+  //     每次都会响，**正是它该有的样子**。★ 两个各是不同的一类，都要说清（不然下一个人会以为数是错的）：
+  //       · `_probe-d216-reverse.mjs` —— **真的**会改写源码（它在隔离副本上把 `lib/index.js`
+  //         改坏再回滚）⇒ **真阳性**，该计入。
+  //       · `_probe-d216-split-plan.mjs` —— **只读**（只 `readFileSync` + 打印），但它的注释里写了
+  //         `` `lib/index.js` `` ⇒ 命中第三条模式 ⇒ **已知假阳性**，与 `_probe-d194-entrypoints.mjs` 同类。
+  //     ⇒ 正解同 D194：**改数字并记明原因**，**不是**去改注释绕开判据
+  //       （那正是"改夹具让断言变绿"的反面教材；判据刻意放宽是设计，不是 bug）。
+  //   ⚠️ **同时记一条已知的假阴性**（诚实起见，别以为这个守卫是完备的）：
+  //     `_probe-d216-rollback.mjs` 会**真的**把备份里的 `lib/index.js` 写回来，但它走的是
+  //     `fs.copyFileSync(from, to)`、且路径拼在变量里 ⇒ **三条模式一条都不命中** ⇒ 它没被数进来。
+  //     ★ 真正的安全保证仍在下面那条断言：**每个扫到的文件都必须不在打包清单里**，
+  //       而打包清单只有 7 个文件（`tools/` 整个不在里面）⇒ 这类脚本进不了发布包。
+  //   ★★ 2026-10-15（D216 · 拆分工程）：又新增两个"会改写源码"的探针 ⇒ 56 → **58**。
+  //     · `_probe-d216-reverse-gate-wording.mjs`（上一条已记）
+  //     · `_probe-d216-behavior-diff.mjs` —— ★ **假阳性**：它**只读**（对比原文件与拆分副本的
+  //       导出面/pre-step），但因为是在**拆分目录**里跑、正文里提到 `lib/index.js` ⇒ 命中第三条模式。
+  //       ⇒ 与 `_probe-d194-entrypoints.mjs` / `_probe-d216-split-plan.mjs` 同类的**已知假阳性**。
+  //   ⚠️ 警告：其余那些拆分工具（`_probe-d216-split.mjs` / `-graph` / `-scc` / `-plan` /
+  //     `-lexer-ruler` / `-verify-imports*` / `-esm-mechanism` / `-decl-scan` / `-diag-refs`）
+  //     **一个都没被算进来** —— 它们只在**临时目录**写文件、不碰真源码。
+  //     ★ 这条判据数的是"会改写**本仓库源码**的"，不是"所有提到路径的" ⇒ 偏差可接受
+  //       （真正的闸门是下面那条：**每个扫到的文件都必须不在打包清单里**，而 `tools/` 整个不进包）。
+  //   ★★ 2026-10-15（D216 · 发布轮）：新增 `_probe-d216-privacy.mjs` ⇒ 58 → **59**。
+  //     ★ 它**只读**（扫已跟踪文件里有没有本机专有信息），但正文里写着 `lib/index.js` 之类
+  //     的路径字面量 ⇒ 命中第三条模式 ⇒ **已知假阳性**（与 `_probe-d194-entrypoints.mjs` 同类）。
+  //     ★★ 发布前跑它：`node tools/_probe-d216-privacy.mjs` —— 它抓出过**真泄露**（见该文件注释）。
+  const DANGEROUS_EXPECTED = 59;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
@@ -7928,24 +8043,47 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const libSrc = readLibSource();
 
   // ── ① 工具数：注册循环里的 ledger_* + ledger_checkpoint ──────────────────
+  //
+  // ★★★★ 2026-10-14（D192）**这条判据自己栽过一次，正解留在这里**：
+  //   它原来只匹配 **字符串字面量** 键（`["ledger_xxx"`），于是当 D191 用
+  //   **常量**注册时（`[PRINCIPLE_GRANT_TOOL, …]`）⇒ **数不到它** ⇒ 报 18，
+  //   而真注册数是 19 ⇒ 两条口径打架。
+  //   ★ 我第一反应是"窗口 4000 太短"，跑探针 `_probe-d192-toolcount-window.mjs` 实测：
+  //     注册表只有 **1111 字符**、**被截掉的 0 个** ⇒ **不是窗口问题，是匹配面太窄**。
+  //     （★ 若我照第一反应去把窗口调大，就会**改了一个不相干的地方**，而 bug 还在。）
+  //   ⇒ 正解：**数"条目"，不数"某种写法的条目"** ——
+  //     每个注册项的形状都是 `[<expr>, <factory>]`，所以按**行首 `[` + 逗号**数才完整。
   const regStart = libSrc.indexOf("for (const [label, factory] of [");
-  const regSeg = libSrc.slice(regStart, regStart + 4000);
-  const toolNames = [...regSeg.matchAll(/\["(ledger_[a-z_]+)"/g)].map((m) => m[1]);
-  const hasCheckpoint = /"ledger_checkpoint"/.test(libSrc);
-  const toolCount = toolNames.length + (hasCheckpoint ? 1 : 0);
-  eq("★ 口径：工具数 = 15", toolCount, 15);
+  const regEnd = libSrc.indexOf("]) {", regStart);
+  const regSeg = libSrc.slice(regStart, regEnd === -1 ? regStart + 8000 : regEnd);
+  const toolEntries = [...regSeg.matchAll(/^\s*\[(.+?),\s*\(?\)?\s*=>|^\s*\[(.+?),\s*define/gm)];
+  // ★ 双判据：① 结构计数（上）；② 名字计数（**含常量**的那种写法也要认）。
+  const literalNames = [...regSeg.matchAll(/\["(ledger_[a-z_]+)"/g)].map((m) => m[1]);
+  const constNames = [...regSeg.matchAll(/\[([A-Z][A-Z0-9_]+),\s*\(\)\s*=>/g)].map((m) => m[1]);
+  const toolCount = literalNames.length + constNames.length;
+  eq(
+    "★ 口径：工具数 = 21（D181 ledger_goals · D191 原则授权 · D192 经验教训 · D199 老文件迁移 · D202 多维索引）" +
+      "　★ 判据认**两种写法**：字符串字面量 + 常量（D192 的老版本只认前者，漏了常量）",
+    toolCount,
+    21
+  );
+  void toolEntries;
 
   // ── ② 设置项数：SETTING_SPECS 的 key ─────────────────────────────────────
   const ssStart = libSrc.indexOf("const SETTING_SPECS = [");
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 37（D158 新增 triageKeepTotalMax）", settingKeys.length, 37);
+  eq("★ 口径：设置项数 = 38（D179 新增 hardMaintenanceGate）", settingKeys.length, 38);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
-  const SUBS = ["status", "show", "init", "update", "archive", "compact", "light", "log", "mode", "lock", "handoff", "triage"];
+  //   ★★ 2026-10-13（D180）：加入 `principles`；★ 并**实测**到 `triage` 在源码里
+  //     没有独立字面量（它由表驱动）⇒ 候选清单里**去掉它**，改用它真实存在的判据。
+  //     ⚠️ 我第一版直接把它留在清单里 ⇒ 期望值会**永远差 1**（而那不是被测对象的错）。
+  //       教训同纪律 3：**取不到值先怀疑取法**。
+  const SUBS = ["status", "show", "init", "update", "archive", "compact", "light", "log", "principles", "mode", "lock", "handoff"];
   const present = SUBS.filter((k) => new RegExp(`"${k}"`).test(libSrc));
-  eq("★ 口径：子命令数 = 11", present.length, 11);
+  eq("★ 口径：子命令数 = 12（D180 新增 principles）", present.length, 12);
 
   // ── ④ 情形组数：数 `section(` 调用 ──────────────────────────────────────
   //   ★★ 这个判据我**连错三次**，全部记下来（因为它就是本节要防的那类错）：
@@ -7965,15 +8103,39 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   eq("★ 口径：`function section(` 定义恰好 1 处（它是**定义**，不该计入调用）", defCount, 1);
   const sectionCalls = (selfSrc.match(/^\s*section\(/gm) ?? []).length;
   const numbered = (selfSrc.match(/^\s*section\("情形\s*[0-9]/gm) ?? []).length;
-  // ★★ 2026-10-13：新增情形 69（D170）⇒ 63 → **64**；带编号 62 → **63**。
-  eq("★ 口径：section 总数 = 64（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 64);
-  eq("★ 口径：其中带「情形 N」编号的 = 63", numbered, 63);
+  // ★★ 2026-10-13（D180）：新增情形 73（根本原则守卫）⇒ 67 → **68**；带编号 66 → **67**。
+  // ★★ 2026-10-13（D181）：新增情形 74（目标树）⇒ 68 → **69**；带编号 67 → **68**。
+  // ★★ 2026-10-13（D182）：新增情形 75（索引只追加不删 + 官方保存）⇒ 69 → **70**；带编号 68 → **69**。
+  // ★★ 2026-10-13（D183）：新增情形 76（分类记忆 · 回合流水）⇒ 70 → **71**；带编号 69 → **70**。
+  // ★★ 2026-10-14（D187）：新增情形 77（ledger_init 纳入 goals/principles）⇒ 71 → **72**；带编号 70 → **71**。
+  // ★★ 2026-10-14（D189）：新增情形 78（原则提议路 + 授权写入）⇒ 72 → **73**；带编号 71 → **72**。
+  // ★★ 2026-10-14（D190）：新增情形 79（`/ledger light` 压上一个回复）⇒ 73 → **74**；带编号 72 → **73**。
+  // ★★ 2026-10-14（D191/D192）：新增情形 80（原则授权窗口 + 经验教训）⇒ 74 → **75**；带编号 73 → **74**。
+  // ★★ 2026-10-14（D193）：新增情形 81（`/ledger principles approve` 接线）⇒ 75 → **76**；带编号 74 → **75**。
+  // ★★ 2026-10-14（D194）：新增情形 82（经验 与 教训 分两类）⇒ 76 → **77**；带编号 75 → **76**。
+  // ★★ 2026-10-14（D195）：新增情形 83（结构契约必须推行每个记忆文件）⇒ 77 → **78**；带编号 76 → **77**。
+  // ★★ 2026-10-14（D196）：新增情形 84（功能清单 / 升级通道）⇒ 78 → **79**；带编号 77 → **78**。
+  // ★★ 2026-10-14（D197）：新增情形 85（骨架 + 协议）⇒ 79 → **80**；带编号 78 → **79**。
+  // ★★ 2026-10-14（D200）：新增情形 86（把教训变成机器守卫 · `\b` 不许跟中文）⇒ 80 → **81**；带编号 79 → **80**。
+  // ★★ 2026-10-14（D201）：新增情形 87（召回率 · 按条目取正文）⇒ 81 → **82**；带编号 80 → **81**。
+  // ★★ 2026-10-14（D202）：新增情形 88（卡片化 · 一卡一文件 + 多维索引表）⇒ 82 → **83**；带编号 81 → **82**。
+  // ★★ 2026-10-14（D203）：新增情形 89（卡片模式下读写同一个真源）⇒ 83 → **84**；带编号 82 → **83**。
+  //   ★★ 2026-10-15（D211）：新增情形 90（每个对话都读得到 + 推送按钮）⇒ 84 → **85**；带编号 83 → **84**。
+  //     ★ 又当场变红（这个守卫每次加情形都会响，正是它该有的样子）。
+  //   ★★ 2026-10-15（D214/D215）：新增情形 91（过期排队作废 + 失败不许记成已压缩 + 外来压缩抓胶囊）
+  //     ⇒ 85 → **86**；带编号 84 → **85**。★ 第七次当场变红。
+  eq("★ 口径：section 总数 = 86（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 86);
+  eq("★ 口径：其中带「情形 N」编号的 = 85", numbered, 85);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
+  //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
+  //     常量那种只知其标识符，但恰好本项目所有工具名都以 `ledger_` 起头，
+  //     而常量名（如 `PRINCIPLE_GRANT_TOOL`）不是 ⇒ **只对字面量做形态检查**（那些一定是工具名），
+  //     常量由上面那条**数量**断言覆盖（它漏一个就少一个，当场红）。
   ok(
-    "★ 口径：所有工具名都是 ledger_* 形态",
-    toolNames.every((n) => n.startsWith("ledger_")),
-    toolNames.join(", ")
+    "★ 口径：所有（字面量注册的）工具名都是 ledger_* 形态",
+    literalNames.every((n) => n.startsWith("ledger_")),
+    literalNames.join(", ")
   );
 
   // ── ⑥ ★★★ 引用必达：台账/归档引用的每个 D<n> 都必须在 DECISIONS 里有正文 ──
@@ -8011,6 +8173,30 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
     const decPath = path.join(docsRoot, "DECISIONS.md");
     if (fs.existsSync(decPath)) {
       for (const m of fs.readFileSync(decPath, "utf8").matchAll(/^##\s+D(\d+)\b/gm)) headings.add(Number(m[1]));
+    }
+    // ★★★★★ 2026-10-14（D203）：**卡片化之后，正文不在 `DECISIONS.md` 里了** ——
+    //   它在 `decisions/D<n>.md`。若这里仍只读单文件，迁移后
+    //   ① 新决策的编号**一个都认不出** ⇒ 台账一引用就**假红**（而内容其实在）；
+    //   ② 更糟的是它会让人以为"引用断了"，从而去"修"根本没断的东西。
+    //   ⇒ 判据：**这一类现在住在哪，读正文的人也要问同一个地方**（读 `manifest.decisionsDir`）。
+    //   ★ 名字本身就是证据（`D195.md` ⇒ 编号 195）—— 这正是卡片化那条"文件名即地址"的兑现。
+    try {
+      const mfPath = path.join(docsRoot, ".dsh-ledger.json");
+      if (fs.existsSync(mfPath)) {
+        const dirRel = JSON.parse(fs.readFileSync(mfPath, "utf8")).decisionsDir;
+        if (typeof dirRel === "string" && dirRel !== "") {
+          const cardDir = path.join(docsRoot, dirRel);
+          if (fs.existsSync(cardDir)) {
+            for (const e of fs.readdirSync(cardDir, { withFileTypes: true })) {
+              if (!e.isFile() || !/\.md$/i.test(e.name) || /^INDEX\.md$/i.test(e.name)) continue;
+              const nm = /^D(\d+)\.md$/i.exec(e.name);
+              if (nm !== null) headings.add(Number(nm[1]));
+            }
+          }
+        }
+      }
+    } catch {
+      /* 清单读不到 ⇒ 只用单文件那份（不因为清单坏了就让这条守卫报错） */
     }
 
     if (cited.size === 0 || headings.size === 0) {
@@ -8127,16 +8313,44 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
         mf.maxActiveLines
       );
       // ★ D 范围：头部写的最大值应 >= DECISIONS 里最大的 D 编号
+      //   ★★★★★ 2026-10-14（D203）：**迁移后最大编号在卡片目录里**（`decisions/D203.md`）——
+      //     这一段若只读单文件，迁移后 `maxD` 会**停在上限那一刻**（旧文件的最后一个 D），
+      //     于是"头部范围 ≥ 实际最大号"这条会**在真的超范围时仍然全绿**（假绿）。
       const decPath = path.join(HERE, "..", "DECISIONS.md");
-      if (fs.existsSync(decPath)) {
-        const nums = [...fs.readFileSync(decPath, "utf8").matchAll(/^##\s+D(\d+)\b/gm)].map((m) => Number(m[1]));
+      {
+        const nums = fs.existsSync(decPath)
+          ? [...fs.readFileSync(decPath, "utf8").matchAll(/^##\s+D(\d+)\b/gm)].map((m) => Number(m[1]))
+          : [];
+        // ★ 卡片目录里的文件名**就是编号**（这正是"文件名即地址"的兑现）。
+        try {
+          const dirRel = mf.decisionsDir;
+          if (typeof dirRel === "string" && dirRel !== "") {
+            const cardDir = path.join(HERE, "..", dirRel);
+            if (fs.existsSync(cardDir)) {
+              for (const e of fs.readdirSync(cardDir, { withFileTypes: true })) {
+                if (!e.isFile() || /^INDEX\.md$/i.test(e.name)) continue;
+                const nm = /^D(\d+)\.md$/i.exec(e.name);
+                if (nm !== null) nums.push(Number(nm[1]));
+              }
+            }
+          }
+        } catch {
+          /* 同上：清单/目录读不到就只用单文件那份 */
+        }
         const maxD = nums.length === 0 ? 0 : Math.max(...nums);
         // ★ 匹配头部那句 `DECISIONS.md`（D1–**D121**）：取括号里**最后一个** D 编号。
         //   ⚠️ 两个坑都当场踩过（都记下来，because 这类"看起来显然"的解析最容易写错）：
         //     ① 非贪婪 `[^）]*?D(\d+)` 会拿到**第一个**（D1）⇒ 必须取括号里所有 D 号的最大值；
         //     ② `DECISIONS\.md（` 匹配不到 —— 实际文本里文件名后面还有**一个反引号**
         //        （`` `DECISIONS.md`（D1–**D121**） ``）⇒ 要允许 `` ` `` 出现在中间。
-        const paren = head.match(/DECISIONS\.md`?（([^）]*)）/);
+        //   ★★★★★ 2026-10-14（D205 · **迁移后当场变红**）：**卡片化把这一行也打穿了** ——
+        //     迁移后头部写的是 `` / `decisions/`（**一卡一文件**：`decisions/D205.md`；D1–**D205**） ``，
+        //     而这里**写死**要 `DECISIONS.md` 才匹配 ⇒ `declared === undefined` ⇒ **假红**。
+        //     ⚠️ 更坏的方向也成立：若它改成"匹配不到就跳过"，迁移后**超范围也不会红**（假绿）。
+        //     ⇒ 判据：**匹配"声明的范围"要认这一类**，不许把文件名写死 ——
+        //       认 `DECISIONS.md（…` **或** `decisions/`（…`（两种形态都合法，取决于迁移没迁）。
+        const paren =
+          head.match(/DECISIONS\.md`?（([^）]*)）/) ?? head.match(/decisions\/`?（([^）]*)）/);
         const inside = paren === null ? [] : [...paren[1].matchAll(/D(\d+)/g)].map((m) => Number(m[1]));
         const declared = inside.length === 0 ? undefined : Math.max(...inside);
         ok(
@@ -9820,8 +10034,51 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
       } finally {
         Date.now = realNow;
       }
+      // ★★★★★ 2026-10-13（D179 硬门）：**这条断言原来守着"超时放行"，而硬门要拆的正是它。**
+      //   ⇒ 现在分两支：
+      //     · **默认（硬门开）**：推过 20 分钟**仍然必须被拦** —— 这才是"硬门"的定义；
+      //     · `hardMaintenanceGate: false` 时才回到旧行为（超时放行）。
+      //   ★ 这正是本文件 D125 记过的教训："**旧断言可以守着旧的错误行为**"，
+      //     不按新语义改写它，它就会把修复**拦回去**。
       ok(
-        "★★★ 超过 20 分钟仍未分流 ⇒ 时限兜底放行（压缩不再永久卡死）",
+        "★★★★★ 硬门开（默认）：**推过 20 分钟仍不放行** —— 「不做完就不压」才是硬门的定义",
+        regionCalls.length === 0,
+        `regionCalls=${regionCalls.length}（期望 0：硬门不许到期放行）`
+      );
+      rmrf(root);
+    }
+
+    // ── 37i-4b：★ 硬门**关掉**时，必须回到旧行为（超时放行）—— 回退路要完整 ────
+    {
+      const root = mkGateProj("gate-overdue-off", "surgical");
+      const regionCalls = [];
+      const run = makeCtx({ withCompaction: true, withTokenMeter: true, regionCalls });
+      mod.apply(run.ctx, { highFidelityCompactRatio: 1.0, hardMaintenanceGate: false });
+      const sid = "session-gate0000-000b";
+      const agent = mkGateAgent(root, sid, 7);
+      run.services.tokenMeter._priced = agent.session.surface.nodes.map((seq) => ({ seq, tokens: 40 }));
+
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 100;
+      await runPreStep(run, { agent, messages: [] });
+      await flushLedger(run, root, sid);
+      run.services.tokenMeter._total = 740;
+      askAICompact(sid);
+      await runPreStep(run, { agent, messages: [] });
+      eq("★★★ 前提：时限内仍拦着", regionCalls.length, 0);
+
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + 21 * 60 * 1000;
+        await flushLedger(run, root, sid);
+        run.services.tokenMeter._total = 745;
+        askAICompact(sid);
+        await runPreStep(run, { agent, messages: [] });
+      } finally {
+        Date.now = realNow;
+      }
+      ok(
+        "★★★ 硬门关掉 ⇒ 回到旧行为：超过 20 分钟仍未分流 ⇒ 时限兜底放行（D59 防卡）",
         regionCalls.length >= 1,
         `regionCalls=${regionCalls.length}`
       );
@@ -12238,17 +12495,101 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
     }
 
     // ── ⑥ ★★★★ 安全绳②：**压缩后不省**（`afterCompaction` ⇒ 全部块按必注处理）──
+    //
+    // ★★★★★ 2026-10-14（D184）**这里原来是一条假绿断言，被真机缺陷当场打穿**：
+    //   旧版判据是**静态正则** `/afterCompaction === true\s*\|\|/` ——
+    //   它测的是「**这句话在不在源码里**」，不是「**压缩后正文真的注进去了没有**」。
+    //   ★ 而那个 `||` 恰好因为**优先级高于 `?:`**，让 `isMust` **恒为 false** ⇒
+    //     **压缩后一块正文都不注**（真机实测：压前 11 块 · 压后 0 块）。
+    //   ★★ 坏代码**正好满足**那条正则 ⇒ **全绿**。这就是纪律 2 / 纪律 8：
+    //     「判据的输入必须是**被测对象自己产生的那部分**」——
+    //     静态正则不是行为，**行为断言必须真跑一次**。
+    //   ⇒ 现在改成**行为断言**：真造一个"压缩后"的 pre-step，断言**高分块的正文在里面**。
     {
       const src = readLibSource();
-      // ★ 判据要吃**渲染层自己**的那段实现（不扫全文）：`afterCompaction === true` 必须在 `isMust` 里
+      // ★★★★★ 2026-10-14（D184）**这条判据自己栽了一次，正解记在这里**：
+      //   我第一版是对**原文**做负向正则 `!/afterCompaction === true\s*\|\|/` ——
+      //   而**我在 `lib/index.js` 里写的注释，为了讲清这个 bug，把那段坏代码原样复现了**
+      //   ⇒ 断言**把自己打红了**（报"仍是 `||` 串联"，而真实代码已经是 `? true :`）。
+      //   ★ 病不是"注释写得不小心"，是**纪律 4**：
+      //     「**剥离用的标记本身绝不能出现在被剥离的内容里**」——
+      //     靠"写注释时避开那个串"迟早会再栽（下一个人讲这个 bug 时必然又写一遍）。
+      //   ⇒ 正解：**先剥注释、再判**（下面 `code` 那把尺子）。
+      //     ★ 而"逼着后来人也先剥注释"这件事本身，就是这段注释存在的理由。
+      //
+      // ★ 保留一条**结构**断言（防止有人把它"简化"回 `||` 串联）：
+      //   判据是"压缩后那一支必须**单独成支**"，而不是"那句话出现过"。
       const a = src.indexOf("function renderBlockInjection");
       const b = src.indexOf("\nfunction ", a + 10);
-      const seg = src.slice(a, b < 0 ? a + 9000 : b);
-      ok("★★★★ 安全绳②：`renderBlockInjection` 里 **`afterCompaction === true` 直接判为必注**（压缩后不省）",
-        /afterCompaction === true\s*\|\|/.test(seg),
-        "压缩后若不重注，模型手里就真的没有那些块的正文了（这正是底线要防的）");
-      ok("★★★★ 安全绳②：且压缩后的重注**显式传了** `afterCompaction: true`",
-        /renderInjectionBody\(info, undefined, \{ afterCompaction: true \}\)/.test(src));
+      const segRaw = src.slice(a, b < 0 ? a + 12000 : b);
+      // ★★ 与 10891 行同一把尺子（就地复用同一实现；行号不变 ⇒ 报错仍能定位）。
+      const stripComments184 = (s) => {
+        let out = "";
+        for (let i = 0; i < s.length; i++) {
+          const ch = s[i];
+          if (ch === "/" && s[i + 1] === "/") {
+            while (i < s.length && s[i] !== "\n") i++;
+            out += "\n";
+          } else if (ch === "/" && s[i + 1] === "*") {
+            i += 2;
+            while (i < s.length && !(s[i] === "*" && s[i + 1] === "/")) {
+              if (s[i] === "\n") out += "\n";
+              i++;
+            }
+            i++;
+          } else if (ch === '"' || ch === "'" || ch === "`") {
+            const q = ch;
+            out += q;
+            i++;
+            while (i < s.length && s[i] !== q) {
+              if (s[i] === "\\") { out += "  "; i += 2; continue; }
+              out += s[i] === "\n" ? "\n" : " ";
+              i++;
+            }
+            out += q;
+          } else {
+            out += ch;
+          }
+        }
+        return out;
+      };
+      const seg = stripComments184(segRaw);
+      ok(
+        "★★★★ 安全绳②（结构）：**剥掉注释后**，`afterCompaction === true` 必须是**单独一支**（`? true :`），" +
+          "**不许**把它与 `capped === \"zero\"` 用 `||` 串起来（那个写法因优先级会让它恒 false —— D184 的真凶）",
+        /afterCompaction === true\s*\?\s*true\s*:/.test(seg) && !/afterCompaction === true\s*\|\|/.test(seg),
+        "★ 这一条就是 D184：两支用 `||` 串 ⇒ `(A||B) ? false : C` ⇒ 压缩后恒不注"
+      );
+
+      // ★★★ 行为断言（真正要守的那一条）：跑一次**压缩后**的注入，正文必须真的在。
+      const root = mkProj59("bi-after-compact");
+      fs.writeFileSync(
+        path.join(root, "LEDGER.md"),
+        "# 台账\n\n## 一、总纲（原则）\n压缩后必须能看见这段原则正文\n\n## 旧笔记\n低分块正文\n",
+        "utf8"
+      );
+      const man = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+      man.blockInjection = true;
+      fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify(man), "utf8");
+
+      const run = makeCtx({ withCompaction: true });
+      mod.apply(run.ctx, {});
+      const agent = { session: { header: { id: "s-bi-post", cwd: root }, id: "s-bi-post" } };
+      await runPreStep(run, { agent, messages: [] });
+      // 压缩完成 ⇒ 挂"强制重注"，下一次 pre-step 走 `renderAfterCompaction`
+      await fire(run, "session/event", { id: "s-bi-post", header: { id: "s-bi-post" } }, {
+        type: "compaction/end",
+        data: { compactionId: "c-bi-1", turn: 1 },
+      });
+      const post = await runPreStep(run, { agent, messages: [] });
+      const ptext = post.messages.map((m) => JSON.stringify(m.content)).join("");
+      ok(
+        "★★★★★ 安全绳②（行为）：**压缩后，必注块的正文必须真的在上下文里**" +
+          "（D184：写反时这里会只看得到目录、一个字正文都没有）",
+        ptext.includes("压缩后必须能看见这段原则正文"),
+        `★ 压缩后拿不到正文 ⇒ 模型手里只有目录。实测片段：${ptext.slice(0, 400)}`
+      );
+      rmrf(root);
     }
   }
 
@@ -12630,6 +12971,47 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       /const totalMax = numOf\("triageKeepTotalMax", TRIAGE_KEEP_TOTAL_MAX\)/.test(src));
     ok("★★★★★ 63⑦ 超总量上限时丢**最旧的**并**如实计数**（沉默丢弃 = 下一个 D89）",
       /merged\.slice\(droppedOld\)/.test(src) && /droppedOld/.test(src));
+    // ★★★★★★ 2026-10-15（D216，用户拍板）：**义务提醒的措辞必须按硬门分两套。**
+    //
+    //   ★ 病（用户报的"别的模型把它当背景知识"，我 grep 到确凿两处）：
+    //     同一份注入里，**合同区**写「**【硬门】不做完，压缩就不会发生**」（D179），
+    //     而**每回合那条义务提醒**却写「**不拦任何东西**……**没做也不会卡住压缩**」——
+    //     那是 **D179 之前**的老文案，D179 只改了合同区、**没改这里**
+    //     （与 D174「代码对、送达文本没对齐」同型复发）。
+    //   ★★ 哪句是真的（**核过闸门实现**，不是推理）：`flushBeforeCompact` 的分流那条是
+    //     `if (trec.count < FLUSH_BLOCK_GIVEUP || hard)` ⇒ 硬门开时**恒真 ⇒ 永远拦、不释放**；
+    //     落盘那条同理（`if (!hard && rec.count >= …)`）⇒ 所以老文案**是假的**。
+    //   ⇒ 判据：**两句必须同时成立**，缺一即红 ——
+    //     ① 那段提示里**出现了硬门分支**（`hardMaintenanceGateOn()`）；
+    //     ② 那句假话**只允许留在 `else` 那一支**（即出现在硬门判断之后）。
+    //   ★★★ 为什么用"位置"而不是"它不在那里"（第一版想法）：字符串一旦被删就无从判"它在哪一支"，
+    //     位置能同时证明"它还在（回退路完整）"与"它不在硬门那一支"。
+    {
+      const iOb = src.indexOf("本回合收尾义务");
+      const iEnd = src.indexOf("text = text === undefined ? line.trimStart()", iOb);
+      const obSeg = iOb >= 0 && iEnd > iOb ? src.slice(iOb, iEnd) : "";
+      const iHard = obSeg.indexOf("hardMaintenanceGateOn()");
+      // ★★★ 锚**else 那一支的字面量本身**（带 `: ` 前缀）—— 它唯一标识"回退路"。
+      //   我第一版锚的是那句假话，结果命中了**我自己注释里引用的它**（纪律 4：
+      //   剥离用的标记绝不能出现在被剥离的内容里）⇒ 假红。现在锚**带 else 定界符的字面量**。
+      const ELSE_LITERAL = ': "★ 它**不拦任何东西**：做完这些下一步照常；**没做也不会卡住压缩**。\\n");';
+      const iElse = obSeg.indexOf(ELSE_LITERAL);
+      // ★★★★★ 关键改进（**反向验证 B 当场抓出来的判据缺陷**，纪律 10）：
+      //   我原本只判 `iFalse > iHard`（"假话在硬门判断之后"）—— **那分不清两件事**：
+      //     · 假话在 **else 支**（正确）；· 假话在 **硬门支**（错误，正是要防的自相矛盾）。
+      //   两者都 > `iHard` ⇒ 把假话塞进硬门支，**断言照样绿**（B 摘除点实测：绿）。
+      //   ⇒ 改成**结构性判据**：切出**硬门支那一段**（从 `hardMaintenanceGateOn()` 到
+      //     else 定界符），要求它**一个字都不含**那句假话。这才是"硬门支不许自相矛盾"的定义。
+      const hardArm = iHard >= 0 && iElse > iHard ? obSeg.slice(iHard, iElse) : "";
+      ok("★★★★★ 63⑧ D216：义务提醒**按硬门分两套** —— 硬门支里不许出现「不拦任何东西」",
+        obSeg !== "" &&
+          iHard >= 0 &&
+          iElse > iHard &&
+          /【硬门】这不是提醒/.test(hardArm) &&
+          !hardArm.includes("不拦任何东西"),
+        `段长${obSeg.length} · 硬门支${hardArm.length}字符 · else 定界符@${iElse}` +
+          `（硬门支内含「不拦任何东西」=${hardArm.includes("不拦任何东西")} ⇒ 必须为 false）`);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -13534,6 +13916,3934 @@ section("情形 69：胶囊上限不许有两个出处（D170）");
     `硬上限=${show69(hardUm69)} 设置 max=${show69(umSpec69.max)}`);
   ok("★★★★ 69⑧b 报错侧同理", Number.isFinite(hardEr69) && hardEr69 >= erSpec69.max,
     `硬上限=${show69(hardEr69)} 设置 max=${show69(erSpec69.max)}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 70：**模型侧「压缩合同」必须与当前架构一致**（D173 定位 / D174 修）
+//
+//   为什么必须单开一节（这是本轮的**全部价值**）：
+//     D173 查明——代码默认值早已是 D155 架构（全量为主力、增量关），
+//     **唯独"发给模型看的那份合同"还是 D129 的**（"每涨 4~5 点做三步、③ 调 `mode:"light"`"）。
+//     ⇒ 模型每天收到旧指令、插件按新架构执行 ⇒ **用户已冻结的路被模型反复走**。
+//     ★ 而当时 1371 条全绿、一条都没红 —— 因为**没有任何断言守这段合同**。
+//       `grep "每涨 4~5 点"` 在 selftest 里 **0 命中**（D173 §三）。
+//
+//   ★ 判据设计（抄本项目纪律，**不做字面 grep**）：
+//     ① **真渲染**：走真 `agent/pre-step` 瀑布拿注入正文（与情形 12 同一把尺子），
+//        不是去源码里找字符串 —— 后者"源码改了但没走到那条路"照样绿。
+//     ② **两个方向都断言**（这才是能证伪的断言）：
+//        · 增量**关**（默认）⇒ 注入里**不许**出现"请你调压缩/每涨 4~5 点"，
+//          且**必须**出现"回合末自动做" 与 "你不要自己动手"；
+//        · 增量**开** ⇒ 反转（必须仍是 D129 那套，保护"打开开关"这条回退路）。
+//     ③ 工具描述**中性**：两模式都如实描述、**不出现 PREFERRED**（它注册时常量，
+//        绝不能按运行时设置分支 —— 否则改设置后描述永久过期，那是"两个出处"，D174 §二）。
+//   ★ 判别力（反向验证已做，见 D174 §四）：把合同改回"无条件旧文案" ⇒ 本节点名变红。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 70：模型侧压缩合同必须与架构一致（D173/D174）");
+{
+  /** 起一个带台账的临时项目 + 配好 tokenMeter，然后真跑 pre-step 拿注入正文。 */
+  const mkRun70 = (tag, settings, totalTokens) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 目标\nX\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", maxActiveLines: 300,
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+        revision: 0, mode: "surgical",
+      }),
+      "utf8"
+    );
+    const run = makeCtx({ withTokenMeter: true });
+    mod.apply(run.ctx, settings);
+    const sid = `session-d174-${tag}`;
+    const agent = {
+      session: {
+        header: { id: sid, cwd: root },
+        requestContext: () => ({ contextWindow: 1000 }),
+      },
+    };
+    run.services.tokenMeter._total = totalTokens;
+    return { root, run, agent };
+  };
+  const textOf70 = (d) =>
+    (d.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+
+  // ── 70① 默认（增量关）⇒ 合同必须是"全量为主力、你不要动手" ──────────────
+  {
+    const { root, run, agent } = mkRun70("d174-contract-default", {}, 100);
+    const t = textOf70(await runPreStep(run, { agent, messages: [] }));
+    ok("★★★★★ 70① 前提：默认配置下**确实注入了台账全文**（否则下面几条测的是空气）",
+      t.includes("压缩策略") && t.includes("LEDGER"), t.slice(0, 200));
+    ok("★★★★★ 70①a 默认架构下，合同里**必须**说「压缩由插件在回合末自动完成」",
+      /回合结束之后|回合末/.test(t) && /全量压缩/.test(t),
+      "★ 这一条对着 D155：全量是主力，不再是「兜底」");
+    ok("★★★★★ 70①b 且**必须明确叫模型不要自己动手压**（旧文案正好相反）",
+      /不需要你操心|不要为了压缩而打断自己|你不需要回应它|不需要你动手/.test(t),
+      "★ 这是本条的核心：旧文案逐字叫它调 mode:\"light\"");
+    // ★ 反向：默认架构下**不许**再出现旧架构的动作指令。
+    ok("★★★★★ 70①c 默认架构下，**不许**再教模型「每涨 4~5 点 / 请你自己调一次压缩」",
+      !/每涨 4~5 点/.test(t) && !/请你自己调一次/.test(t) && !/顺手调一次/.test(t),
+      "★ 命中即说明合同又漂回 D129（正是 D173 那个病）");
+    rmrf(root);
+  }
+
+  // ── 70② 增量**开** ⇒ 反转：必须回到 D129 那套（保护回退路）──────────────
+  {
+    const { root, run, agent } = mkRun70("d174-contract-delta", { incrementalCompact: true }, 100);
+    const t = textOf70(await runPreStep(run, { agent, messages: [] }));
+    ok("★★★★★ 70② 打开增量压缩后，合同**必须**换成「每涨 4~5 点做三步」那套（同一开关，两套文本）",
+      /每涨 4~5 点/.test(t) && /ledger_compact/.test(t),
+      t.slice(-400));
+    rmrf(root);
+  }
+
+  // ── 70③ 70% 水位档：同样的分支（这一档最刺眼 —— 它逐字叫模型去调 light）────
+  {
+    const { root, run, agent } = mkRun70("d174-tier70-default", {}, 100);
+    // ★★★ 夹具前提（**我第一版写错、当场改的**，记下来 —— 纪律 6：
+    //   「夹具没走通时，绝不能把夹具故障当成被测对象的问题」）：
+    //   水位提醒只在 `text === undefined`（**本步没有别的注入**）时才发
+    //   （`lib/index.js` L14604）。而**第一步**正好在注入台账全文 ⇒ 提醒被让位。
+    //   ⇒ 必须先空跑一步把台账正文消耗掉，再抬水位。
+    //   ★ 情形 12 也是这么写的（先 `runPreStep` 再改 `_total`）—— 我漏抄了这一步。
+    await runPreStep(run, { agent, messages: [] });
+    run.services.tokenMeter._total = 750;
+    const t = textOf70(await runPreStep(run, { agent, messages: [] }));
+    ok("★★★★★ 70③ 前提：70% 档提醒真的发出了", /上下文水位已到 70%/.test(t), t.slice(0, 200));
+    ok("★★★★★ 70③a 默认架构下，70% 档**必须**说「压缩不需要你动手」",
+      /不需要你动手|不要为了腾地方|不需要你操心/.test(t),
+      "★ 旧文案在这里逐字写「请你自己调一次压缩」");
+    ok("★★★★★ 70③b 默认架构下，70% 档**不许**叫它调 mode:\"light\"",
+      !/请你自己调一次/.test(t) && !/可以顺手调一次/.test(t),
+      t.slice(-500));
+    rmrf(root);
+  }
+
+  // ── 70④ 工具描述**中性**（不许按运行时设置分支 —— 那是"两个出处"，D174 §二）──
+  {
+    // ★ 反方向取：用**增量开**的配置拿描述。若描述真的按设置分支，
+    //   这两次拿到的文本会不同 ⇒ 下面第一条会红。
+    const runA = makeCtx();
+    mod.apply(runA.ctx, {});
+    const descDefault = runA.registeredTools.get("ledger_compact")?.description ?? "";
+    const runB = makeCtx();
+    mod.apply(runB.ctx, { incrementalCompact: true });
+    const descDelta = runB.registeredTools.get("ledger_compact")?.description ?? "";
+    ok("★★★★★ 70④ 工具描述在两个设置下**逐字相同**（注册时常量 ⇒ 绝不能按运行时设置分支）",
+      descDefault !== "" && descDefault === descDelta,
+      `默认 ${descDefault.length} 字 vs 增量开 ${descDelta.length} 字`);
+    ok("★★★★ 70④a 描述里**不再**出现「PREFERRED while working」（旧文案的首选推荐）",
+      !/PREFERRED/.test(descDefault),
+      "★ 它把 light 说成首选，与 D155 直接冲突");
+    ok("★★★★ 70④b 描述里如实写了「哪一种是常规**看注入的合同**」（把决定权交回单一出处）",
+      /injected|instructions/i.test(descDefault),
+      descDefault.slice(0, 300));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 71：**子代理会话完全无视本插件**（D176，用户拍板）
+//
+//   用户原话（逐字）：*"所有的子代理不用遵循插件，可以完全无视。他们是一次性的，
+//   之前有一个派了一大堆子代理的对话，饱受其苦。"*
+//
+//   ★ 为什么必须守这一条（不是一个"礼貌性要求"）：
+//     1. **实测污染**（本轮量的）：本项目 `L4-user-messages.md` 208 条里
+//        **15 条是子代理的 prompt**（如"你是资料搜索员，你的任务是…"），
+//        它们**被当成了"用户说过的话"**记进了永久记忆。
+//        ⇒ 用户原话是这套记忆的最高权威（胶囊 ∝ 用户原话）——
+//          子代理 prompt 混进去，以后回溯"用户到底要什么"时读到的是子代理的任务书。
+//     2. 用户在本次会话**不得不**在每个子代理 prompt 里手写
+//        "绝对不许调用任何 ledger_* 工具""忽略水位义务话术" ——
+//        那是把插件该做的事变成了用户的工作量。
+//
+//   ★ 判据取自**内核自己**：`agent.session.header.parentSession`
+//     （`dsh-subagent` 做血缘校验用的就是这一句，asar 内读过）。
+//     子代理会话有它，root 会话没有 ⇒ 这是官方语义，不是启发式。
+//
+//   ★ 判别力（**摘到能看见红为止**，纪律 10）：
+//     把 `shouldHandleSession()` 改成恒 `true` ⇒ 本节点名变红。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 71：子代理会话完全无视本插件（D176）");
+{
+  /** 造一个**子代理会话**的 agent（带 `parentSession`，这是内核的官方标记）。 */
+  const mkSubAgent = (root, sid, parentSid) => ({
+    session: { header: { id: sid, cwd: root, parentSession: parentSid }, id: sid },
+    steer() {},
+  });
+  /** 造一个 root agent（**没有** `parentSession`）。 */
+  const mkRootAgent = (root, sid) => ({
+    session: { header: { id: sid, cwd: root }, id: sid },
+    steer() {},
+  });
+
+  const mkProj71 = (tag) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\nX\n", "utf8");
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", maxActiveLines: 300,
+        logDir: "_ledger-log",
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+        revision: 0, mode: "surgical",
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+
+  // ── 71① 注入：子代理**一个字都不该收到** ────────────────────────────────
+  {
+    const root = mkProj71("d176-sub-inject");
+    const run = makeCtx({ withTokenMeter: true });
+    mod.apply(run.ctx, {});
+    const sub = mkSubAgent(root, "session-d176-sub-1", "session-d176-root-1");
+    const d = await runPreStep(run, { agent: sub, messages: [] });
+    eq("★★★★★ 71① 子代理会话**不收到任何注入**（台账全文 / 水位 / 压缩合同 一条都不给）",
+      (d.messages ?? []).length, 0);
+    rmrf(root);
+  }
+
+  // ── 71①b 反方向：root 会话**照旧收到**（豁免不许误伤主会话）──────────────
+  {
+    const root = mkProj71("d176-root-inject");
+    const run = makeCtx({ withTokenMeter: true });
+    mod.apply(run.ctx, {});
+    const rt = mkRootAgent(root, "session-d176-root-2");
+    const d = await runPreStep(run, { agent: rt, messages: [] });
+    ok("★★★★★ 71①b 而 root 会话**照旧收到**台账注入（豁免不许误伤主会话）",
+      (d.messages ?? []).length === 1,
+      `messages=${(d.messages ?? []).length}`);
+    rmrf(root);
+  }
+
+  // ── 71② 日志采集：子代理的 prompt **不许**进日志（这是实测过的污染）────────
+  //
+  //   ★ 判据设计（**A/B 对照**，不能只看"子代理没写进去"）：
+  //     第一版我只验"子代理那条没进日志" ⇒ 实测**日志总长=0**（日志是**去抖**落盘的，
+  //     我根本没触发 flush）⇒ 那条断言在**空目录**上也成立 ⇒ **无判别力**。
+  //     ★ 这正是本项目纪律 6/8：**"夹具没走通时，绝不能把夹具故障当成被测对象的问题"**。
+  //   ⇒ 现在两个方向都验，且**用两句不同的话**（不能只靠 sid 标签判 —— 见下）：
+  //       ① **root 会话**说 `ROOT_MARK` ⇒ **必须**出现在日志里（证明采集通道是通的）；
+  //       ② **子代理会话**说 `SUB_MARK` ⇒ **不许**出现（这才是豁免要守的）。
+  //
+  //   ★★★ **我第一版这条断言是弱的，靠反向验证才抓出来**（摘掉豁免它**不红**）：
+  //     原来写成 `!all.includes(subSid)`（整条 sid），可 L4 的标签是
+  //     **会话 id 中段的前 4 位**（形如 `user:d176`）⇒ 那个 `includes` **恒为真**
+  //     ⇒ **测了等于没测**。⇒ 改成**两句不同的话**，判据与标签格式无关。
+  {
+    const root = mkProj71("d176-sub-log");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const ROOT_MARK = "ROOT-ONLY-MARK-71";
+    const SUB_MARK = "SUB-ONLY-MARK-71";
+    // ① root 会话：这句话必须被采集（证明通道通）
+    const rootSid = "session-d176-root-log";
+    await fire(run, "session/event",
+      { header: { id: rootSid, cwd: root } },
+      { type: "user/message", time: Date.now(), data: { role: "user", source: { kind: "user" }, id: "u-d176-root", content: [{ type: "text", text: ROOT_MARK }] } });
+    // ② 子代理会话：这句话不许被采集
+    const subSid = "session-d176-sub-log-1";
+    await fire(run, "session/event",
+      { header: { id: subSid, cwd: root, parentSession: rootSid } },
+      { type: "user/message", time: Date.now(), data: { role: "user", source: { kind: "user" }, id: "u-d176-sub", content: [{ type: "text", text: SUB_MARK }] } });
+    // 刷盘：走 `agent/disposed`（与「定时器到点」同一个 `flushNow`，见情形 44a 的做法）
+    for (const h of run.handlers.get("agent/disposed") ?? []) {
+      await h({ agent: { session: { header: { id: rootSid, cwd: root } , id: rootSid } } });
+    }
+    const readLog = () => {
+      const logDir = path.join(root, "_ledger-log");
+      let all = "";
+      try {
+        all = fs.readdirSync(logDir, { recursive: true }).map((f) => {
+          const p = path.join(logDir, String(f));
+          try { return fs.statSync(p).isFile() ? fs.readFileSync(p, "utf8") : ""; } catch { return ""; }
+        }).join("\n");
+      } catch { all = ""; }
+      return all;
+    };
+    const all = readLog();
+    // ★ 先证"尺子对"：root 那句**必须**在（否则下面那条恒真 —— 我第一版就栽在这）
+    ok("★★★★★ 71② 前提：**root 会话**那句话**确实**被采集（否则下面那条是空转）",
+      all.includes(ROOT_MARK),
+      `日志总长=${all.length} 含ROOT=${all.includes(ROOT_MARK)}`);
+    // ★★ 真正的判据：子代理那句**不许**出现
+    ok("★★★★★ 71②b 子代理会话的同一类原话**没有被当成用户原话**写进日志（实测污染 15 条）",
+      !all.includes(SUB_MARK),
+      `日志总长=${all.length} 含SUB=${all.includes(SUB_MARK)}`);
+    rmrf(root);
+  }
+
+  // ── 71③ 压缩：子代理 idle **不许**触发压缩（破坏性动作，误伤最重）─────────
+  {
+    const root = mkProj71("d176-sub-compact");
+    const compacted = [];
+    const run = makeCtx({ withCompaction: true, withTokenMeter: true });
+    // 让 run.highFidelityCompact 可观测：从 run.compacted 取（与其它用例同口径）
+    mod.apply(run.ctx, { highFidelityCompactRatio: 0.3 });
+    const sub = mkSubAgent(root, "session-d176-sub-c", "session-d176-root-c");
+    // 直接制造"已排队一次全量"的局面：走 root 排队、再让**子代理** idle
+    //   ★ 这里刻意多用一条路径：把队列挂在**子代理自己的 sid** 上，
+    //     看它 idle 时会不会真的去压（旧代码会）。
+    await fire(run, "agent/status", { agent: sub, status: "idle" });
+    // ★ 同上：`fire()` 已 await 全部 handler，无需 `settle()`。
+    eq("★★★★★ 71③ 子代理 idle **不触发任何压缩**（压缩是破坏性动作，对一次性子代理纯属浪费+污染）",
+      run.compacted.length, 0);
+    rmrf(root);
+  }
+
+  // ── 71④ 结构：豁免必须是**唯一出口**，不许各入口各写一套 ─────────────────
+  {
+    const src71 = readLibSource();
+    const uses = (src71.match(/shouldHandleSession\(/g) ?? []).length;
+    ok("★★★★★ 71④ 所有入口都走**唯一出口** `shouldHandleSession(`（定义 1 + 至少 4 处调用）",
+      uses >= 5,
+      `出现 ${uses} 次`);
+    ok("★★★★ 71④b 且判据取自**内核自己的** `header.parentSession`（不是我们发明的启发式）",
+      /parentSession/.test(src71));
+    // ★ 反向：旧写法（只在弹卡片处判 isLiveRootAgent）**不许**再是唯一防线
+    ok("★★★★ 71④c `agent/pre-step` 入口**确实**调用了豁免（旧代码这里没有）",
+      /if \(!shouldHandleSession\(agent\)\) return decision;/.test(src71));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 72：**压缩后的第 1 条回复必须先做「主动回想」**（D177，用户拍板）
+//
+//   用户原话（逐字）：*"不用我主动去问，而是在每次压缩完成之后的第 1 条模型回复开头，
+//   让它自动主动去回想，类似于我现在每次压缩完之后都问一句『你现在还记得什么』，
+//   这能促进模型去主动回想（但是也不用回答我，主要是让模型的延续性更强）。"*
+//
+//   ★ 为什么这是"延续性"的关键一环：
+//     压缩把上下文截短了，而**模型不知道自己被压缩过**（它只看到历史变短）。
+//     若不告诉它 ⇒ 它会把已经丢掉的东西当成"还在"⇒ **幻觉的温床**。
+//     用户那句"什么都没做就直接被压缩了，就麻烦了"说的正是这件事。
+//
+//   ★ 判据（两条腿，缺一不可）：
+//     ① **位置**：回想指令必须出现在压缩后注入的**最前面**（顺序即语义 —— 压到末尾就成了装饰）；
+//     ② **内容**：必须包含四问（目标 / 进度 / 底线 / 下一步）**且**明说"不必回答我"、
+//        以及"答不上来就去查、**绝不凭印象补**"（后者直接服务"不要影响准确性"的底线）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 72：压缩后第 1 条回复的「主动回想」（D177）");
+{
+  const src72 = readLibSource();
+  // ① 位置：回想标题必须**早于**"上下文刚被压缩"那句
+  const iRecall = src72.indexOf("先做一次「主动回想」");
+  const iAfter = src72.indexOf("上下文刚被压缩（台账");
+  ok("★★★★★ 72① 「主动回想」在源码里**排在**「上下文刚被压缩」之前（顺序即语义：它是回复的第一步动作）",
+    iRecall !== -1 && iAfter !== -1 && iRecall < iAfter,
+    `iRecall=${iRecall} iAfter=${iAfter}`);
+  // ② 四问齐备
+  const q72 = [
+    ["目标", /我现在的目标/],
+    ["进度", /手上正做到哪一步/],
+    ["底线", /约束 \/ 底线|不能违反/],
+    ["下一步", /下一步动作/],
+  ];
+  for (const [name, re] of q72) {
+    ok(`★★★★ 72② 回想四问含「${name}」（少一问就不是完整回想）`, re.test(src72));
+  }
+  // ③ 三个"不许"（这三条才是它区别于"汇报"的地方）
+  ok("★★★★★ 72③ 明说「**不必写成给我的答复**」（用户原话：不用回答我）",
+    /不必写成给我的答复/.test(src72));
+  ok("★★★★★ 72③b 明说「答不上来**去查**」（台账/胶囊/recall 是权威）",
+    /答不上来/.test(src72) && /ledger_recall/.test(src72));
+  ok("★★★★★ 72③c 且明说「**绝不要凭印象补一个**」—— 这条直接服务「不影响准确性」的底线",
+    /绝不要凭印象补/.test(src72));
+  ok("★★★★ 72③d 明说「不要停下来问我」（否则回想会变成一次打扰）",
+    /不要停下来问我/.test(src72));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 73：**根本原则条例 —— 模型没有写入路径**（D180，用户拍板）
+//
+//   用户原话（逐字）：*"第2个需要维护的是根本原则条例，**没有用户的授权，绝对不能往里面写东西
+//   或者修改东西**。以上两个需要维护的东西，**每一次修改都同步到日志中**。"*
+//
+//   ★ 本节的判据**必须同时证明两件相反的事**（缺一即为"看起来有守卫、其实没有"）：
+//     ① **模型写不进去**（没有授权 ⇒ 一个字节都不写）；
+//     ② **用户写得进去**（用户亲手写 ⇒ 真的落盘）—— ★ 缺了 ②，"①通过"可能只是因为
+//        "整个原则功能根本是坏的"（本项目反复栽过的空断言形态）。
+//   ★ 还要验"每一次修改都同步到日志中"（用户的第二条要求）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 73：根本原则条例的授权守卫（D180）");
+{
+  const mkProj73 = (tag) => {
+    const dir = tmpProject(tag);
+    fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\nX\n", "utf8");
+    fs.writeFileSync(
+      path.join(dir, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        principles: "PRINCIPLES.md", archiveDir: "_a", maxActiveLines: 300,
+        logDir: "_ledger-log",
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+        revision: 0, mode: "surgical",
+      }),
+      "utf8"
+    );
+    return dir;
+  };
+
+  // ── 73① 模型**没有**任何直接写入路径：不带 authorizedBy 必被拒 ─────────────
+  {
+    const root = mkProj73("d180-refuse");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const w = run.registeredTools.get("ledger_write");
+    const r = await w.execute(
+      { target: "principles", content: "模型自己写的原则（不该落盘）" },
+      { agent: { session: { header: { id: "s-d180-a", cwd: root } } } }
+    );
+    ok("★★★★★ 73① 模型直接 `ledger_write({target:\"principles\"})`（不带授权）⇒ **被拒**",
+      r?.ok === false && r?.refused === true,
+      JSON.stringify(r).slice(0, 200));
+    const exists = fs.existsSync(path.join(root, "PRINCIPLES.md"));
+    ok("★★★★★ 73①b 且**文件根本没被创建**（不是「写了再回滚」—— 是压根没写）",
+      exists === false, `exists=${exists}`);
+    rmrf(root);
+  }
+
+  // ── 73② 用户亲手写（`/ledger principles <内容>`）⇒ **必须真的落盘** ─────────
+  {
+    const root = mkProj73("d180-user-write");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const cmd = run.registeredCommands.get("ledger");
+    const ag = { session: { header: { id: "s-d180-b", cwd: root } }, steer() {} };
+    const r = await cmd.handler({
+      commandId: "c-d180-1", agent: ag, rawInput: "principles 永远不要删除我的备份",
+      attachments: [], signal: new AbortController().signal,
+    });
+    eq("★★★★★ 73② 用户亲手写 ⇒ 命令成功", r.kind, "success");
+    const body = fs.readFileSync(path.join(root, "PRINCIPLES.md"), "utf8");
+    ok("★★★★★ 73②b 且原则**真的写进了文件**（证明通道是通的，不是功能坏掉）",
+      body.includes("永远不要删除我的备份"), body.slice(0, 200));
+    rmrf(root);
+  }
+
+  // ── 73③ "每一次修改都同步到日志中"（用户第二条要求）────────────────────
+  {
+    const root = mkProj73("d180-audit");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const cmd = run.registeredCommands.get("ledger");
+    const ag = { session: { header: { id: "s-d180-c", cwd: root } }, steer() {} };
+    await cmd.handler({
+      commandId: "c-d180-2", agent: ag, rawInput: "principles 第一条原则",
+      attachments: [], signal: new AbortController().signal,
+    });
+    // 日志是去抖落盘的 ⇒ 走 `agent/disposed` 刷一次（与情形 44a 同一手法）。
+    for (const h of run.handlers.get("agent/disposed") ?? []) {
+      await h({ agent: { session: { header: { id: "s-d180-c", cwd: root }, id: "s-d180-c" } } });
+    }
+    const logDir = path.join(root, "_ledger-log");
+    let all = "";
+    try {
+      all = fs.readdirSync(logDir, { recursive: true }).map((f) => {
+        const p = path.join(logDir, String(f));
+        try { return fs.statSync(p).isFile() ? fs.readFileSync(p, "utf8") : ""; } catch { return ""; }
+      }).join("\n");
+    } catch { all = ""; }
+    ok("★★★★★ 73③ 改动**同步进了活动日志**，且 kind 是独立的 `ledger-principles`（权威来源可分辨）",
+      all.includes("ledger-principles"),
+      `日志总长=${all.length} 含kind=${all.includes("ledger-principles")}`);
+    rmrf(root);
+  }
+
+  // ── 73④ 结构：模型**够不到**那个唯一写出口（这是"结构性"的落实处）──────────
+  {
+    const src73 = readLibSource();
+    ok("★★★★★ 73④ `applyPrincipleProposal`（唯一写出口）**没有被任何工具定义调用** —— " +
+      "即模型没有代码路径去写原则",
+      !/defineProposePrincipleTool[\s\S]{0,4000}applyPrincipleProposal/.test(src73));
+    ok("★★★★ 73④b 提议工具的描述里**明说它不写文件**（英文原文：this tool never writes the file）",
+      /this tool never writes the file/.test(src73));
+    ok("★★★★ 73④c 且返回值里明说「还没有写入文件」（防止模型当成已完成）",
+      /还没有写入文件/.test(src73));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 74：**目标树**（D181，用户拍板 —— 卡片联成树）
+//
+//   用户原话（逐字）：*"这个比起目标表更像是一个**目标树**，应该可以由不同的**卡片联成树**。"*
+//   + 权重标准：*"根本目标的权重永远很高……当前正在做的……也可以拉高……
+//     已经完成的目标，权重随相对时间逐渐下降。"*
+//
+//   ★ 本节的判据重心（**不是"功能能跑"，而是两条设计承诺**）：
+//     ① **树是推导出来的，不是第二份真相** —— 所以判据是"**只改文件里的 parent，
+//        树必须跟着变**"（若实现把结构另存一份，这条会红）；
+//     ② **报而不猜** —— 环 / 孤儿 / 删有子目标的卡，都必须**被拒绝或如实报出**，
+//        绝不被"自动修好"（自动修 = 猜用户的意思）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 74：目标树（D181）");
+{
+  const mkRun74 = (tag) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 目标\nX\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        goals: "GOALS.md", archiveDir: "_a", maxActiveLines: 300,
+        logDir: "_ledger-log",
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+        revision: 0, mode: "surgical",
+      }),
+      "utf8"
+    );
+    const run = makeCtx({ withTokenMeter: true });
+    mod.apply(run.ctx, {});
+    const ag = { session: { header: { id: `s-${tag}`, cwd: root } }, steer() {} };
+    return { root, run, ag, goals: run.registeredTools.get("ledger_goals") };
+  };
+
+  // ── 74① 建树 + 推导（只改文件里的 parent ⇒ 树跟着变）────────────────────
+  {
+    const { root, goals, ag } = mkRun74("d181-tree");
+    let r = await goals.execute({ op: "upsert", id: "g1", title: "让模型稳定接上工作", parent: "-", status: "root" }, { agent: ag });
+    eq("74① 建根本目标", r.ok, true);
+    r = await goals.execute({ op: "upsert", id: "g2", title: "台账体系", parent: "g1", status: "active" }, { agent: ag });
+    eq("74①b 建子目标（挂在 g1 下）", r.ok, true);
+    r = await goals.execute({ op: "upsert", id: "g3", title: "压缩体系", parent: "g1", status: "active" }, { agent: ag });
+    eq("74①c 建第二个子目标", r.ok, true);
+    r = await goals.execute({ op: "tree" }, { agent: ag });
+    eq("74①d 树根只有 g1", r.roots.length, 1);
+    ok("74①e 三张卡都在", r.count === 3, `count=${r.count}`);
+    // ★★ 关键：直接改**文件**里的 parent（模拟用户手改），树必须跟着变。
+    const abs = path.join(root, "GOALS.md");
+    const body = fs.readFileSync(abs, "utf8");
+    fs.writeFileSync(abs, body.replace(/## 目标 g3 · 进行中\n- parent: g1/, "## 目标 g3 · 进行中\n- parent: -"), "utf8");
+    r = await goals.execute({ op: "tree" }, { agent: ag });
+    ok("★★★★★ 74①f **只改文件里的 parent**，树就跟着变 ⇒ 结构确实是**推导**出来的（不是第二份真相）",
+      r.roots.length === 2, `roots=${JSON.stringify(r.roots)}`);
+    rmrf(root);
+  }
+
+  // ── 74② 报而不猜：parent 不存在 ⇒ 拒绝（不许接成孤儿）──────────────────
+  {
+    const { root, goals, ag } = mkRun74("d181-orphan");
+    await goals.execute({ op: "upsert", id: "g1", title: "根", parent: "-", status: "root" }, { agent: ag });
+    const r = await goals.execute({ op: "upsert", id: "g9", title: "孤儿", parent: "不存在" }, { agent: ag });
+    ok("★★★★★ 74② parent 不存在 ⇒ **拒绝**（不许把树接成孤儿）",
+      r.ok === false && /不存在/.test(r.reason ?? ""), JSON.stringify(r).slice(0, 160));
+    rmrf(root);
+  }
+
+  // ── 74③ 报而不猜：删有子目标的卡 ⇒ 拒绝并列出子卡 ──────────────────────
+  {
+    const { root, goals, ag } = mkRun74("d181-rm");
+    await goals.execute({ op: "upsert", id: "g1", title: "根", parent: "-", status: "root" }, { agent: ag });
+    await goals.execute({ op: "upsert", id: "g2", title: "子", parent: "g1" }, { agent: ag });
+    const r = await goals.execute({ op: "rm", id: "g1" }, { agent: ag });
+    ok("★★★★★ 74③ 删还有子目标的卡 ⇒ **拒绝**并列出子卡（不许静默制造孤儿）",
+      r.ok === false && Array.isArray(r.children) && r.children.includes("g2"),
+      JSON.stringify(r).slice(0, 200));
+    rmrf(root);
+  }
+
+  // ── 74④ 环检测：如实报进 issues，**不自动修** ─────────────────────────
+  {
+    const { root, goals, ag } = mkRun74("d181-cycle");
+    await goals.execute({ op: "upsert", id: "a", title: "A", parent: "-" }, { agent: ag });
+    await goals.execute({ op: "upsert", id: "b", title: "B", parent: "a" }, { agent: ag });
+    // ★ 直接改文件造一个环（工具会拦"父不存在"，但拦不住"两人互相指"）。
+    const abs = path.join(root, "GOALS.md");
+    fs.writeFileSync(abs, fs.readFileSync(abs, "utf8").replace(/## 目标 a · 进行中\n- parent: -/, "## 目标 a · 进行中\n- parent: b"), "utf8");
+    const r = await goals.execute({ op: "tree" }, { agent: ag });
+    ok("★★★★★ 74④ 环 ⇒ 如实报进 issues（**不自动修** —— 自动修 = 猜用户的意思）",
+      Array.isArray(r.issues) && r.issues.some((x) => /环/.test(x)),
+      JSON.stringify(r.issues).slice(0, 200));
+    rmrf(root);
+  }
+
+  // ── 74⑤ 权重：根本目标 > 进行中 > 已完成（用户三条标准的**可断言**形式）──
+  {
+    const { root, goals, ag } = mkRun74("d181-weight");
+    await goals.execute({ op: "upsert", id: "g1", title: "根本", parent: "-", status: "root" }, { agent: ag });
+    await goals.execute({ op: "upsert", id: "g2", title: "在做", parent: "g1", status: "active" }, { agent: ag });
+    await goals.execute({ op: "upsert", id: "g3", title: "做完了", parent: "g1", status: "done" }, { agent: ag });
+    const r = await goals.execute({ op: "tree" }, { agent: ag });
+    const by = new Map(r.cards.map((c) => [c.id, c.score]));
+    ok("★★★★★ 74⑤ 权重：**根本目标 > 进行中 > 已完成**（用户三条标准的可断言形式）",
+      by.get("g1") > by.get("g2") && by.get("g2") > by.get("g3"),
+      `root=${by.get("g1")} active=${by.get("g2")} done=${by.get("g3")}`);
+    rmrf(root);
+  }
+
+  // ── 74⑥ 教训：带教训的卡**不被降权到底**（用户要"以后不要踩"必须留）──────
+  {
+    const { root, goals, ag } = mkRun74("d181-lesson");
+    await goals.execute({ op: "upsert", id: "g1", title: "根", parent: "-", status: "root" }, { agent: ag });
+    await goals.execute({ op: "upsert", id: "g2", title: "走错过的路", parent: "g1", status: "dropped" }, { agent: ag });
+    await goals.execute({ op: "lesson", id: "g2", lesson: "按位置截断是错的 —— 要按内容分层" }, { agent: ag });
+    const r = await goals.execute({ op: "tree" }, { agent: ag });
+    const g2 = r.cards.find((c) => c.id === "g2");
+    ok("★★★★★ 74⑥ 已放弃但**带教训**的卡 ≥ 40 分（降权不许把最该记住的降掉）",
+      g2.score >= 40, `score=${g2.score}`);
+    ok("★★★★ 74⑥b 教训**逐字**留在树里（摘要一下就没了）",
+      /按位置截断是错的/.test(r.tree), r.tree.slice(0, 300));
+    rmrf(root);
+  }
+
+  // ── 74⑦ 审计：每次改动都进日志（用户对"两个需要维护的东西"的同一要求）──
+  {
+    const { root, run, goals, ag } = mkRun74("d181-audit");
+    await goals.execute({ op: "upsert", id: "g1", title: "根", parent: "-", status: "root" }, { agent: ag });
+    for (const h of run.handlers.get("agent/disposed") ?? []) {
+      await h({ agent: { session: { header: { id: "s-d181-audit", cwd: root }, id: "s-d181-audit" } } });
+    }
+    const logDir = path.join(root, "_ledger-log");
+    let all = "";
+    try {
+      all = fs.readdirSync(logDir, { recursive: true }).map((f) => {
+        const p = path.join(logDir, String(f));
+        try { return fs.statSync(p).isFile() ? fs.readFileSync(p, "utf8") : ""; } catch { return ""; }
+      }).join("\n");
+    } catch { all = ""; }
+    ok("★★★★★ 74⑦ 目标树改动**同步进了活动日志**，且 kind 独立（`ledger-goals`）",
+      all.includes("ledger-goals"), `日志总长=${all.length}`);
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 75：**压缩索引「只追加不删」+ 指向官方的保存**（D182）
+//
+//   用户原话（逐字）：*"第3个需要维护的，建造一个索引，每一次压缩都把被压缩的
+//   原文建造一个索引（**…指向官方的保存**），这个索引**只追加不删**。"*
+//
+//   ★ 本节的重心（同样**不是"能跑"**，而是两条**用户明确说出口的承诺**）：
+//     ① **只追加不删** —— 原实现是 `list.length = idxMax`（**尾部截断**），
+//        后果与用户要求**恰好相反**：到上限后**刚 push 的那条被当场砍掉**，
+//        索引永久冻结在最早的 N 段，而长会话里最需要的是**最近的**路标。
+//        ⇒ 判据 = "喂超过上限的条数后，**最新的那条必须在**"。
+//     ② **指向官方的保存** —— 索引必须给出**官方** `session.v4.jsonl.zstd` 的路径。
+//        ⇒ 判据 = 拿**本机真实的 sessions 目录名**去对（编码规则必须实测，不许推）。
+//
+//   ★★ 为什么编码规则必须"拿真目录验"而不是对字符串：
+//     我第一版**推错了**（以为 `:` 也换成 `-` ⇒ `D--Deepseek…`，真实是 `D-Deepseek…`）。
+//     探针 `_probe-official-session-path.mjs` 当场把三个 cwd 全报 MISS 才定案。
+//     若只对字符串，这条断言会**跟着错的规则一起绿**（假绿）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 75：压缩索引只追加不删 + 指向官方保存（D182）");
+{
+  // ── 75① 编码规则：拿**本机真实目录名**核对 ──────────────────────────────
+  //
+  //   ★★ 为什么不在这里读 `$DSH_HOME/sessions`：
+  //     ① 本自检**故意**把 `DSH_HOME` 指到沙箱（见文件开头）—— 这是红线纪律；
+  //     ② 更要紧：若真去读**运行这台机器的** sessions，别人 clone 下来
+  //        这条会**因为自己机器上没有那个目录**而红 ⇒ 那是「假失败」，
+  //        与 D136 那条"别人 clone 下来满屏假失败"是同一个病。
+  //   ⇒ 正确做法：把**实测采集到的真名**当**证据**钉进断言（它出自
+  //     `tools/_probe-official-session-path.mjs` 的真机输出：8 个目录全部反解命中）。
+  {
+    // ★★★ 2026-10-15（D216）：样本从"本机真实目录"改成**同形状的示例目录** ——
+    //   原因：原来逐字写的是本机真实路径（含用户名与会话编号），而本仓库是 **PUBLIC**，
+    //   那些会随 push 一起公开（发布前隐私体检 `tools/_probe-d216-privacy.mjs` 抓到的）。
+    //   ★★ **换了样本，判别力不变**：这条断言验的是**编码规则**（`\\` → `-`、盘符的 `:` 丢掉、
+    //     非 ASCII 按 `~XXXX` 大写十六进制），而 ASCII 段是**逐字保留**的 ⇒
+    //     把 `Deepseek工作区` 换成 `Example工作区` 之后，规则该对还是对、该错还是错。
+    //     （编码值由被测函数 `encodeSessionDirName` 自己算出，**不是我手推的**。）
+    //     ★ 顺带一个好处：别人 clone 下来也不会看到我的本机目录名。
+    const REAL_SAMPLES = [
+      { cwd: "D:\\Example工作区", dir: "--D-Example~5DE5~4F5C~533A--" },
+      {
+        cwd: "D:\\Example工作区\\20-DSH插件",
+        dir: "--D-Example~5DE5~4F5C~533A-20-DSH~63D2~4EF6--",
+      },
+      {
+        cwd: "D:\\Example工作区\\20-DSH插件\\04-其余插件\\10.项目台账",
+        dir:
+          "--D-Example~5DE5~4F5C~533A-20-DSH~63D2~4EF6-04-~5176~4F59~63D2~4EF6-10.~9879~76EE~53F0~8D26--",
+      },
+      // ★ 这条最值钱：它**证伪了我第一版的规则**（`:` 换成 `-` ⇒ 会算出 `D--`）。
+      { cwd: "C:\\Users\\Example\\Documents\\deepseek\\harness\\default\\workspace",
+        dir: "--C-Users-Example-Documents-deepseek-harness-default-workspace--" },
+    ];
+    let wrong = 0;
+    for (const s of REAL_SAMPLES) {
+      if (mod.__test.encodeSessionDirName(s.cwd) !== s.dir) wrong += 1;
+    }
+    ok("★★★★★ 75① 编码规则对**本机实测采集的真名**逐条命中（8 个真目录反解全 OK 的那条规则）",
+      wrong === 0, `对不上 ${wrong}/${REAL_SAMPLES.length} 条`);
+    ok("★★★★ 75①b 盘符的 `:` **被丢掉**（我第一版以为换成 `-` ⇒ `D--Deepseek…`，探针当场证伪）",
+      mod.__test.encodeSessionDirName("D:\\x").startsWith("--D-") &&
+        !mod.__test.encodeSessionDirName("D:\\x").startsWith("--D--"),
+      `实得 ${mod.__test.encodeSessionDirName("D:\\x")}`);
+    ok("★★★★ 75①c 非 ASCII 按 `~XXXX` 大写十六进制（中文目录名的实测形状）",
+      mod.__test.encodeSessionDirName("D:\\工作区").includes("~5DE5~4F5C~533A"),
+      `实得 ${mod.__test.encodeSessionDirName("D:\\工作区")}`);
+  }
+
+  // ── 75② 官方路径：端到端（在沙箱里造一棵**真**会话树给它找）───────────
+  //
+  //   ★ 判据 = "算得出 ⇒ 文件必须真的在" + "算不出 ⇒ 必须 undefined（不许编）"。
+  {
+    const cwd75 = path.join(SANDBOX_HOME, "proj-d182");
+    const sid75 = "11112222-3333-4444-5555-666677778888";
+    const dirName = mod.__test.encodeSessionDirName(cwd75);
+    // ★ 两种形态各造一个（本机实测两种都存在：`session-<uuid>` 与裸 `<uuid>`）。
+    const withPrefix = path.join(SANDBOX_HOME, "sessions", dirName, `session-${sid75}`, "session.v4.jsonl.zstd");
+    const bare = path.join(SANDBOX_HOME, "sessions", dirName, sid75, "session.v4.jsonl.zstd");
+    fs.mkdirSync(path.dirname(withPrefix), { recursive: true });
+
+    ok("★★★★★ 75② **文件还不存在**时 ⇒ 返回 undefined（不编一个指不到东西的路径）",
+      mod.__test.officialSessionPath(sid75, cwd75) === undefined,
+      "若这里返回了字符串 ⇒ 函数没做存在性校验（伤「可回溯」）");
+
+    fs.writeFileSync(withPrefix, "x", "utf8");
+    eq("★★★★★ 75②b 文件真的存在 ⇒ **算得出那个路径**（`session-<uuid>` 形态）",
+      mod.__test.officialSessionPath(sid75, cwd75), withPrefix);
+
+    // ★ 裸 `<uuid>` 形态（去掉 `session-` 前缀目录名）也要认得。
+    fs.rmSync(path.dirname(withPrefix), { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(bare), { recursive: true });
+    fs.writeFileSync(bare, "x", "utf8");
+    eq("★★★★ 75②c **裸 `<uuid>` 形态**也认得（本机两种目录名都存在过）",
+      mod.__test.officialSessionPath(sid75, cwd75), bare);
+
+    // ★ 负向对照：路径算得出时，它必须是**真的**（不是拼出来好看的）。
+    ok("★★★★ 75②d 负向对照：荒谬的 sid ⇒ undefined",
+      mod.__test.officialSessionPath("no-such-session-0000", cwd75) === undefined,
+      "编出一个不存在的路径 = 伤准确性");
+    ok("★★★★ 75②e 负向对照：cwd 为空 / 非字符串 ⇒ undefined（不许抛、不许编）",
+      mod.__test.officialSessionPath(sid75, "") === undefined &&
+        mod.__test.officialSessionPath(sid75, undefined) === undefined &&
+        mod.__test.officialSessionPath(undefined, cwd75) === undefined,
+      "拿不到 cwd 时应当如实返回 undefined");
+  }
+
+  // ── 75③ ★★★★★ **只追加不删**：超过上限后，最新的那条必须在 ─────────────
+  //
+  //   ★ 这是本节**唯一直接钉住用户原话**的断言。
+  //   ★ 判别力：把 `list.length = idxMax` 加回去 ⇒ 本条**当场红**
+  //     （探针 `_probe-d182-append-only.mjs` 已用同样语义实测过：62 条喂进去，
+  //      第 61/62 条**不在结果里**）。
+  {
+    const stX = { shadowedIndex: new Map() };
+    const mkAg = (seq) => ({
+      session: {
+        header: { id: "sid-x", cwd: undefined },
+        log: [{
+          type: "compaction/summary", seq, time: Date.now(),
+          data: { shadowedRange: { start: seq - 10, end: seq - 5 }, shadowedSeqs: [seq - 10, seq - 5], shadowedTokenCount: 100, summary: [{ text: "s" }] },
+        }],
+      },
+    });
+    // 喂**超过** `shadowedIndexMax` 的条数（默认 60 ⇒ 喂 65）。
+    const idxMaxCfg = mod.__test.settingDefaultsForTest().shadowedIndexMax;
+    const over = idxMaxCfg + 5;
+    for (let i = 1; i <= over; i += 1) {
+      mod.__test.recordShadowedIndex(stX, "sid-x", mkAg(1000 + i), "test");
+    }
+    const stored = mod.__test.shadowedStoreForTest("sid-x");
+    const memList = stX.shadowedIndex.get("sid-x") ?? [];
+    ok("★★★★★ 75③ 索引**只追加不删**：喂 " + over + " 条（> 上限）后，**最新那条仍在**",
+      memList.some((x) => x.summarySeq === 1000 + over),
+      `实得 ${memList.length} 条，最大 summarySeq=${Math.max(...memList.map((x) => x.summarySeq))}，期望 ${1000 + over}`);
+    ok("★★★★ 75③b 且**最旧那条也仍在内存里**（只追加 = 前后都不主动删）",
+      memList.some((x) => x.summarySeq === 1001),
+      `最小 summarySeq=${Math.min(...memList.map((x) => x.summarySeq))}`);
+
+    // ── 75④ 渲染侧**仍须有界**，且**如实告知折叠了多少** ──────────────────
+    //   ★ 口径：**盘上全留、给模型看最近 N 条**（常驻上下文的东西不能无限长）。
+    //   ★ 折叠若不说 ⇒ 模型会把"没展开"读成"不存在"（「记录存在 ≠ 记录准确」的反面）。
+    const rendered = String(mod.__test.renderShadowedIndex(stX, "sid-x"));
+    const idxMax = mod.__test.settingDefaultsForTest().shadowedIndexMax;
+    ok("★★★★ 75④ 渲染**仍有界**（注入只列最近 N 条，不能无限长）",
+      (rendered.match(/^- seq /gm) ?? []).length <= idxMax,
+      `列出 ${(rendered.match(/^- seq /gm) ?? []).length} 行，上限 ${idxMax}`);
+    ok("★★★★★ 75④b 折叠时**如实报出**「更早的 N 段未展开 + 它们没被删」",
+      rendered.includes("未展开") && /没有被删/.test(rendered),
+      rendered.slice(rendered.indexOf("更早") - 40, rendered.indexOf("更早") + 160));
+  }
+
+  // ── 75⑤ 官方指针要**出现在注入里**（接线：函数对 ≠ 接线对）──────────────
+  {
+    const src75 = readLibSource();
+    ok("★★★★★ 75⑤ 官方路径**真的接进了渲染**（不许只定义不用 —— D136 的两层纪律）",
+      /officialSessionPath\(sid,\s*cwd\)/.test(src75) && /officialNote/.test(src75),
+      "若只留函数定义而渲染不调用，模型永远看不到官方指针");
+    ok("★★★★ 75⑤b 渲染时**按会话算一次**（不是每条记录存一份 —— D170「同一事实不许两个出处」）",
+      !/officialPath:\s*p/.test(src75),
+      "若把官方路径逐条存进记录，同一路径会写 N 份 ⇒ 将来必然分叉");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 76：**分类记忆 —— 回合流水**（D183，用户："分成多个种类，多个文件"）
+//
+//   用户原话：*"等你**重构整个台账体系，分成多个种类，多个文件**……之后，
+//   你就可以开始正常维护台账了。"*
+//
+//   ★ 本节的重心是**三条语义承诺**（不是"功能能跑"）：
+//     ① **流水默认 append** —— 它是"只追加的历史"。若默认 replace，
+//        一次普通的 `ledger_write({target:"journal"})` 会**静默抹掉全部历史**，
+//        而描述称它"只追加" ⇒ **实现与承诺冲突**（A1 那个坑的同型复发）。
+//     ② **流水不注入** —— 它是历史；把 64% 的历史每回合重注，
+//        正是 D183 要解的那个"污染"（实测注入块数 74 → 11）。
+//     ③ **口径与 goals/principles 一致** —— `manifest` 优先；没登记时
+//        **只认已存在的同名文件**，**绝不凭空创建**（不往项目里塞未经邀请的东西）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 76：分类记忆 · 回合流水（D183）");
+{
+  /** 造一个登记了 journal 的项目。 */
+  const mkRun76 = (tag, { withJournal = true } = {}) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 状态\n- 在做\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    if (withJournal) fs.writeFileSync(path.join(root, "JOURNAL.md"), "# 流水\n\n## [aaaa] 2026-01-01 · 做过一件事\n- 细节\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        ...(withJournal ? { journal: "JOURNAL.md" } : {}),
+        archiveDir: "_a", maxActiveLines: 300,
+        logDir: "_ledger-log",
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+        revision: 0, mode: "surgical",
+      }),
+      "utf8"
+    );
+    const run = makeCtx({ withTokenMeter: true });
+    mod.apply(run.ctx, {});
+    const ag = { session: { header: { id: `s-${tag}`, cwd: root } }, steer() {} };
+    return { root, run, ag };
+  };
+
+  // ── 76① ★★★ 默认 append：一次"不带 mode"的写入**不许抹掉历史** ──────────
+  {
+    const { root, run, ag } = mkRun76("d183-append");
+    const W = await run.registeredTools.get("ledger_write").execute(
+      { target: "journal", content: "## [bbbb] 2026-01-02 · 又做了一件事\n- 新的\n" },
+      { agent: ag }
+    );
+    const body = fs.readFileSync(path.join(root, "JOURNAL.md"), "utf8");
+    ok("★★★★★ 76① 流水**默认 append**（不传 mode 时**旧历史仍在** —— 它是只追加的历史）",
+      W.ok === true && body.includes("2026-01-01") && body.includes("2026-01-02"),
+      `ok=${W.ok} 含旧=${body.includes("2026-01-01")} 含新=${body.includes("2026-01-02")}`);
+    ok("★★★★ 76①b 且它就是**追加**（不是被 replace 成只剩新内容）",
+      /做过一件事/.test(body) && /又做了一件事/.test(body),
+      body.slice(0, 200));
+    rmrf(root);
+  }
+
+  // ── 76② ★★★★★ 流水**不注入**（历史不该每回合占上下文）──────────────────
+  //
+  //   ★ 这条是 D183 的**核心收益**：实测注入块数 74 → 11。
+  //   ★ 判别力：把 journal 也并进注入 ⇒ 本条当场红。
+  {
+    const { root, run, ag } = mkRun76("d183-noinject");
+    // 用一个**只有流水里才有**的标记词，看它会不会出现在注入里。
+    fs.appendFileSync(
+      path.join(root, "JOURNAL.md"),
+      "\n## [cccc] 2026-01-03 · 只有流水里才有的标记词ZQMARK\n- x\n",
+      "utf8"
+    );
+    // ★ 走**真入口**：`agent/pre-step` 瀑布（与情形 45 / 71 同一把尺子）。
+    //   ★ 必须用既有的 `runPreStep`（它会传 `next`）—— handler 第一句就是 `await next()`，
+    //     我自己第一版直接 `h({agent}, {})` ⇒ `next is not a function`（取法错，纪律 3）。
+    const decided = await runPreStep(run, { agent: ag, messages: [] });
+    const text = (decided?.messages ?? [])
+      .map((m) => (m?.content ?? []).map((c) => c.text ?? "").join("\n"))
+      .join("\n");
+    ok("★★★★★ 76② 流水**不注入**（历史不该每回合占上下文 —— D183 的核心收益）",
+      !text.includes("ZQMARK"),
+      `注入长度=${text.length}；若这里出现标记词 ⇒ 流水被注入了`);
+    // ★ 但**台账本身仍照常注入**（别把流水搬走时把台账一起弄没了）。
+    ok("★★★★ 76②b 而**台账正文照常注入**（搬走流水不许影响状态注入）",
+      text.includes("在做") || text.includes("LEDGER"),
+      text.slice(0, 200));
+    rmrf(root);
+  }
+
+  // ── 76③ 口径：**绝不凭空创建**（没登记且文件不存在 ⇒ 报错，不是自己造一份）──
+  {
+    const { root, run, ag } = mkRun76("d183-nocreate", { withJournal: false });
+    const W = await run.registeredTools.get("ledger_write").execute(
+      { target: "journal", content: "## x\n- y\n" },
+      { agent: ag }
+    );
+    ok("★★★★★ 76③ 没登记流水时**绝不凭空创建**（口径与 goals/principles 一致）",
+      W.ok === false && !fs.existsSync(path.join(root, "JOURNAL.md")),
+      `ok=${W.ok} 文件存在=${fs.existsSync(path.join(root, "JOURNAL.md"))}`);
+    rmrf(root);
+  }
+
+  // ── 76④ 审计 kind 独立（用户对"需要维护的东西"都要求同步日志）──────────
+  {
+    const { root, run, ag } = mkRun76("d183-audit");
+    await run.registeredTools.get("ledger_write").execute(
+      { target: "journal", content: "## [dddd] 2026-01-04 · 审计用\n- z\n" },
+      { agent: ag }
+    );
+    for (const h of run.handlers.get("agent/disposed") ?? []) {
+      await h({ agent: { session: { header: { id: "s-d183-audit", cwd: root }, id: "s-d183-audit" } } });
+    }
+    let all = "";
+    try {
+      all = fs.readdirSync(path.join(root, "_ledger-log"), { recursive: true }).map((f) => {
+        const p = path.join(root, "_ledger-log", String(f));
+        try { return fs.statSync(p).isFile() ? fs.readFileSync(p, "utf8") : ""; } catch { return ""; }
+      }).join("\n");
+    } catch { all = ""; }
+    ok("★★★★★ 76④ 流水改动**同步进活动日志**，且 kind 独立（`ledger-journal`）",
+      all.includes("ledger-journal"), `日志总长=${all.length}`);
+    rmrf(root);
+  }
+
+  // ── 76⑤ `ledger_init` 能登记流水；且**流水与台账不许是同一个文件** ────────
+  {
+    const { root, run } = mkRun76("d183-init");
+    const initTool = run.registeredTools.get("ledger_init");
+    const bad = await initTool.execute(
+      { active: "A.md", decisions: "D.md", archiveDir: "_a2", journal: "A.md", gitInit: false, gitignore: false },
+      { agent: { session: { header: { id: "s-d183-init", cwd: root } } } }
+    ).catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+    ok("★★★★ 76⑤ 流水与活跃台账**不许是同一个文件**（三种记忆语义不同）",
+      bad.ok === false, JSON.stringify(bad).slice(0, 160));
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★ 2026-10-14（D187）：`ledger_init` **纳入目标树与根本原则**（用户拍板）
+//
+//   用户原话（逐字）：*"GOALS.md，PRINCIPLES.md 纳入初始化台账的清单和维护清单，
+//   我们项目也可以建起来……"*
+//
+//   ★★★ 本情形守的是**两条权限截然不同**的承诺（这是它的全部意义）：
+//     ① `goals` —— **可以**由插件创建（它由 `ledger_goals` 维护）；
+//     ② `principles` —— ★ **只登记路径，绝不创建**：
+//        它只能由**用户授权**产生。若 `ledger_init` 也能创建它，模型就多了一条
+//        **绕开 D180 授权闸门**的写入口 ⇒ 那条"模型根本没有写入路径"的结构性保证当场破。
+//     ★ 判据必须是**行为**（D184 的教训：静态正则会被坏代码满足而假绿）。
+//
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 77：ledger_init 纳入 goals / principles（D187）");
+{
+  const mkRun77 = (tag) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 状态\n- 在做\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        archiveDir: "_a", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: `s-${tag}`, cwd: root } } } };
+    return { root, run, exec };
+  };
+
+  // ── 77① ★★★★★ 核心：`ledger_init` **只能登记** principles，**绝不创建** ──
+  {
+    const { root, run, exec } = mkRun77("d187-principles-not-created");
+    const initTool = run.registeredTools.get("ledger_init");
+    const r = await initTool.execute(
+      {
+        active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a",
+        principles: "PRINCIPLES.md",
+        gitInit: false, gitignore: false,
+      },
+      exec
+    );
+    const exists = fs.existsSync(path.join(root, "PRINCIPLES.md"));
+    ok(
+      "★★★★★ 77① `ledger_init` 登记 principles 后，**文件绝不被创建**" +
+        "（否则模型多了一条绕开 D180 授权闸门的写入路径）",
+      r.ok === true && exists === false,
+      `ok=${r.ok} 文件存在=${exists} ← 必须为 false`
+    );
+    // ★ 登记确实生效（路径进了清单）—— 否则"只登记"就成了"什么都没做"。
+    const man = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+    ok(
+      "★★★★ 77①b 但**路径确实登记进了清单**（只登记 ≠ 什么都没做）",
+      man.principles === "PRINCIPLES.md",
+      `manifest.principles=${man.principles}`
+    );
+    rmrf(root);
+  }
+
+  // ── 77② ★★★★★ 结构断言：**参数表里根本不存在** `initialPrinciples` ──────
+  //
+  //   ★ 为什么这一条必须是"不存在"而不是"传了也不写"：
+  //     "传了也不写"是**纪律性**的（改一行就破）；"参数不存在"是**结构性**的
+  //     （模型连试的机会都没有）。这正是 D180 的取舍。
+  {
+    const { root, run, exec } = mkRun77("d187-no-initial-principles");
+    const initTool = run.registeredTools.get("ledger_init");
+    const props = Object.keys(initTool.parameters?.properties ?? {});
+    ok(
+      "★★★★★ 77② `ledger_init` 的参数表里**根本不存在** `initialPrinciples`" +
+        "（结构性：不是「传了不写」，而是「没有这个入口」）",
+      props.includes("goals") &&
+        props.includes("initialGoals") &&
+        props.includes("principles") &&
+        !props.includes("initialPrinciples"),
+      `参数：${props.filter((k) => /goal|princip/i.test(k)).join(", ")}`
+    );
+    // ★ 负向对照：万一有人加了它、又没接线，这条也应当能看见 —— 直接真传一次看结果。
+    const r = await initTool.execute(
+      {
+        active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a",
+        principles: "PRINCIPLES.md", initialPrinciples: "# 我替用户写的原则\n",
+        gitInit: false, gitignore: false,
+      },
+      exec
+    ).catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+    ok(
+      "★★★★★ 77②b 即使强行传 `initialPrinciples`，**PRINCIPLES.md 仍然不存在**" +
+        "（`additionalProperties:false` 会拒，或写了也不落盘 —— 两条路都不许创建它）",
+      fs.existsSync(path.join(root, "PRINCIPLES.md")) === false,
+      `ok=${r.ok} reason=${String(r.reason ?? "").slice(0, 90)}`
+    );
+    rmrf(root);
+  }
+
+  // ── 77③ goals **可以**被创建（与 principles 的对照）──────────────────────
+  {
+    const { root, run, exec } = mkRun77("d187-goals-created");
+    const initTool = run.registeredTools.get("ledger_init");
+    const r = await initTool.execute(
+      {
+        active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a",
+        goals: "GOALS.md", initialGoals: "# 目标树\n\n## 目标 g1 · 把记忆体系做完\n- parent: -\n- status: root\n",
+        gitInit: false, gitignore: false,
+      },
+      exec
+    );
+    const gAbs = path.join(root, "GOALS.md");
+    ok(
+      "★★★★ 77③ 与 principles 对照：`goals` **可以**由插件创建（它有 initialGoals）",
+      r.ok === true && fs.existsSync(gAbs),
+      `ok=${r.ok} 文件存在=${fs.existsSync(gAbs)}`
+    );
+    // ★ 真跑一次 `ledger_goals({op:"tree"})` 确认它是**可用的**目标树，不只是个文件。
+    const tree = await run.registeredTools.get("ledger_goals").execute({ op: "tree" }, exec);
+    ok(
+      "★★★★ 77③b 且它**真能被 `ledger_goals` 读成树**（不是写了个空壳文件）",
+      tree.ok === true && tree.count === 1 && Array.isArray(tree.roots) && tree.roots.includes("g1"),
+      `ok=${tree.ok} count=${tree.count} roots=${JSON.stringify(tree.roots)}`
+    );
+    rmrf(root);
+  }
+
+  // ── 77④ 校验：goals / principles 的路径约束（与 journal 同口径）──────────
+  {
+    const { root, run, exec } = mkRun77("d187-validate");
+    const initTool = run.registeredTools.get("ledger_init");
+    const mk = (args) =>
+      initTool
+        .execute(
+          { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", gitInit: false, gitignore: false, ...args },
+          exec
+        )
+        .then((x) => ({ ok: x.ok === true, reason: "" }))
+        .catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+
+    const absPath = await mk({ goals: "C:\\abs\\GOALS.md" });
+    ok("★★★★ 77④ goals 不许是绝对路径", absPath.ok === false, JSON.stringify(absPath).slice(0, 120));
+    const escape = await mk({ principles: "../逃出去.md" });
+    ok("★★★★ 77④ principles 不许逃出项目根", escape.ok === false, JSON.stringify(escape).slice(0, 120));
+    const sameAsLedger = await mk({ goals: "LEDGER.md" });
+    ok("★★★★ 77④ goals 不许与活跃台账同文件", sameAsLedger.ok === false, JSON.stringify(sameAsLedger).slice(0, 120));
+    const sameBoth = await mk({ goals: "X.md", principles: "X.md" });
+    ok("★★★★ 77④ 目标树与根本原则不许是同一个文件（一个是目标、一个是底线）",
+      sameBoth.ok === false, JSON.stringify(sameBoth).slice(0, 120));
+    rmrf(root);
+  }
+
+  // ── 77⑤ 可选性：**不给就不登记**（不擅自创建 —— 与 journal/logDir 同口径）──
+  {
+    const { root, run, exec } = mkRun77("d187-optional");
+    const initTool = run.registeredTools.get("ledger_init");
+    const r = await initTool.execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", gitInit: false, gitignore: false },
+      exec
+    );
+    const man = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+    ok(
+      "★★★★★ 77⑤ 不传 goals/principles 时**一个字段都不写**、文件也不建（不擅自创建）",
+      r.ok === true &&
+        man.goals === undefined &&
+        man.principles === undefined &&
+        !fs.existsSync(path.join(root, "GOALS.md")) &&
+        !fs.existsSync(path.join(root, "PRINCIPLES.md")),
+      `goals=${man.goals} principles=${man.principles}`
+    );
+    rmrf(root);
+  }
+
+  // ── 77⑥ 重复 init：已登记的路径**不许被抹掉**（A3 那个坑的同型）──────────
+  //
+  //   ★ 为什么这条必须有：`ledger_init` 会**重跑**（用户重新登记结构时）。
+  //     若第二次没传 goals ⇒ `{...prev}` 铺开时保留；但若写成无条件赋值就会**静默清空**。
+  //     那正是 A3 抓到的形态（"那不是重新登记，那是把别人的配置抹掉"）。
+  {
+    const { root, run, exec } = mkRun77("d187-reinit");
+    const initTool = run.registeredTools.get("ledger_init");
+    await initTool.execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", goals: "GOALS.md", gitInit: false, gitignore: false },
+      exec
+    );
+    await initTool.execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", gitInit: false, gitignore: false },
+      exec
+    );
+    const man = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+    ok(
+      "★★★★ 77⑥ 重复 init 且第二次没传 goals ⇒ **已登记的路径仍在**（不许被静默清空）",
+      man.goals === "GOALS.md",
+      `manifest.goals=${man.goals}`
+    );
+    rmrf(root);
+  }
+  // ── 77⑦ ★★★★★ **返回值必须是 lossless JSON**（D188 真机缺陷的可离线判据）──
+  //
+  //   ★★★ 现场（2026-10-14 01:05，真机）：`ledger_init({gitignore:false})` ⇒
+  //     内核回 `Error: tool "ledger_init" returned invalid output: value is not lossless JSON`。
+  //     根因：`gitignore: ignoreResult` 而 `ignoreResult` 是 **undefined**。
+  //
+  //   ★★ 为什么自检一直没抓到：它直接读 `r.ok`，**从不喂给 DSH 的输出校验器**
+  //     ⇒ 夹具绕过了那个真实校验层。**这就是本条断言存在的全部理由。**
+  //
+  //   ★ 判据：把返回值里**值为 `undefined` 的键**找出来。
+  //     `JSON.stringify` 会**静默丢掉** `undefined` ⇒ 所以必须看**原始对象**
+  //     （只看序列化结果就永远看不见这个 bug —— 那正是"尺子选错"）。
+  {
+    const { root, run, exec } = mkRun77("d188-lossless");
+    const undefKeys = (obj) => Object.keys(obj).filter((k) => obj[k] === undefined);
+    const initTool = run.registeredTools.get("ledger_init");
+
+    // ① `gitignore:false`（真机那次的确切参数）—— 这正是 bug 的触发条件。
+    const r1 = await initTool.execute(
+      {
+        active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a",
+        gitInit: false, gitignore: false,
+      },
+      exec
+    );
+    const u1 = undefKeys(r1);
+    ok(
+      "★★★★★ 77⑦ `ledger_init({gitignore:false})` 的返回值里**没有 `undefined` 值**" +
+        "（有 ⇒ 不是 lossless JSON ⇒ **整个调用被内核拒收**，而文件其实已经写了）",
+      u1.length === 0,
+      `值为 undefined 的键：${u1.join(", ") || "（无）"}`
+    );
+
+    // ② ★★★ **扫全部已注册工具**：任何工具的返回值都不许带 `undefined`。
+    //   ★ 为什么扫全部而不是只测 init：同一个病可以在**任何一个**工具上复发，
+    //     而这条判据是**通用的**（不依赖某一次具体的调用参数）。
+    {
+      const { root: r2, run: run2 } = (() => {
+        const root2 = tmpProject("d188-lossless-scan");
+        fs.writeFileSync(path.join(root2, "LEDGER.md"), "# 台账\n\n## 状态\n- x\n", "utf8");
+        fs.writeFileSync(path.join(root2, "DECISIONS.md"), "# 决策\n", "utf8");
+        fs.writeFileSync(
+          path.join(root2, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", revision: 0 }),
+          "utf8"
+        );
+        const run2 = makeCtx({});
+        mod.apply(run2.ctx, {});
+        return { root: root2, run: run2 };
+      })();
+      // ★ 只调**只读**的几个（绝不在这里写盘 —— 这是判据，不是夹具）。
+      const roNames = ["ledger_status", "ledger_read", "ledger_goals", "ledger_log"];
+      const bad = [];
+      for (const n of roNames) {
+        const t = run2.registeredTools.get(n);
+        if (t === undefined) continue;
+        let res;
+        try {
+          res = await t.execute(n === "ledger_goals" ? { op: "tree" } : {}, { agent: { session: { header: { id: "s-d188-scan", cwd: r2 } } } });
+        } catch {
+          continue; // 抛错不算（那是另一类判据）
+        }
+        if (res !== null && typeof res === "object") {
+          const u = undefKeys(res);
+          if (u.length > 0) bad.push(`${n}: ${u.join(",")}`);
+        }
+      }
+      ok(
+        "★★★★★ 77⑦b 已注册的只读工具返回值里**都没有 `undefined`**（同一病可在任何工具上复发）",
+        bad.length === 0,
+        bad.join(" | ") || "（无）"
+      );
+      rmrf(r2);
+    }
+    rmrf(root);
+  }
+  // ── 77⑧ ★★★★★ 重复 init **不许改动已有的 `maxActiveLines`**（D188 真机缺陷）──
+  //
+  //   ★★★ 现场（2026-10-14 01:05，我本人那次调用）：本项目上限被 **350 → 400** 悄悄改掉，
+  //     而台账头部与自检都还写着 350 ⇒ **口径当场分叉**。
+  //     根因：那一行只写 `args.maxActiveLines ?? currentSettings().maxActiveLines`，
+  //     **没有"清单已有"这一档** —— 而紧挨着的 `changeRegisterMax` **早就有**（A3 修过）。
+  //     ⇒ **同一个病的半修**：两个同类字段，修了一个漏了一个。
+  {
+    const { root, run, exec } = mkRun77("d188-maxlines");
+    const initTool = run.registeredTools.get("ledger_init");
+    // ★★★★ 夹具前提（我**当场栽过一次**，必须留档）：
+    //   第一版这里用 **300** 做"已有值" —— 而 `300` **恰好就是插件级默认值**
+    //   （实测 `settingDefaultsForTest().maxActiveLines === 300`）
+    //   ⇒ 退化的"无条件覆盖"写出来的也是 300 ⇒ **断言看不出任何差别**
+    //   ⇒ 反向验证里 77⑧ 报"❌ 没红"，我差点误判成"这条修复没牙"。
+    //   ★ 这正是**纪律 8**：「**夹具的前提错了，全绿就是假绿**」——
+    //     夹具必须选一个**与默认值不同**的数，才测得出"有没有被覆盖"。
+    //   ⇒ 现在用 **260**（≠ 默认 300，也 ≠ 后面显式传的 250）。
+    await initTool.execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", maxActiveLines: 260, gitInit: false, gitignore: false },
+      exec
+    );
+    const after1 = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8")).maxActiveLines;
+    // ② 再登记一次、**故意不传** maxActiveLines（模拟"只是补登记 goals"）
+    await initTool.execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", goals: "GOALS.md", gitInit: false, gitignore: false },
+      exec
+    );
+    const after2 = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8")).maxActiveLines;
+    ok(
+      "★★★★★ 77⑧ 重复 `ledger_init` 且**不传** maxActiveLines ⇒ **已有的 260 仍在**" +
+        "（原来会被插件级设置静默覆盖 —— 真机实测 350→400）" +
+        "　★ 夹具用 260 而非 300：300 恰好等于插件默认值，那样测不出差别",
+      after1 === 260 && after2 === 260,
+      `第一次=${after1} 第二次=${after2}（均应为 260；若第二次是 300 ⇒ 被插件级设置覆盖了）`
+    );
+    // ③ 但**显式传入仍必须生效**（别为了保留而把参数废掉）。
+    await initTool.execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", maxActiveLines: 250, gitInit: false, gitignore: false },
+      exec
+    );
+    const after3 = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8")).maxActiveLines;
+    ok(
+      "★★★★ 77⑧b 但**显式传入**时仍必须生效（不许为了保留把参数废掉）",
+      after3 === 250,
+      `显式传 250 ⇒ 实际 ${after3}`
+    );
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★ 2026-10-14（D189）：**根本原则的"提议 → 批准"路，在文件还不存在时也必须能走通**
+//
+//   真机缺口（我本人撞的）：`ledger_propose_principle` 在 `principlesRel === undefined` 时
+//   **直接拒绝** ⇒ **D180 承诺的第二种授权形式被堵死**（只剩用户亲手敲命令）。
+//   ★ 判据（D189 的教训）：**守卫要放在"真正产生副作用"的那一步**；
+//     提议**不写任何文件** ⇒ 没有理由拿"文件在不在"拒它。
+//
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 78：根本原则 · 提议路在文件不存在时也走得通（D189）");
+{
+  const mkRun78 = (tag, { withPrinciples = false } = {}) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 状态\n- x\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    if (withPrinciples) fs.writeFileSync(path.join(root, "PRINCIPLES.md"), "# 原则\n\n## 用户手写的第一条\n要准确\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        ...(withPrinciples ? { principles: "PRINCIPLES.md" } : {}),
+        archiveDir: "_a", maxActiveLines: 300,
+        logDir: "_ledger-log",
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+        revision: 0,
+      }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: `s-${tag}`, cwd: root } } } };
+    return { root, run, exec };
+  };
+
+  // ── 78① ★★★★★ 文件**不存在**时，提议**必须能登记**（原来被拒 ⇒ 第二种授权路被堵死）──
+  {
+    const { root, run, exec } = mkRun78("d189-propose-nofile");
+    const r = await run.registeredTools.get("ledger_propose_principle").execute(
+      { op: "add", text: "## 一、准确性优先\n不确定就退回整份。", reason: "用户授权" },
+      exec
+    );
+    ok(
+      "★★★★★ 78① `PRINCIPLES.md` **还不存在**时，`ledger_propose_principle` **能登记提议**" +
+        "（原来直接拒 ⇒ D180 承诺的「模型提议→用户批准」这条授权路被堵死）",
+      r.ok === true && typeof r.proposalId === "string" && r.proposalId !== "",
+      `ok=${r.ok} proposalId=${r.proposalId} reason=${String(r.reason ?? "").slice(0, 90)}`
+    );
+    // ★ 且它**确实没有写文件**（提议 ≠ 写盘）。
+    ok(
+      "★★★★★ 78①b 但**提议不写任何文件**（提议 ≠ 写盘；写盘仍只由用户批准触发）",
+      fs.existsSync(path.join(root, "PRINCIPLES.md")) === false,
+      `文件存在=${fs.existsSync(path.join(root, "PRINCIPLES.md"))}`
+    );
+    rmrf(root);
+  }
+
+  // ── 78② ★★★★★ 用户批准后**真能建立**那个文件（端到端，走 `principle/apply` 回调）──
+  {
+    const { root, run, exec } = mkRun78("d189-apply-creates");
+    const prop = await run.registeredTools.get("ledger_propose_principle").execute(
+      { op: "add", text: "## 一、准确性优先\n不确定就退回整份。", reason: "用户授权" },
+      exec
+    );
+    ok("78② 前提：提议已登记", prop.ok === true && typeof prop.proposalId === "string", JSON.stringify(prop).slice(0, 120));
+    void prop;
+    // ★★★★★ 2026-10-14（D189）**这一段我第一版写错了，正解记在这里**：
+    //   我原先假设有一个 `run.principleAppliers`（批准回调表）—— **那是我编的**（纪律 9：
+    //   "函数名+行号看起来最硬，却最容易凭印象编"，报之前必须 grep 一次）。
+    //   ★ grep 之后**撞出一个更重的真缺口**：`applyPrincipleProposal`（D180 里
+    //   "用户批准后写盘"的**唯一**函数）**调用点 = 0** ⇒ 那条路**从未接线**。
+    //   ⇒ 所以这里**不能**断言"批准后文件被建立"（那条路还不存在）。
+    //     本情形**只钉住 D189 修的东西**（提议路不再被"文件不存在"拦住），
+    //     并把"批准路未接线"作为**待拍板**如实记（见 DECISIONS D189 第二节 + 台账）。
+    ok(
+      "★★★★★ 78② 提议**不写文件**（提议 ≠ 写盘：写盘必须由用户授权那条路产生）",
+      fs.existsSync(path.join(root, "PRINCIPLES.md")) === false,
+      `文件存在=${fs.existsSync(path.join(root, "PRINCIPLES.md"))}`
+    );
+    rmrf(root);
+  }
+
+  // ── 78④ ★★★★★ **带授权的写入能建立文件并登记清单**（D189 的正解路径）──
+  //
+  //   ★ 这是本轮**真正用到**的那条路：用户在对话里明确授权 ⇒ `authorizedBy` 带值 ⇒ 写入。
+  //   ★ 判据：文件真被建立 + **登记进了清单**（不靠 guess 兜底）。
+  {
+    const { root, run, exec } = mkRun78("d189-authorized-write");
+    const r = await run.registeredTools.get("ledger_write").execute(
+      {
+        target: "principles",
+        content: "# 原则\n\n## 一、准确性优先\n不确定就退回整份。\n",
+        authorizedBy: "user-natural-language-test",
+      },
+      exec
+    );
+    const abs = path.join(root, "PRINCIPLES.md");
+    const body = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : "";
+    const man = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+    ok(
+      "★★★★★ 78④ 带 `authorizedBy` 的写入**能建立 PRINCIPLES.md**，且内容在里面" +
+        "（文件不存在时这条路必须走得通 —— 否则本项目的原则根本建不起来）",
+      r.ok === true && body.includes("准确性优先"),
+      `ok=${r.ok} 文件=${fs.existsSync(abs)} 含内容=${body.includes("准确性优先")}`
+    );
+    ok(
+      "★★★★ 78④b 且它**登记进了清单**（不靠「文件已存在」的 guess 兜底）",
+      man.principles === "PRINCIPLES.md",
+      `manifest.principles=${man.principles}`
+    );
+    rmrf(root);
+  }
+
+  // ── 78③ ★★★★★ 负向：**没有授权时仍然必须被拒**（双保险没被这次放宽弄丢）──
+  {
+    const { root, run, exec } = mkRun78("d189-noauth-still-refused");
+    const r = await run.registeredTools.get("ledger_write").execute(
+      { target: "principles", content: "# 我替用户写的原则\n" },
+      exec
+    );
+    ok(
+      "★★★★★ 78③ 放宽「文件必须已存在」之后，**「没有授权就不能写」这条仍必须成立**" +
+        "（模型直接调 ledger_write 不带 authorizedBy ⇒ 拒，且一个字节都不写）",
+      r.ok === false && r.refused === true && fs.existsSync(path.join(root, "PRINCIPLES.md")) === false,
+      `ok=${r.ok} refused=${r.refused} 文件存在=${fs.existsSync(path.join(root, "PRINCIPLES.md"))}`
+    );
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★ 2026-10-14（D190，用户拍板）：**`/ledger light` = 压「上一个回复」**
+//
+//   用户原话（逐字）：*"那轻量压缩就可以用了——变成手动命令，
+//   效果是**对上一个回复进行压缩**。"*
+//
+//   ★★★ 本情形守的是**一条我自己证伪过的前提**（这一段值得整个记住）：
+//     我第一版靠"在 surface 里找 `turn/end`"定位回合边界 ⇒ **三个既有断言当场变红**。
+//     我**没有**去改夹具让它们变绿 —— 先跑探针证明前提：
+//     `_probe-d190-turn-on-surface.mjs` 实测 **32 个可判定会话、0 个命中**
+//     ⇒ **`turn/end` 根本不在 surface 上**（全库 705 个，与 surface 零交集）。
+//     ⇒ 那是**实现前提错了**（不是夹具错了）—— 纪律 8 的**镜像**用法。
+//     ★ 正解：锚 `user/message`（surface 上确实有它）。
+//
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 79：/ledger light 压「上一个回复」（D190）");
+{
+  // ★ 造一个**有 user/message 的**假 session（真实 surface 的形态：只有消息类事件）。
+  //   ★★ 这里**必须保留 `data`** —— 我第一版把它硬编成 `{}`，于是
+  //     `assistant/message` 里的 tool-call 全被丢掉 ⇒ `balanceFlagsOf` 判出"孤儿 result"
+  //     并抛错 ⇒ 看起来像被测对象炸了，其实**是我的夹具把输入吃了**（纪律 6）。
+  const mkSession79 = (seqs) => {
+    const events = new Map();
+    for (const s of seqs) events.set(s.seq, { type: s.type, seq: s.seq, data: s.data ?? {} });
+    return {
+      surface: { nodes: seqs.map((s) => s.seq) },
+      eventAt: (q) => events.get(q),
+    };
+  };
+  const pricedOf = (session) => session.surface.nodes.map((seq) => ({ seq, tokens: 1000 }));
+
+  const R = mod.__test.selectLastTurnRangeForTest;
+  ok("★ 前提：`selectLastTurnRange` 已导出供自检", typeof R === "function", `typeof=${typeof R}`);
+
+  if (typeof R === "function") {
+    // ── 79① ★★★★★ 正常情形：两个 user/message ⇒ 压**后一个**之后的那一段 ──
+    {
+      // ★★★ 夹具必须造**平衡的** surface（我第一版造了个孤儿 `tool/result` ⇒
+      //   `balanceFlagsOf` 当场抛 "has no matching tool-call" —— 那是**夹具故障**，
+      //   不是被测对象的问题（纪律 6）。⇒ 这里用**成对**的 tool-call / tool/result。
+      //   10 user · 11 asst(tool-call) · 12 tool/result · 13 asst · 14 user(第二问) · 15 asst · 16 asst
+      const mkAsstWithCall = (seq) => ({
+        seq,
+        type: "assistant/message",
+        data: { message: { content: [{ type: "tool-call", id: `c${seq}` }] } },
+      });
+      const seqs = [
+        { seq: 10, type: "user/message" },
+        mkAsstWithCall(11),
+        { seq: 12, type: "tool/result", data: { message: { content: [{ type: "tool-result", toolCallId: "c11" }] } } },
+        { seq: 13, type: "assistant/message" },
+        { seq: 14, type: "user/message" },
+        { seq: 15, type: "assistant/message" },
+        { seq: 16, type: "assistant/message" },
+      ];
+      const s = mkSession79(seqs);
+      const r = R(s, pricedOf(s));
+      ok(
+        "★★★★★ 79① 有**两个** user/message 时 ⇒ 压的是**后一个之后**那一段" +
+          "（起点 = 最近那个 user/message 的 seq；终点 = surface 末尾）",
+        r !== null && r.start === 14 && r.end === 16,
+        `r=${JSON.stringify(r)}（期望 start=14, end=16）`
+      );
+    }
+
+    // ── 79② ★★★★★ 只有一个 user/message ⇒ **拒绝**（否则等于把整段历史全压了）──
+    {
+      const seqs = [
+        { seq: 10, type: "user/message" },
+        { seq: 11, type: "assistant/message" },
+        { seq: 12, type: "assistant/message" },
+      ];
+      const s = mkSession79(seqs);
+      const r = R(s, pricedOf(s));
+      ok(
+        "★★★★★ 79② 只有**一个** user/message ⇒ 返回 null" +
+          "（★ 若照压，那就是「第一问之后全部」= **全压**，不是「压上一个回复」）",
+        r === null,
+        `r=${JSON.stringify(r)}（应为 null）`
+      );
+    }
+
+    // ── 79③ ★★★ 结构断言：**不许**再依赖 `turn/end`（那条路已被实测证伪）──
+    //
+    //   ★ 用**剥注释**后的代码判（D184 的教训：我讲这个 bug 时会在注释里复现坏代码）。
+    {
+      const srcFull = readLibSource();
+      const a = srcFull.indexOf("function selectLastTurnRange");
+      const b = srcFull.indexOf("\nfunction ", a + 10);
+      const segRaw = srcFull.slice(a, b < 0 ? a + 9000 : b);
+      const strip79 = (s) => {
+        let out = "";
+        for (let i = 0; i < s.length; i++) {
+          const ch = s[i];
+          if (ch === "/" && s[i + 1] === "/") {
+            while (i < s.length && s[i] !== "\n") i++;
+            out += "\n";
+          } else if (ch === "/" && s[i + 1] === "*") {
+            i += 2;
+            while (i < s.length && !(s[i] === "*" && s[i + 1] === "/")) {
+              if (s[i] === "\n") out += "\n";
+              i++;
+            }
+            i++;
+          } else out += ch;
+        }
+        return out;
+      };
+      const seg = strip79(segRaw);
+      ok(
+        "★★★★★ 79③ **剥掉注释后**，`selectLastTurnRange` **不再出现 `turn/end`**" +
+          "（那条路已由探针证伪：turn/end 根本不在 surface 上）",
+        !/turn\s*\/\s*end/.test(seg),
+        "★ 若这里红 ⇒ 有人把已证伪的选法写回去了"
+      );
+      ok(
+        "★★★★★ 79③b 且它确实按 `user/message` 定位（正解的依据）",
+        /user\/message/.test(seg),
+        "★ 应当出现 `user/message`"
+      );
+    }
+
+    // ── 79④ 尺子先验：surface 与 priced **不同序**时要拒绝（不许猜）──
+    {
+      const seqs = [
+        { seq: 10, type: "user/message" },
+        { seq: 11, type: "assistant/message" },
+        { seq: 14, type: "user/message" },
+        { seq: 15, type: "assistant/message" },
+      ];
+      const s = mkSession79(seqs);
+      const badPriced = [{ seq: 999, tokens: 1 }];
+      // ★★★ 注意：这里**只**换 priced（surface 本身是平衡的）⇒ 走的是"不同长"那条
+      //   ⇒ 应当在**调 balanceFlagsOf 之前**就返回 null（不会抛）。
+      //   ★ 我第一版把"不平衡的 surface"也塞进这条 ⇒ `balanceFlagsOf` 抛错把自检整个打断
+      //     —— 那又是**夹具故障**（纪律 6），与"被测对象拒绝"是两件事，必须分开测。
+      ok(
+        "★★★★ 79④ priced 与 surface 不同长/不同序 ⇒ **返回 null**（宁可拒绝，不许猜）",
+        R(s, badPriced) === null,
+        `r=${JSON.stringify(R(s, badPriced))}`
+      );
+    }
+
+    // ── 79⑤ ★★★ 损坏的 surface（孤儿 tool/result）⇒ **抛错**，且抛在它该抛的地方 ──
+    //
+    //   ★ 与 79④ 分开测：那是"我们主动拒绝"，这是"底层判据发现 surface 坏了"。
+    //     两者**都是对的**，但**性质不同**（前者是策略，后者是守卫）。
+    {
+      const seqs = [
+        { seq: 10, type: "user/message" },
+        { seq: 11, type: "tool/result" },
+        { seq: 14, type: "user/message" },
+        { seq: 15, type: "assistant/message" },
+      ];
+      const s = mkSession79(seqs);
+      let threw = false;
+      try {
+        R(s, pricedOf(s));
+      } catch {
+        threw = true;
+      }
+      ok(
+        "★★★★ 79⑤ 损坏的 surface（孤儿 tool/result）⇒ **抛错**（不静默给一个错的切点）",
+        threw,
+        `threw=${threw}`
+      );
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★ 2026-10-14（D191/D192，用户拍板）：
+//   D191 —— 原则的**授权窗口**（模型弹卡片，用户点一下解锁改原则的权利）；
+//   D192 —— **经验与教训**文件（模型踩过的坑）。
+//
+//   ★★★ 本情形守的是两条**权限边界**：
+//     ① 授权窗口**只能由用户点击产生**（模型写不进 state）——这是它比
+//        "传一个 `authorizedBy` 字符串"更硬的地方；
+//     ② 教训文件**不许冒充原则**（教训是事实记录，原则是用户规矩）。
+//
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 80：原则授权窗口 + 经验教训文件（D191 / D192）");
+{
+  const mkRun80 = (tag) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 状态\n- x\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(path.join(root, "PRINCIPLES.md"), "# 原则\n\n## 用户手写的\n要准确\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        principles: "PRINCIPLES.md", archiveDir: "_a", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    const run = makeCtx({ withUserQuestions: true });
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: `s-${tag}`, cwd: root } } } };
+    return { root, run, exec };
+  };
+
+  // ── 80① ★★★★★ 没有卡片服务 ⇒ **软失败且明说"没有任何权利被解锁"**（绝不假装成功）──
+  {
+    const root = tmpProject("d191-nouq");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", revision: 0 }),
+      "utf8"
+    );
+    const run = makeCtx({}); // ★ 没有 userQuestions
+    mod.apply(run.ctx, {});
+    const r = await run.registeredTools.get("ledger_principles_access").execute(
+      { reason: "想整理原则" },
+      { agent: { session: { header: { id: "s-d191-nouq", cwd: root } } } }
+    );
+    ok(
+      "★★★★★ 80① 没有卡片服务时 ⇒ `ok:false` 且**明说没有任何权利被解锁**" +
+        "（绝不假装授权成功 —— 那会让模型以为自己有权改原则）",
+      r.ok === false && /没有.*权利被解锁|没有.*解锁/.test(String(r.reason ?? "")),
+      `ok=${r.ok} reason=${String(r.reason ?? "").slice(0, 110)}`
+    );
+    rmrf(root);
+  }
+
+  // ── 80② ★★★★★ 用户**不授权** ⇒ 写原则**仍然被拒**（授权窗口没开）──
+  {
+    const { root, run, exec } = mkRun80("d191-denied");
+    // 先确认基线：没有授权窗口时写入被拒。
+    const before = await run.registeredTools.get("ledger_write").execute(
+      { target: "principles", content: "## 我偷偷加一条\n" },
+      exec
+    );
+    ok(
+      "★★★★★ 80② 没有授权窗口时，`ledger_write({target:principles})` **被拒**（基线）",
+      before.ok === false && before.refused === true,
+      `ok=${before.ok} refused=${before.refused}`
+    );
+    rmrf(root);
+  }
+
+  // ── 80③ ★★★★★ **模型无法自己产生授权** —— state 里那个 Map 只能由卡片回执写 ──
+  //
+  //   ★ 判据：直接调 `ledger_write` 时**多传一个 `authorizedBy`** 是**不行的**吗？
+  //     ⚠️ 诚实说明：D180 那条老路**确实认字符串**（用户亲手敲命令会用 `user-command`）。
+  //     所以本条的判据**不是**"字符串一概无效"，而是：
+  //     ★ **工具参数表里没有 `authorizedBy` 这个字段**了吗？—— 有的（D180 契约）。
+  //     ⇒ 于是真正该守的是：**模型若只靠自己，能写出什么字符串它都能写**；
+  //       所以新路（卡片窗口）才是**结构性**的那条。
+  //     ★ 本情形只断言"★ 参数表里 `authorizedBy` 的说明**明确写着只有用户/插件能设**"，
+  //       以及"窗口状态**不在**模型的任何入参里"。
+  {
+    const src = readLibSource();
+    const a = src.indexOf("authorizedBy: {");
+    const b = src.indexOf("}", a);
+    const seg = src.slice(a, b < 0 ? a + 600 : b);
+    ok(
+      "★★★★ 80③ `authorizedBy` 的**参数说明**里明确写着：只有插件在用户授权后才设它" +
+        "（否则模型会以为可以自己填）",
+      /only the plugin sets|only.*plugin|ONLY for target/i.test(seg),
+      seg.slice(0, 200)
+    );
+  }
+
+  // ── 80④ ★★★★★ 教训文件：**cause（根因）必填** —— 没根因的记录等于日记 ──
+  {
+    const root = tmpProject("d192-nocause");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(path.join(root, "LESSONS.md"), "# 经验与教训\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", lessons: "LESSONS.md", archiveDir: "_a", revision: 0 }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: "s-d192-nocause", cwd: root } } } };
+    const t = run.registeredTools.get("ledger_lessons");
+    const noCause = await t.execute({ op: "add", kind: "尺子错", title: "某坑" }, exec);
+    ok(
+      "★★★★★ 80④ `ledger_lessons({op:add})` **不给 `cause` ⇒ 被拒**" +
+        "（没有根因的记录 = 日记，下次还得重诊一遍）",
+      noCause.ok === false,
+      `ok=${noCause.ok} reason=${String(noCause.reason ?? "").slice(0, 90)}`
+    );
+    // ★ 给了根因 ⇒ 收下，且**真的落盘**。
+    const good = await t.execute(
+      { op: "add", kind: "尺子错", title: "某坑", cause: "因为某个可复现的原因", fix: "改用 Y" },
+      exec
+    );
+    const body = fs.readFileSync(path.join(root, "LESSONS.md"), "utf8");
+    ok(
+      "★★★★★ 80④b 给了 `cause` ⇒ 收下且**真的写进文件**（现象/根因/正解都在）",
+      good.ok === true && body.includes("因为某个可复现的原因") && body.includes("改用 Y"),
+      `ok=${good.ok} 含根因=${body.includes("因为某个可复现的原因")}`
+    );
+    // ★★ 再记一条 ⇒ id 递增（不重用编号）。
+    const second = await t.execute({ op: "add", kind: "夹具错", title: "另一坑", cause: "另一原因" }, exec);
+    ok(
+      "★★★★ 80④c 第二条 ⇒ **id 递增**（不重用已删编号 —— 否则引用会指错东西）",
+      second.ok === true && second.id !== good.id,
+      `第一条=${good.id} 第二条=${second.id}`
+    );
+    // ★★ list 能按 kind 过滤（用户说"对未来有用"就靠这个可检索性）。
+    const listed = await t.execute({ op: "list", kind: "夹具错" }, exec);
+    ok(
+      "★★★★ 80④d `list` 能**按 kind 过滤**（可检索 —— 这是它作为负样本集的前提）",
+      listed.ok === true && listed.count === 1 && listed.total === 2,
+      `count=${listed.count} total=${listed.total}`
+    );
+    rmrf(root);
+  }
+
+  // ── 80⑤ ★★★★ 教训文件**绝不凭空创建**（口径与 goals/journal 一致）──
+  {
+    const root = tmpProject("d192-nocreate");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", revision: 0 }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: "s-d192-nc", cwd: root } } } };
+    const t = run.registeredTools.get("ledger_lessons");
+    const r = await t.execute({ op: "add", kind: "其他", title: "x", cause: "y" }, exec);
+    ok(
+      "★★★★ 80⑤ 没登记 `lessons` 时**绝不凭空创建**（`ok:false` + 文件不存在）",
+      r.ok === false && !fs.existsSync(path.join(root, "LESSONS.md")),
+      `ok=${r.ok} 文件存在=${fs.existsSync(path.join(root, "LESSONS.md"))}`
+    );
+    const l = await t.execute({ op: "list" }, exec);
+    ok(
+      "★★★★ 80⑤b 而 `list` 是**只读**的 ⇒ 如实回「还没有这个文件」（不是错误）",
+      l.ok === true && l.empty === true,
+      `ok=${l.ok} empty=${l.empty}`
+    );
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★ 2026-10-14（D193，用户拍板）：**`/ledger principles approve <id>`**
+//
+//   用户原话（逐字）：*"另开 /ledger principles approve <id>可以做。"*
+//
+//   ★ 这是 D180 那条**从未接线的路**的落点。D189 已用三重取证查实：
+//     `applyPrincipleProposal`（"用户批准后写盘"的**唯一**函数）**调用点 = 0**
+//     ⇒ 那条路从未接线：**模型提议 → 用户同意 → 什么都没发生**。
+//   ★★ 根因不止"漏了一根线"，还有一条**文案**：`ledger_propose_principle` 的
+//      descriptions 里逐字写着 *"you MUST call ledger_checkpoint so the user can authorize"* ——
+//      而 `ledger_checkpoint` **没有处理提议的分支**（它是"本轮收尾怎么处理"的四选一）。
+//      ⇒ **文案指向一个不存在的机制**（纪律 11 的同型：写下来了、写的是错的、读的人会照做）。
+//   ⇒ 所以本节有**两条**判据线：① 行为（真批准 ⇒ 真落盘）；② **文案不再指向死路**。
+//
+//   ★★★ 设计取舍（两条都记下来，免得被"顺手改成更方便的样子"）：
+//     · 批准**只在命令层** —— 工具层**故意没有**"批准"工具。若模型能调批准，它就能
+//       **自己批准自己**，守卫当场归零。这不是"少做了一个工具"，这是地基。
+//     · **落盘前二次确认**（用户原话只要求"批准"）：这条命令会往**约束模型自己**的
+//       根本原则里写内容，`remove`/`replace` 更危险 ⇒ 把逐字原文摆出来、再按一次回车。
+//       代价极小，挡掉的是"我以为批的是第 2 条、其实是第 3 条"这类**不可见**的错。
+//
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 81：/ledger principles approve —— 把 D180 那条死路接上（D193）");
+{
+  /** 造一个带 PRINCIPLES.md 的项目 + 一条能跑命令的 agent。 */
+  const mkRun81 = (tag) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 状态\n- x\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(path.join(root, "PRINCIPLES.md"), "# 根本原则\n\n## 一、用户手写的\n要准确。\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        principles: "PRINCIPLES.md", archiveDir: "_a", maxActiveLines: 300,
+        logDir: "_ledger-log",
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+        revision: 0,
+      }),
+      "utf8"
+    );
+    const run = makeCtx({ withUserQuestions: true });
+    mod.apply(run.ctx, {});
+    const agent = { session: { header: { id: `s-${tag}`, cwd: root } }, steer() {} };
+    const exec = { agent, session: { header: { id: `s-${tag}`, cwd: root } } };
+    return { root, run, agent, exec };
+  };
+  const callCmd = (run, agent, rawInput) =>
+    run.registeredCommands.get("ledger").handler({
+      commandId: `c-${Math.random().toString(36).slice(2)}`, agent, rawInput,
+      attachments: [], signal: new AbortController().signal,
+    });
+  const princOf = (root) => fs.readFileSync(path.join(root, "PRINCIPLES.md"), "utf8");
+
+  // ── 81① ★★★★★ 端到端：提议 → approve → **文件里真有那段字** ──────────────
+  {
+    const { root, run, agent, exec } = mkRun81("d193-e2e");
+    const prop = await run.registeredTools.get("ledger_propose_principle").execute(
+      { op: "add", text: "## 二、可回溯性优先\n每一个结论都必须带出处。", reason: "用户多次强调" },
+      exec
+    );
+    ok("81① 前提：提议登记成功且拿到 id",
+      prop.ok === true && typeof prop.proposalId === "string" && prop.proposalId !== "",
+      `ok=${prop.ok} id=${prop.proposalId}`);
+    ok("81①a 提议阶段**不写文件**（提议 ≠ 写盘）",
+      !princOf(root).includes("可回溯性优先"), princOf(root).slice(0, 80));
+
+    const pend = await callCmd(run, agent, "principles pending");
+    ok("81①b `pending` 会**把 id 打给用户看**（否则用户无从 approve）",
+      pend.kind === "success" && String(pend.text).includes(prop.proposalId),
+      String(pend.text).slice(0, 160));
+
+    run.setAnswer(() => ({ answers: [{ id: "ledger-principles-approve", selected: ["写入"] }] }));
+    const ap = await callCmd(run, agent, "principles approve");
+    ok("★★★★★ 81①c `approve` ⇒ 那段原则**真的落进了 PRINCIPLES.md**" +
+      "（这就是 D180 断掉、D193 接上的那条路）",
+      ap.kind === "success" && princOf(root).includes("每一个结论都必须带出处"),
+      `kind=${ap.kind} 含内容=${princOf(root).includes("每一个结论都必须带出处")}`);
+    ok("★★★★★ 81①d 且**用户原来那条原则没被动过**（append，不是覆盖）",
+      princOf(root).includes("要准确。"), princOf(root).slice(0, 140));
+
+    const askReq = run.asked[run.asked.length - 1];
+    ok("★★★★★ 81①e 确认卡片里**逐字显示了将要写入的正文**" +
+      "（用户是**先看见才按的**，不是盲批一个 id）",
+      String(askReq?.request?.questions?.[0]?.question ?? "").includes("每一个结论都必须带出处"),
+      String(askReq?.request?.questions?.[0]?.question ?? "").slice(0, 120));
+
+    // ★ 一次一批准
+    run.setAnswer(() => ({ answers: [{ id: "ledger-principles-approve", selected: ["写入"] }] }));
+    const again = await callCmd(run, agent, `principles approve ${prop.proposalId}`);
+    ok("★★★★★ 81①f 同一个提议**批第二次 ⇒ 找不到**（一次一批准，不能重复写）",
+      again.kind === "error",
+      `kind=${again.kind} ${String(again.text).slice(0, 120)}`);
+    rmrf(root);
+  }
+
+  // ── 81② ★★★★★ 三条**拒绝路径**都必须一个字节都不写 ────────────────────────
+  //
+  //   ★ 为什么这三条比"成功那条"更重要：确认若是个摆设，整条守卫就只剩装饰。
+  {
+    // (a) 卡片选「取消」
+    const a = mkRun81("d193-cancel");
+    await a.run.registeredTools.get("ledger_propose_principle").execute(
+      { op: "add", text: "## 不该出现的原则\n这条绝不该被写进去。" }, a.exec
+    );
+    a.run.setAnswer(() => ({ answers: [{ id: "ledger-principles-approve", selected: ["取消"] }] }));
+    await callCmd(a.run, a.agent, "principles approve");
+    ok("★★★★★ 81②a 用户点**取消** ⇒ 文件里没有那段（确认**不是摆设**）",
+      !princOf(a.root).includes("这条绝不该被写进去"), princOf(a.root).slice(0, 100));
+    rmrf(a.root);
+
+    // (b) 卡片送不出去（没有应答者 ⇒ ask 抛错）
+    const b = mkRun81("d193-noanswer");
+    await b.run.registeredTools.get("ledger_propose_principle").execute(
+      { op: "add", text: "## 送不出去的那条\n不该被写。" }, b.exec
+    );
+    b.run.setAnswer(null); // makeCtx 的 ask 在没有 answerer 时抛错
+    const rb = await callCmd(b.run, b.agent, "principles approve");
+    ok("★★★★★ 81②b 卡片**送不出去** ⇒ 也不写，且如实说没写" +
+      "（宁可让用户重来一次，也**不猜**他同意了）",
+      rb.kind === "error" && !princOf(b.root).includes("不该被写"),
+      `kind=${rb.kind} 含内容=${princOf(b.root).includes("不该被写")}`);
+    rmrf(b.root);
+
+    // (c) remove 逐字匹配失败
+    const c = mkRun81("d193-rm-miss");
+    await c.run.registeredTools.get("ledger_propose_principle").execute(
+      { op: "remove", text: "这段在文件里根本不存在" }, c.exec
+    );
+    c.run.setAnswer(() => ({ answers: [{ id: "ledger-principles-approve", selected: ["写入"] }] }));
+    const rc = await callCmd(c.run, c.agent, "principles approve");
+    ok("★★★★★ 81②c `remove` 逐字匹配不上 ⇒ **拒写且文件原样**" +
+      "（删不到就报错，**绝不猜** —— 猜着删可能删掉用户别的原则）",
+      rc.kind === "error" && princOf(c.root).includes("要准确。"),
+      `kind=${rc.kind} ${String(rc.text).slice(0, 120)}`);
+    rmrf(c.root);
+  }
+
+  // ── 81③ ★★★ 命令层专属：**没有**"批准"工具（否则模型能自己批准自己）────────
+  {
+    const { root, run } = mkRun81("d193-no-tool");
+    const names = [...run.registeredTools.keys()];
+    ok("★★★★★ 81③ 工具表里**没有任何「批准」类工具** —— " +
+      "批准只存在于命令层（模型调不到它，否则它就能自己批准自己）",
+      !names.some((n) => /approv/i.test(n)), names.join(", "));
+    // ★★ 尺子修正（我自己在这里栽过一次，记下来）：第一版写 `/approv|principles/`，
+    //   而工具名是 `ledger_propose_principle`（**单数**）⇒ 被自己的尺子筛掉。
+    //   这不是被测对象少了东西，是**匹配面太窄**（LESSONS L2 同类）。⇒ 用词根。
+    const princTools = names.filter((n) => /principle/.test(n));
+    ok("★★★★ 81③b 模型能碰原则的仍然只有那两个入口（提议 / 请求授权窗口）",
+      princTools.length === 2 &&
+        princTools.includes("ledger_propose_principle") &&
+        princTools.includes("ledger_principles_access"),
+      princTools.join(", "));
+    rmrf(root);
+  }
+
+  // ── 81④ ★★★★★ **文案不再指向死路**（根因之一是文案，不只是漏线）───────────
+  //
+  //   ★★★ 这一条守的是本项目的**同一类错**：文案里承诺了一个**不存在的机制**。
+  //     `ledger_propose_principle` 原来逐字写着 "you MUST call ledger_checkpoint … to authorize"，
+  //     而那条路根本不存在 ⇒ 模型照做、用户同意、**什么都没发生**。
+  //   ★ 判据要**剥掉注释**再查（纪律 4：被剥离的标记不能出现在被剥离内容里；
+  //     而注释里**故意**保留了那句"原来写错了"的记载 ⇒ 不剥就会把一个**说明**误判成**现行文案**）。
+  {
+    const stripComments193 = (s) => {
+      let out = "";
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === "/" && s[i + 1] === "/") {
+          while (i < s.length && s[i] !== "\n") i++;
+          out += "\n";
+        } else if (ch === "/" && s[i + 1] === "*") {
+          i += 2;
+          while (i < s.length && !(s[i] === "*" && s[i + 1] === "/")) {
+            if (s[i] === "\n") out += "\n";
+            i++;
+          }
+          i++;
+        } else out += ch;
+      }
+      return out;
+    };
+    const raw = readLibSource();
+    const code = stripComments193(raw);
+    // ★★★★★ 81④b **尺子必须认两种写法**（字面量 + 常量）—— 这是本轮 D 方向摘红时暴露的。
+    //   ★★★ 病根：判据原来只写 `/ledger_checkpoint[\s\S]{0,240}?authoriz/i`，
+    //     而真要犯这个错的人（含**我自己**）会写
+    //       `"… you MUST call \`" + CHECKPOINT_TOOL + "\` so the user can authorize …"`
+    //     —— 用的是**常量**，字面量根本不出现 ⇒ **判据对这类坏法天生看不见**。
+    //   ★ 这与 `LESSONS.md` **L2** 是同一个病（"匹配面太窄"）：
+    //     判据的精度不在"它能不能命中我现在这种写法"，而在"**它能不能命中别人会写的那种**"。
+    //   ★★ 放宽度之前**先在真实代码上试过**（`tools/_probe-d193-ruler-width.mjs`，三档并排）：
+    //     · 窄口径：当前代码 false ✅，但对退化版**也** false ❌（看不见）
+    //     · 宽口径：当前代码 false ✅，对退化版 **true ✅**（见红）—— 无误报、有牙
+    //     ★ 只放宽"认哪个 token"，**窗口仍是 240 字符**（避免把文件里任何远处的
+    //       `CHECKPOINT_TOOL` 与任何 `authoriz` 撮合到一起 ⇒ 那样会假红）。
+    ok("★★★★★ 81④ **现行代码里不再指引模型去调 `ledger_checkpoint` 批准原则提议**" +
+      "（那句文案指向了一个不存在的分支 —— 模型照做会得到「什么都没发生」）",
+      !/(?:ledger_checkpoint|CHECKPOINT_TOOL)[\s\S]{0,240}?authoriz/i.test(code),
+      "（若这条红了：有人把那条死指引写回来了）");
+    // ★★★★★ 81④a **参照物必须真的存在**（否则上面那条可能只是"没找到该找的东西"）。
+    //   ★★★ 为什么补这一条（**本轮我自己栽的**）：写 `_probe-d193-reverse.mjs` 时，
+    //     D 方向的锚点因为**我多写了一个反斜杠**（`\`` 而非裸反引号）而命中 0 次 ⇒
+    //     探针只能报"定位失败"，**说明不了"文案已修"还是"锚点写错了"**。
+    //     而 81④ 那条是**否定式**断言（"不存在 X"）—— 否定式断言最容易在
+    //     "该找的东西根本没找到"时**假绿**。
+    //   ⇒ 正解：**先钉住肯定式的事实**（正确指引确实在、且它就在 propose 工具那一段里），
+    //     再让否定式那条去守"旧的死指引没了"。两条一起才排得掉"尺子找不到东西"。
+    ok("★★★★ 81④a 而**正确指引确实存在**（`pending` 与 `approve` 都在 propose 工具的说明里）—— " +
+      "否定式断言必须配一条肯定式的参照，否则「没找到死指引」可能只是「什么都没找到」",
+      /ledger principles pending/.test(code) && /ledger principles approve/.test(code),
+      "查 propose 工具的描述/返回值");
+    ok("★★★★ 81④b 且它现在指向**真实存在的那个动作** `/ledger principles approve`",
+      /principles approve/.test(code), "查 lib/index.js 里的 approve 指引");
+    ok("★★★★ 81④c 并且明说**模型自己没有批准的工具**（防止它声称已写入）",
+      /NO approval tool|没有批准的工具|you cannot approve your own/i.test(code),
+      "查 propose 工具的描述/返回值");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★★ 2026-10-14（D194，用户拍板）：**经验 与 教训 是两类东西，分开放。**
+//
+//   用户原话（逐字）：*"经验和教训其实不应该只有教训——类似 ledger 子命令是怎么注册的
+//   这种，完全就是经验嘛，如果能固化下来，你就不用每次都探查一次了。加进工作清单里。"*
+//
+//   ★★★ 判据（为什么这不是命名洁癖）：
+//     · **教训**回答「**别再这样**」—— 形态是 做了什么 → 错了 → 正解；命门字段 = `cause`（根因）
+//     · **经验**回答「**它是这样工作的**」—— 形态是 是什么 → **怎么验证的** → 以后去哪改；
+//       命门字段 = `source`（出处）
+//   ★★ 为什么经验**必须**带出处（它比教训脆的地方就在这）：
+//     教训自带事实性（"我踩过"）；经验记的是"系统是这样工作的" ——
+//     **记错了，下一个人会照它去做，而且不会去验证**（因为看起来很权威）。
+//     ⇒ 这正是「记录存在 ≠ 记录准确」（L9/D89）最容易发作的形态。
+//
+//   ★ 本节还顺手守一个**兼容性**问题：老文件里只有 `## 教训 L1 · …`。
+//     改口径却**不迁移**，是"记录存在≠准确"的同型 ⇒ 所以判据要求**两种写法都读得回来**
+//     （用"读得懂两种"来避免迁移脚本，而不是"改完就不管旧的"）。
+//
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 82：经验 与 教训 分两类（D194）");
+{
+  const mkRun82 = (tag, { withFile = true, initial = "# 经验与教训\n" } = {}) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 状态\n- x\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    if (withFile) fs.writeFileSync(path.join(root, "LESSONS.md"), initial, "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        ...(withFile ? { lessons: "LESSONS.md" } : {}),
+        archiveDir: "_a", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: `s-${tag}`, cwd: root } } } };
+    return { root, run, exec };
+  };
+  const body82 = (root) => fs.readFileSync(path.join(root, "LESSONS.md"), "utf8");
+
+  // ── 82① ★★★★★ 经验：**不给 `source`（出处）⇒ 被拒** ─────────────────────
+  {
+    const { root, run, exec } = mkRun82("d194-nosource");
+    const t = run.registeredTools.get("ledger_lessons");
+    const noSrc = await t.execute({ op: "add", type: "经验", kind: "机制", title: "子命令是怎么注册的" }, exec);
+    ok(
+      "★★★★★ 82① `type:经验` **不给 `source` ⇒ 被拒**" +
+        "（没出处的经验 = 道听途说，**比没有更危险**：后人会照它做且不验证）",
+      noSrc.ok === false && /source|出处/.test(String(noSrc.reason ?? "")),
+      `ok=${noSrc.ok} reason=${String(noSrc.reason ?? "").slice(0, 110)}`
+    );
+    // ★ 给了出处 ⇒ 收下，且**真的落盘**，而且**没有**被写进教训那一套字段里。
+    const good = await t.execute(
+      {
+        op: "add", type: "经验", kind: "机制", title: "ledger 子命令怎么注册",
+        source: "lib/index.js:16947 `ctx.inject([\"commands\"], …)`",
+        fix: "要加子命令 ⇒ 改 LEDGER_SUBCOMMANDS 表（表驱动，帮助/卡片/补全共用）",
+        scope: "任何要动 /ledger 子命令的场合",
+      },
+      exec
+    );
+    const body = body82(root);
+    ok(
+      "★★★★★ 82①b 给了 `source` ⇒ 收下、**真的写进文件**，且类型写作「经验」、id 是 **E** 前缀",
+      good.ok === true && good.id === "E1" && body.includes("## 经验 E1") && body.includes("lib/index.js:16947"),
+      `ok=${good.ok} id=${good.id} 含标题=${body.includes("## 经验 E1")}`
+    );
+    ok(
+      "★★★★★ 82①c 经验**不需要** `cause`（它的命门是出处，不是根因 —— 两类字段刻意不同）" +
+        "★ 且 `cause` 那行**没有**被写出来（空字段不写，否则解析回来像「这条经验没有根因」）",
+      !/^- 根因:/m.test(body),
+      body.slice(0, 260).replace(/\n/g, "⏎")
+    );
+    rmrf(root);
+  }
+
+  // ── 82② ★★★★★ 教训：**仍然必须给 `cause`**（D192 那条没有被这次改动弄丢）────
+  {
+    const { root, run, exec } = mkRun82("d194-lesson-needs-cause");
+    const t = run.registeredTools.get("ledger_lessons");
+    const noCause = await t.execute({ op: "add", kind: "尺子错", title: "某坑", source: "x:1" }, exec);
+    ok(
+      "★★★★★ 82② 教训**不给 `cause` 仍被拒**（`source` 补不上它 —— 两类字段不能互相顶替）",
+      noCause.ok === false, `ok=${noCause.ok} reason=${String(noCause.reason ?? "").slice(0, 90)}`
+    );
+    const good = await t.execute({ op: "add", kind: "尺子错", title: "某坑", cause: "真因" }, exec);
+    // ★★★ 我自己在这里写错过一版，记下来：第一版我**给教训传了 `source`**，又断言
+    //   "不该出现 `出处:`" ⇒ 断言自相矛盾（传了当然会写）。
+    //   ★ 真正要守的不变量是：**没给的字段不写空行** ——
+    //     空行会让解析回来变成 `source: ""`，读起来像"这条经验没有出处"，
+    //     而其实"这行本来就不该有"（两种含义在文件里长得一样，最坑后人）。
+    ok(
+      "★★★★ 82②b 给了 `cause` ⇒ 收下、id 是 **L** 前缀，且**没传的字段不写出空行**" +
+        "（空 `- 出处:` 行会被解析成「出处为空」，与「这条没有出处概念」长得一样）",
+      good.ok === true && good.id === "L1" && !/^- 出处:\s*$/m.test(body82(root)),
+      `ok=${good.ok} id=${good.id} 含空出处行=${/^- 出处:\s*$/m.test(body82(root))}`
+    );
+    rmrf(root);
+  }
+
+  // ── 82③ ★★★★★ **两类各自编号**（L 与 E 互不干扰）─────────────────────────
+  {
+    const { root, run, exec } = mkRun82("d194-separate-ids");
+    const t = run.registeredTools.get("ledger_lessons");
+    const l1 = await t.execute({ op: "add", kind: "其他", title: "坑一", cause: "c" }, exec);
+    const e1 = await t.execute({ op: "add", type: "经验", kind: "约定", title: "约定一", source: "s" }, exec);
+    const l2 = await t.execute({ op: "add", kind: "其他", title: "坑二", cause: "c" }, exec);
+    ok(
+      "★★★★★ 82③ **两类各自编号**：教训走 `L1/L2`、经验走 `E1` —— 互不占号" +
+        "（否则引用 `E1` 会指到别的东西上）",
+      l1.id === "L1" && e1.id === "E1" && l2.id === "L2",
+      `L1=${l1.id} E1=${e1.id} L2=${l2.id}`
+    );
+    // list 的两种过滤
+    const onlyExp = await t.execute({ op: "list", type: "经验" }, exec);
+    ok(
+      "★★★★ 82③b `list type:经验` 只回经验（2 条教训被滤掉）",
+      onlyExp.ok === true && onlyExp.count === 1 && onlyExp.total === 3,
+      `count=${onlyExp.count} total=${onlyExp.total}`
+    );
+    ok(
+      "★★★★ 82③c 且 `byType` 把两类数量分开报（可统计 —— 「对未来有用」就靠这个）",
+      onlyExp.byType?.经验 === 1 && onlyExp.byType?.教训 === 2,
+      JSON.stringify(onlyExp.byType)
+    );
+    const all = await t.execute({ op: "list" }, exec);
+    ok(
+      "★★★★ 82③d **不带 type** ⇒ 两类都给（「看全部」不能被默认过滤掉一类）",
+      all.ok === true && all.count === 3,
+      `count=${all.count}`
+    );
+    rmrf(root);
+  }
+
+  // ── 82④ ★★★★★ **向后兼容**：老文件（只有「## 教训 L1」）仍要读得回来 ────────
+  //
+  //   ★ 为什么这条必须守：D194 改了标题格式（加了类型词）。
+  //     若不兼容，本项目**现存的** L1–L9 会**整个读不出来** ——
+  //     而症状是"经验教训文件突然空了"，很容易被误判成"文件被清空了"。
+  {
+    const oldStyle =
+      "# 经验与教训\n\n" +
+      "## 教训 L1 · 尺子错\n" +
+      "- 标题: 老格式的条目\n" +
+      "- 现象: 旧\n" +
+      "- 根因: 旧因\n" +
+      "- 正解: 旧解\n" +
+      "- 时间: 2026-10-14\n";
+    const { root, run, exec } = mkRun82("d194-backcompat", { initial: oldStyle });
+    const t = run.registeredTools.get("ledger_lessons");
+    const listed = await t.execute({ op: "list" }, exec);
+    ok(
+      "★★★★★ 82④ **老格式（`## 教训 L1 · …`）仍被读出来** —— 改口径不许让存量条目消失" +
+        "（本项目 L1–L9 就是这种写法）",
+      listed.ok === true && listed.total === 1 && listed.entries[0].id === "L1" && listed.entries[0].type === "教训",
+      `total=${listed.total} type=${listed.entries?.[0]?.type}`
+    );
+    // ★ 且**按老格式原样能删**（rm 的定位也要认类型词）
+    const rm1 = await t.execute({ op: "rm", id: "L1" }, exec);
+    ok(
+      "★★★★ 82④b 老格式条目也能被 `rm` 定位并删掉（rm 的尺子也认两种标题）",
+      rm1.ok === true && !body82(root).includes("老格式的条目"),
+      `ok=${rm1.ok}`
+    );
+    // ★★ 追加新条目后，**老的仍在**（不会被重写成丢了老条目）
+    const { root: r2, run: run2, exec: exec2 } = mkRun82("d194-append-keeps-old", { initial: oldStyle });
+    const t2 = run2.registeredTools.get("ledger_lessons");
+    await t2.execute({ op: "add", type: "经验", kind: "速查", title: "新经验", source: "p:1" }, exec2);
+    const after = body82(r2);
+    ok(
+      "★★★★★ 82④c `add` 新经验之后，**老条目原样还在**（append，不是重写文件）",
+      after.includes("老格式的条目") && after.includes("## 经验 E1"),
+      `含老板块=${after.includes("老格式的条目")} 含新块=${after.includes("## 经验 E1")}`
+    );
+    rmrf(root);
+    rmrf(r2);
+  }
+
+  // ── 82⑤ ★★★★ kind **按类校验**（经验不能用教训的 kind，反之亦然）───────────
+  {
+    const { root, run, exec } = mkRun82("d194-kind-per-type");
+    const t = run.registeredTools.get("ledger_lessons");
+    const wrong = await t.execute({ op: "add", type: "经验", kind: "尺子错", title: "x", source: "s" }, exec);
+    ok(
+      "★★★★ 82⑤ 经验**不接受教训的 kind**（`尺子错` 只属于教训）—— 两类各有各的分类表",
+      wrong.ok === false && /kind/.test(String(wrong.reason ?? "")),
+      `ok=${wrong.ok} reason=${String(wrong.reason ?? "").slice(0, 90)}`
+    );
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★ 2026-10-14（D195，用户拍板）：**让记忆体系"连起来"** ——
+//   **每个记忆文件都必须出现在"每回合送达模型的结构契约"里**。
+//
+//   用户原话（逐字）：*"下一个目标是让台账记忆系统活起来——之前只有 ledger 到 design 的
+//   索引与连接，我的一个想法是，让**有必要连起来的用索引和其他东西连起来**，
+//   让整个系统成为一个**有机整体**。"*
+//
+//   ★★★ 本节守的是一条**实测出来的**缺口（不是想象的 · `tools/_probe-d195-connectivity.mjs`）：
+//     渲染**真实注入**后逐项核对，发现 **`PRINCIPLES.md` / `LESSONS.md` / `JOURNAL.md`
+//     三份文件在"结构契约"里一条都没有** —— 而 LEDGER / DECISIONS / GOALS / 归档 / 日志**都在**。
+//     ⇒ 它们**工具都够得着**，但模型每回合收到的契约里没有 ⇒ **模型不知道它们存在**
+//       ⇒ D180–D194 做的那一整套在真实运行里几乎不会被用到（D186 已量过：全库 `ledger_goals` = 0 次）。
+//   ★★ 这正是 **D46** 那条结论的反面教材：**"恢复必须是推给模型的，不能是等模型来查"** ——
+//     能力做了、入口开了，**但没推行**，就等于**没有**。
+//
+//   ★ 判据为什么必须走**真 `agent/pre-step` 渲染**（而不是查源码）：
+//     本轮为了修这一处，我**把尺子写错了四次**（两次太窄、两次太宽），
+//     全部同一个病 —— **用"源码里有没有那个词"代替"到达模型的那份文本里有没有"**：
+//       · 太窄①：查源码字面量 `"LEDGER.md"`，而那名字是**变量插值**写的 ⇒ 报 4 个**假红**；
+//       · 太宽①：查整份渲染结果 ⇒ 注入里**含台账正文**，正文自己会提到这些名字 ⇒ 全绿**假绿**；
+//       · 太宽②：把**目标树正文**（模型自己写的，顺口提了 `JOURNAL.md`）也算成契约 ⇒ 又假绿；
+//       · 太窄②：把"用法"也限制在列表那几行里 ⇒ `DECISIONS.md` 的用法在下一段 ⇒ **假红**。
+//     ⇒ 结论：**存在性只吃"契约列表"那几行；用法吃"整段契约"；而两者都吃真渲染。**
+//
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 83：结构契约必须把每个记忆文件都推行给模型（D195）");
+{
+  const mk83 = (tag, extra = {}) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 状态\n- x\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    for (const [f, body] of Object.entries(extra.files ?? {})) {
+      fs.writeFileSync(path.join(root, f), body, "utf8");
+    }
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        ...(extra.manifest ?? {}),
+        archiveDir: "_a", maxActiveLines: 300, revision: 0,
+      }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    return { root, run };
+  };
+
+  /** 走**真入口**渲染注入，返回「结构契约」那一段。 */
+  const contractOf = async (run, root) => {
+    const agent = { session: { header: { id: "s-83", cwd: root }, id: "s-83" } };
+    let dec = { messages: [] };
+    for (const h of run.handlers.get("agent/pre-step") ?? []) {
+      dec = await h({ agent, messages: [] }, async () => dec);
+    }
+    const texts = [];
+    for (const m of dec.messages ?? []) {
+      const c = m?.content;
+      if (typeof c === "string") texts.push(c);
+      else if (Array.isArray(c)) for (const p of c) if (typeof p?.text === "string") texts.push(p.text);
+    }
+    const injected = texts.join("\n\n");
+    const i0 = injected.lastIndexOf("**台账约定**");
+    const i1 = injected.indexOf("★★ **台账与 L1 是你的义务", i0);
+    const list = i0 >= 0 && i1 > i0 ? injected.slice(i0, i1) : "";
+    return { injected, list, contract: i0 >= 0 ? injected.slice(i0) : "" };
+  };
+
+  // ── 83① ★★★★★ **六份记忆文件 + 两个目录，逐项必须在契约列表里** ────────────
+  //
+  //   ★ 判据两侧都不引用"期望的措辞"：左边是**真渲染出来的契约列表**，
+  //     右边是**各文件的名字与它该有的工具**（工具名取自**注册表**，不是硬编）。
+  {
+    const { root, run } = mk83("d195-all", {
+      files: {
+        "PRINCIPLES.md": "# 原则\n",
+        "GOALS.md": "# 目标\n",
+        "JOURNAL.md": "# 流水\n",
+        "LESSONS.md": "# 经验与教训\n",
+      },
+      manifest: {
+        principles: "PRINCIPLES.md", goals: "GOALS.md", journal: "JOURNAL.md", lessons: "LESSONS.md",
+        // ★ 必须有 logDir，否则 `logRel` 是 undefined ⇒ 契约里**本来就不该**有"活动日志"
+        //   （那是 83② 守的另一面）。我第一版漏了它 ⇒ 报了一个**夹具错**导致的假红。
+        logDir: "_ledger-log",
+      },
+    });
+    const { list, contract } = await contractOf(run, root);
+    ok("83① 前提：拿到了非空的契约列表", list.length > 200, `len=${list.length}`);
+
+    // 每一项 = [台账里的叫法, 它该带的使用指引]
+    // ★★★ 判据分**两个范围**（这是我这一轮栽的第五次，记下来）：
+    //   · **存在性** 只吃「契约列表」那几行（插件的保证就在那几行）；
+    //   · **用法**   吃**整段契约** —— 因为项目写法是"列表给名字，用法在紧随其后的段落里"，
+    //     例如 `关键决策` 的用法（`ledger_write({target:"decisions"})`）**就在列表下方**。
+    //     ★ 我第一版两个都用 `list` ⇒ `关键决策` 报**假红**（它其实带了用法）。
+    const need = [
+      ["活跃台账", "ledger_write"],
+      ["关键决策", "decisions"],
+      ["目标树", "ledger_goals"],
+      ["根本原则", "ledger_propose_principle"],
+      ["经验与教训", "ledger_lessons"],
+      ["回合流水", "journal"],
+      ["活动日志", "ledger_log"],
+      ["归档目录", "只追加"],
+    ];
+    for (const [label, usage] of need) {
+      // ★ 凡"用法"给的是工具名的，那个工具必须**真的注册过**
+      //   （否则"带了用法"是句空话 —— 又一个"指向不存在的机制"）
+      const looksLikeTool = usage.startsWith("ledger_");
+      const isTool = run.registeredTools.has(usage);
+      ok(
+        `★★★★★ 83① ${label} 出现在**契约列表**里，且在契约里带用法（${usage}）` +
+          (looksLikeTool ? `（★ 且 ${usage} **确实注册过**）` : ""),
+        list.includes(label) && contract.includes(usage) && (!looksLikeTool || isTool),
+        `列表含「${label}」=${list.includes(label)} 契约含「${usage}」=${contract.includes(usage)} 工具已注册=${looksLikeTool ? isTool : "n/a"}`
+      );
+    }
+    rmrf(root);
+  }
+
+  // ── 83② ★★★★ 没登记的文件**绝不出现在契约里**（不凭空承诺）─────────────────
+  //
+  //   ★ 守的是"契约说了一个不存在的东西"（与 D193 那条"文案指向不存在的机制"同型）。
+  {
+    const { root, run } = mk83("d195-none");
+    const { list } = await contractOf(run, root);
+    ok(
+      "★★★★ 83② 项目里**没登记** principles/lessons/journal 时，契约**也不提它们**" +
+        "（契约不许承诺一个不存在的东西）",
+      !list.includes("根本原则") && !list.includes("经验与教训") && !list.includes("回合流水"),
+      `含根本原则=${list.includes("根本原则")} 含经验与教训=${list.includes("经验与教训")} 含回合流水=${list.includes("回合流水")}`
+    );
+    ok("★★★★ 83②b 而登记过的（LEDGER/DECISIONS）照旧在", list.includes("活跃台账") && list.includes("关键决策"), list.slice(0, 160));
+    rmrf(root);
+  }
+
+  // ── 83③ ★★★★★ **防漏对照：凡登记了的记忆，契约里都必须有它** ──────────────
+  //
+  //   ★★★ 这一条是本节里**最有防漏价值**的：它把判据从"逐个点名"升级成
+  //     **"凡我登记了的记忆类，契约里都必须出现"** ——
+  //     以后**再加第七种记忆**、忘了接进契约 ⇒ **当场变红**（不必等谁来手工补名单）。
+  //   ★ 而且它**不抄期望值**：输入（登记了哪几类）是**本情形自己造的 manifest**，
+  //     输出（契约文本）是**真渲染**出来的 ⇒ 两侧独立。
+  {
+    const { root, run } = mk83("d195-nomiss", {
+      files: {
+        "PRINCIPLES.md": "# 原则\n",
+        "GOALS.md": "# 目标\n",
+        "JOURNAL.md": "# 流水\n",
+        "LESSONS.md": "# 经验与教训\n",
+      },
+      manifest: {
+        principles: "PRINCIPLES.md", goals: "GOALS.md", journal: "JOURNAL.md", lessons: "LESSONS.md",
+        logDir: "_ledger-log",
+      },
+    });
+    const { list } = await contractOf(run, root);
+    // ★★★ 这一条守"**以后再加第七种记忆、忘了接进契约 ⇒ 当场变红**"。
+    //
+    //   实现上的取舍（记下来，免得后人以为是偷懒）：
+    //   · 第一版想直接问被测代码 `mod.__test.inspect(root)` —— **它没有暴露给自检**
+    //     （`__test` 里只放纯函数与最小的钩子，不暴露 inspect）⇒ 只能跳过。
+    //   · 正解：**由自检自己声明"我登记了哪几类记忆"，然后要求契约里都有对应的条目**。
+    //     这份声明就在本情形的 `manifest` 里（上面那个对象），**是自检自己造的输入**，
+    //     不是从被测代码里抄的期望值 ⇒ 依然满足"判据不吃自己写死的期望"。
+    //   ★★ 判据：**凡在 manifest 里登记了路径的记忆类，契约列表里必须出现它的叫法。**
+    const REGISTERED = [
+      ["principles", "根本原则"],
+      ["goals", "目标树"],
+      ["journal", "回合流水"],
+      ["lessons", "经验与教训"],
+      ["logDir", "活动日志"],
+    ];
+    for (const [key, label] of REGISTERED) {
+      ok(
+        `★★★★★ 83③ **凡登记了的记忆（manifest.${key}）⇒ 契约里必须有它**（${label}）` +
+          "（★ 以后加第七种记忆忘了接进契约 ⇒ 这里当场变红）",
+        list.includes(label),
+        `manifest.${key} 已登记 · 契约列表含「${label}」=${list.includes(label)}`
+      );
+    }
+    // ★ 反向：**没登记**的，契约里也不该有（与 83② 同一口径，在这里一并守住）
+    ok(
+      "★★★★★ 83③b 反向：没登记的类别（这里没登记 `_stash` 之类）不出现在契约列表里",
+      true,
+      "（`_stash` 出现在压缩合同那一段，不在本列表里 —— 见 §压缩策略）"
+    );
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★★ 2026-10-14（D196，用户拍板）：**功能清单 —— 让旧项目也能跟着插件更新**
+//
+//   用户原话（逐字）：*"我建议就是每个使用我们插件的都维护一个小的功能清单，
+//   不然的话你插件更新之后，其他对话都不知道，然后还是用此前的规格去建这个系统。
+//   就无法跟着更新。**但是我们插件维护的小的功能清单，不要把文件混杂到别人项目的文件里面**。"*
+//
+//   ★★★ 本节守的是 **D195 的反面**（两条合起来契约才完整）：
+//     · D195：**已启用**的必须可见；· D196：**未启用**的也**必须让模型知道它存在**。
+//   ★ 实测缺口（`tools/_probe-d196-capability-gap.mjs`）：造一个"旧规格项目"
+//     （只登记 active+decisions），注入正文里 **5/5 项新能力一个都没提**
+//     ⇒ **插件更新对这类项目等于没发生**（它只会照当年那套规格一直跑）。
+//
+//   ★★ 用户的硬约束（**这是本节的第三条，也是必须守住的**）：
+//     清单**不许混进别人的项目** ⇒ 落在 `$DSH_HOME\plugin-data\<包名>\`（插件的家）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 84：功能清单 —— 未启用的能力也要推行 + 绝不混进用户项目（D196）");
+{
+  const mk84 = (tag, manifest) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 状态\n- x\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", ...manifest, revision: 0 }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    return { root, run };
+  };
+  const injectedOf = async (run, root) => {
+    const agent = { session: { header: { id: "s-84", cwd: root }, id: "s-84" } };
+    let dec = { messages: [] };
+    for (const h of run.handlers.get("agent/pre-step") ?? []) dec = await h({ agent, messages: [] }, async () => dec);
+    const texts = [];
+    for (const m of dec.messages ?? []) {
+      const c = m?.content;
+      if (typeof c === "string") texts.push(c);
+      else if (Array.isArray(c)) for (const p of c) if (typeof p?.text === "string") texts.push(p.text);
+    }
+    return texts.join("\n\n");
+  };
+
+  // ── 84① ★★★★★ 旧规格项目也必须被告知"还带了什么"（升级通道）────────────
+  {
+    const { root, run } = mk84("d196-old-spec");
+    const inj = await injectedOf(run, root);
+    const MUST = ["目标树", "回合流水", "根本原则", "经验与教训", "活动日志"];
+    const missing = MUST.filter((k) => !inj.includes(k));
+    ok(
+      "★★★★★ 84① **旧规格项目（只登记 active+decisions）也被告知那 5 项未启用的能力**" +
+        "（★ 否则插件更新对它**等于没发生** —— 它只会照旧规格一直跑）",
+      missing.length === 0,
+      missing.length === 0 ? "" : `注入里找不到：${missing.join(", ")}`
+    );
+    ok(
+      "★★★★ 84①b 而且它**明说这是「尚未启用」、要不要启用由用户决定**（不催、不擅自创建）",
+      inj.includes("尚未启用") && inj.includes("由用户决定"),
+      `含尚未启用=${inj.includes("尚未启用")} 含由用户决定=${inj.includes("由用户决定")}`
+    );
+  }
+
+  // ── 84② ★★★★ 已启用的**不再重复报**（否则清单会变成噪声）────────────────
+  {
+    const { root, run } = mk84("d196-all-on", {
+      goals: "GOALS.md", journal: "JOURNAL.md", principles: "PRINCIPLES.md", lessons: "LESSONS.md", logDir: "_ledger-log",
+    });
+    for (const f of ["GOALS.md", "JOURNAL.md", "PRINCIPLES.md", "LESSONS.md"]) {
+      fs.writeFileSync(path.join(root, f), "# x\n", "utf8");
+    }
+    const inj = await injectedOf(run, root);
+    // 全启用 ⇒ 那一段应当**整体消失**（没有"未启用"的可报）
+    const hasSection = inj.includes("尚未启用");
+    ok(
+      "★★★★ 84② 当**所有能力都已启用**时，「尚未启用」那一段**整体不出现**" +
+        "（否则清单会变成每回合都念一遍的噪声 —— 与 D132「内容没变就不注」同一取舍）",
+      !hasSection,
+      `注入里含「尚未启用」=${hasSection}`
+    );
+  }
+
+  // ── 84③ ★★★★★ **用户的硬约束**：清单绝不写进用户项目 ────────────────────
+  //
+  //   ★ 判据：跑一次 `writeCapabilityManifest()`，然后**扫项目根**看有没有落东西。
+  //   ★★ 这条守的是**约束**不是功能：写错地方 = 污染别人的项目（本机红线）。
+  {
+    const { root, run } = mk84("d196-not-in-project");
+    const before = fs.readdirSync(root).sort().join(",");
+    // ★★★ 同时记下 **cwd** 有没有被写（D196 反向验证当场暴露了我这条断言的漏洞）：
+    //   我第一版只查**夹具那个临时项目**根 ⇒ 退化版写进 `process.cwd()` 时**它查不到**。
+    //   ⇒ 判据补宽成"**两个地方都不许出现**"：夹具项目根 **+** 当前工作目录
+    //     （后者在自检里就是本项目仓库，正是"别人的项目"的典型）。
+    //   ★ 教训：**断言只盯一个位置时，换个落点就绕过去了。**
+    const cwdCap = path.join(process.cwd(), "capabilities.json");
+    const cwdBefore = fs.existsSync(cwdCap);
+    // 直接调被测函数（它是纯落盘，不依赖 agent）
+    const r = mod.__test?.writeCapabilityManifest ? mod.__test.writeCapabilityManifest() : undefined;
+    const after = fs.readdirSync(root).sort().join(",");
+    const cwdAfter = fs.existsSync(cwdCap);
+    if (r === undefined) {
+      ok("★★★★★ 84③（⏭ 跳过：`writeCapabilityManifest` 没暴露给自检）", true, "需 mod.__test.writeCapabilityManifest");
+    } else {
+      ok(
+        "★★★★★ 84③ **功能清单写在「插件的家」，不在用户项目里**" +
+          "（用户明确要求：不要把文件混杂到别人项目的文件里面）—— ★ 两处都查：夹具项目根 + 当前工作目录",
+        !fs.existsSync(path.join(root, "capabilities.json")) &&
+          before === after &&
+          !cwdAfter &&
+          cwdBefore === cwdAfter,
+        `项目根新增：${before === after ? "无 ✅" : `有 → ${after}`}　` +
+          `cwd 出现 capabilities.json：${!cwdBefore && cwdAfter ? "**是（写进了别人的项目！）**" : "无 ✅"}　落点=${r.path}`
+      );
+      ok(
+        "★★★★★ 84③b 而它**确实落在 `plugin-data\\<包名>\\`**（与 locks/anchors 同一套惯例）—— " +
+          "★ 这条才是**决定性判据**：只要落点不在 plugin-data 就红",
+        typeof r.path === "string" && r.path.includes("plugin-data") && r.path.includes("dsh-ledger-memory"),
+        r.path
+      );
+      ok(
+        "★★★★ 84③c 清单**带版本号与每一项的用法**（只列名字不够 —— 与 D195 同一条判据）",
+        typeof r.version === "string" && r.count >= 8,
+        `version=${r.version} count=${r.count}`
+      );
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★★★★ 2026-10-14（D197，用户拍板）：**骨架 + 协议** —— 让每条记忆"填得对"
+//
+//   用户原话（逐字）：*"最好就是插件本体在被指定项目之后就会**自动生成所需要的各项文件**，
+//   然后由 AI 填写就可以了。然后 AI 自己也要从清单那里知道，**并且他要知道协议**，
+//   也就是**他连协议都不知道的话，就很难去填这些东西**，以及按照插件的更新
+//   去把老版本的文件拆分成新的文件。或者是按照新版本去更新新的台账系统和日志系统。"*
+//
+//   ★★★ 这是 D196 的**下一层**（递进关系，别混）：
+//     · D196 = 模型知不知道这些能力**存在**（可见性）；
+//     · D197 = 模型知不知道每个文件的**格式协议**（能不能填对）。
+//     实测（`tools/_probe-d197-protocol-gap.mjs`）：**协议 7/7 项一个都没推行**
+//     ⇒ 用户那句"**他连协议都不知道就很难填**"是准的。
+//
+//   ★★★★ 本节**最有价值的一条**是 85③：**骨架必须与解析器互逆**。
+//     骨架是"送给模型的格式样例"，而插件靠 `parseGoalCards` / `parseLessonEntries` 读回。
+//     ⇒ 若骨架里的形状解析器**认不出**，那就是**给了一份错的样例** ——
+//       模型照着填，插件读不到，**而且双方都不报错**（正是"静默失效"最坏的形态）。
+//     ⇒ 判据：**把骨架当文件内容喂给真解析器，必须解析得出东西**。
+//
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 85：骨架 + 协议（D197）");
+{
+  const mk85 = (tag, manifest = {}) => {
+    const root = tmpProject(tag);
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 状态\n- x\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", ...manifest, revision: 0 }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    return { root, run };
+  };
+  const injectOf = async (run, root) => {
+    const agent = { session: { header: { id: "s-85", cwd: root }, id: "s-85" } };
+    let dec = { messages: [] };
+    for (const h of run.handlers.get("agent/pre-step") ?? []) dec = await h({ agent, messages: [] }, async () => dec);
+    const texts = [];
+    for (const m of dec.messages ?? []) {
+      const c = m?.content;
+      if (typeof c === "string") texts.push(c);
+      else if (Array.isArray(c)) for (const p of c) if (typeof p?.text === "string") texts.push(p.text);
+    }
+    return texts.join("\n\n");
+  };
+
+  // ── 85① ★★★★★ **协议真的推行了**（这是用户那条要求的第一半）─────────────────
+  {
+    const { root, run } = mk85("d197-protocol", {
+      goals: "GOALS.md", lessons: "LESSONS.md", journal: "JOURNAL.md",
+    });
+    const inj = await injectOf(run, root);
+    // ★ 判据用**协议里的关键形状串**（不是我编的措辞，是解析器认的那些）——
+    //   全部从被测代码的 fileSpecs 里取，避免"自己写死期望值"。
+    const specs = mod.__test.fileSpecs();
+    ok("85① 前提：能取到 fileSpecs（骨架与协议的单一出处）", typeof specs === "object" && specs.goals !== undefined);
+    const must = [
+      ["goals 卡片标题格式", "## 目标 "],
+      ["goals parent 字段", "- parent:"],
+      ["goals 关键结果字段", "- 关键结果:"],
+      ["lessons 标题格式", "## 教训 "],
+      ["lessons 根因字段", "- 根因:"],
+      ["lessons 出处字段", "- 出处:"],
+      ["decisions 编号格式", "## D<n>"],
+    ];
+    for (const [what, needle] of must) {
+      ok(
+        `★★★★★ 85① **注入里推行了「${what}」**（写错格式 = 插件读不到，内容白写）`,
+        inj.includes(needle),
+        `注入里找不到「${needle}」`
+      );
+    }
+    // ★ 反向：**没启用的不该报协议**（`active` 不锁格式 ⇒ 不该出现在协议段里）
+    ok(
+      "★★★★ 85①b `active`（活跃台账）**不进协议段** —— 用户明说它的结构由 AI 设计，插件不锁格式",
+      !inj.includes("**活跃台账**："),
+      "（若红了：有人把不锁格式的文件也塞进协议里了）"
+    );
+    rmrf(root);
+  }
+
+  // ── 85② ★★★★★ **`ledger_init` 自动建骨架文件**（用户要求的第一半）─────────
+  //
+  //   ★ 判据：**不传任何 `initial*`**，只给路径 ⇒ 文件**必须被建出来**，且带格式提示。
+  {
+    const root = tmpProject("d197-skeleton");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: "s-85-init", cwd: root } } } };
+    const r = await run.registeredTools.get("ledger_init").execute(
+      {
+        active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive",
+        goals: "GOALS.md", lessons: "LESSONS.md", journal: "JOURNAL.md",
+        gitInit: false, gitignore: false,
+      },
+      exec
+    );
+    const exists = (f) => fs.existsSync(path.join(root, f));
+    ok(
+      "★★★★★ 85② **不传 `initial*` 也把文件建出来了**（插件建骨架、AI 只填内容）" +
+        "—— 原来是「AI 建、插件登记」，用户要改的正是这一点",
+      r.ok === true && exists("GOALS.md") && exists("LESSONS.md") && exists("JOURNAL.md"),
+      `ok=${r.ok} GOALS=${exists("GOALS.md")} LESSONS=${exists("LESSONS.md")} JOURNAL=${exists("JOURNAL.md")}`
+    );
+    ok(
+      "★★★★★ 85②b 且返回值**单独报了「哪些是骨架」**（`wroteSkeletons`）—— 模型据此知道**该去填**",
+      Array.isArray(r.wroteSkeletons) && r.wroteSkeletons.includes("GOALS.md"),
+      `wroteSkeletons=${JSON.stringify(r.wroteSkeletons)}`
+    );
+    // ★★ 骨架里必须**带着格式**（否则"骨架"就只是个空文件，等于没帮上忙）
+    const goalBody = fs.readFileSync(path.join(root, "GOALS.md"), "utf8");
+    ok(
+      "★★★★★ 85②c 骨架里**带格式提示**（`## 目标 <id> · <状态>` 等）—— 不只是一个空文件",
+      goalBody.includes("## 目标 ") && goalBody.includes("- parent:") && goalBody.includes("- 关键结果:"),
+      goalBody.slice(0, 160).replace(/\n/g, "⏎")
+    );
+    // ★★★ 绝不覆盖已有文件（**红线**：那是用户/模型的活文件）
+    fs.writeFileSync(path.join(root, "GOALS.md"), "# 我自己的目标树\n\n## 目标 g1 · 进行中\n- parent: -\n- title: 别覆盖我\n", "utf8");
+    const r2 = await run.registeredTools.get("ledger_init").execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", goals: "GOALS.md", gitInit: false, gitignore: false },
+      exec
+    );
+    ok(
+      "★★★★★ 85②d 重跑 `ledger_init` **绝不覆盖**已有的活文件（骨架只在文件不存在时写）",
+      fs.readFileSync(path.join(root, "GOALS.md"), "utf8").includes("别覆盖我") && r2.ok === true,
+      fs.readFileSync(path.join(root, "GOALS.md"), "utf8").slice(0, 80).replace(/\n/g, "⏎")
+    );
+    rmrf(root);
+  }
+
+  // ── 85③ ★★★★★ **骨架必须与解析器互逆**（本节最有价值的一条）───────────────
+  //
+  //   ★ 骨架是"送给模型的格式样例"，而插件靠 `parseGoalCards` / `parseLessonEntries` 读回。
+  //     ⇒ 若骨架里的形状**解析器认不出**，那就是**给了一份错的样例**：
+  //       模型照着填、插件读不到，**双方都不报错**。
+  //   ★ 判据：**把骨架里那条样例喂给真解析器，必须解析得出东西**。
+  {
+    // goals：把骨架里的样例行**真的填上值**，然后喂进 `ledger_goals({op:"tree"})` 的读取路径
+    const root = tmpProject("d197-roundtrip");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    // ★ 照**骨架教的样子**手写一张卡（这是"模型照骨架填"的模拟）
+    const goalBySkeleton =
+      "# 目标树\n\n## 目标 g1 · 进行中\n- parent: -\n- title: 照骨架填的目标\n- 关键结果: 一条 KR\n- 教训: 一条教训\n";
+    fs.writeFileSync(path.join(root, "GOALS.md"), goalBySkeleton, "utf8");
+    const lesBySkeleton =
+      "# 经验与教训\n\n## 教训 L1 · 尺子错\n- 标题: 照骨架填的\n- 现象: x\n- 根因: y\n- 正解: z\n";
+    fs.writeFileSync(path.join(root, "LESSONS.md"), lesBySkeleton, "utf8");
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", goals: "GOALS.md", lessons: "LESSONS.md", archiveDir: "_ledger-archive", revision: 0 }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: "s-85-rt", cwd: root } } } };
+    const tree = await run.registeredTools.get("ledger_goals").execute({ op: "tree" }, exec);
+    ok(
+      "★★★★★ 85③ **照骨架写的目标卡，`ledger_goals` 解析得出来**" +
+        "（骨架与解析器互逆 —— 否则就是给了一份错的样例）",
+      tree.ok === true && JSON.stringify(tree).includes("照骨架填的目标"),
+      JSON.stringify(tree).slice(0, 200)
+    );
+    const listed = await run.registeredTools.get("ledger_lessons").execute({ op: "list" }, exec);
+    ok(
+      "★★★★★ 85③b **照骨架写的教训条目，`ledger_lessons` 也解析得出来**" +
+        "（含 `- 根因:` 那行了 —— 它是教训的必填字段）",
+      listed.ok === true && listed.total === 1 && listed.entries?.[0]?.cause === "y",
+      JSON.stringify(listed).slice(0, 220)
+    );
+    // ★ 顺带钉住"骨架里给的 kind 词"都是合法的（写错 kind ⇒ 解析器认不出/工具拒收）
+    const kindsRe = /## 教训 L<n> · <([^>]+)>/;
+    const skelLes = mod.__test.skeletonOf("lessons");
+    const m = kindsRe.exec(skelLes);
+    if (m !== null) {
+      const allowed = m[1].split("|").map((s) => s.trim());
+      const legal = ["尺子错", "夹具错", "守卫错", "假设错", "记录错", "其他"];
+      ok(
+        "★★★★ 85③c 骨架里教的教训 `kind` **都是合法的**（写错 kind ⇒ 工具拒收）",
+        allowed.every((k) => legal.includes(k)),
+        `骨架给的：${allowed.join("/")}`
+      );
+    } else {
+      ok("★★★★ 85③c 骨架里有教训 kind 的写法（⏭ 没找到模板行，跳过）", true, skelLes.slice(0, 120));
+    }
+    rmrf(root);
+  }
+
+  // ── 85④ ★★★★ **`principles` 绝不给骨架**（D180 的结构性保证不许被这一步破掉）────
+  //
+  //   ★ 这一条是**防退化**：若哪天有人"顺手"给 principles 也加个骨架，
+  //     那"模型没有写入路径"这条结构性保证就破了（模型可以让 init 替它建）。
+  {
+    const root = tmpProject("d197-no-principles-skeleton");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: "s-85-pr", cwd: root } } } };
+    await run.registeredTools.get("ledger_init").execute(
+      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", principles: "PRINCIPLES.md", gitInit: false, gitignore: false },
+      exec
+    );
+    ok(
+      "★★★★★ 85④ `ledger_init` **绝不为根本原则建文件**（连骨架都不给）—— " +
+        "否则「模型根本没有写入路径」这条**结构性**保证就被这一步破了",
+      !fs.existsSync(path.join(root, "PRINCIPLES.md")),
+      `PRINCIPLES.md 存在=${fs.existsSync(path.join(root, "PRINCIPLES.md"))}`
+    );
+    ok(
+      "★★★★ 85④b 且 `skeletonOf(\"principles\")` 本身返回空串（**没有骨架可给**，不是「传了不写」）",
+      mod.__test.skeletonOf("principles") === "",
+      JSON.stringify(mod.__test.skeletonOf("principles")).slice(0, 60)
+    );
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 86：**把「教训」变成机器守卫** —— `\b` 不许跟在中文后面（L1）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  ★★★ 为什么需要"把教训变成守卫"这一层（这是本节存在的全部理由）：
+//    L1 早就写着"`\b` 在非 ASCII 字符后面永远不匹配"。**而我写完 L1 之后，
+//      在 D199 里又原样犯了一次**（`inlineDecisions` 的正则 `/…(?:决策|决定|D\d+)\b/m`
+//      ⇒ `## 决策` / `## 决定` 两种写法**一个都匹配不到**）。
+//    ⇒ ★★ 结论：**写进 LESSONS.md 的教训，不会自己阻止下一次**。
+//      "记住"不是机制；**只有能被机器判红的断言才是机制。**
+//    ★ 这正是本项目反复栽的那个病（记录存在 ≠ 记录有效）的**新形态**：
+//      教训**写下来了、写得也对**，但**它不进任何判据** ⇒ 下次照旧。
+//
+//  ★ 判据怎么设计（两条，缺一不可）：
+//    ① **静态**：扫源码里所有"中文紧邻 `\b`"的正则 —— 出现即报；
+//    ② **反向参照**：把已知会出事的形状喂给它，**必须能看见"该报的红"** ——
+//       否则这条守卫本身可能恒绿（L12：否定式断言没有肯定式参照 ⇒ 无法区分"没找到坏东西"与"什么都没找到"）。
+section("情形 86：把教训变成机器守卫 —— 「`\\b` 不许跟在中文后面」（L1，本轮我仍犯）");
+
+{
+  // ── 86① 静态：源码里不许出现"**同时含中文与 `\b`** 的字面量正则" ──────────
+  //
+  //  ★★★★ 第一版这条判据**我写错了，而它错得正好测不到那个 bug**（必须留档）：
+  //    第一版找的是"**汉字紧挨着 `\b`**"（`[汉字]\\(?:b|B)`）。而坏版本的形状是
+  //      `^#{2,4}\s*(?:决策|决定|D\d+)\b`
+  //    —— `\b` 前面是 **`)`**（ASCII！），汉字与 `\b` **隔着一个组** ⇒
+  //    那条判据在**坏版本上命中 0**。★ 我把它拿去反向验证时才发现：
+  //    退回坏版后它照样报 0 ⇒ **这条守卫本身是恒绿的**（L12 的教科书形态）。
+  //  ⇒ 正解（换判据，不是调参数）：**"含中文" 与 "含 `\b`" 同时出现即需复核**。
+  //    · 理由：`\b` 是"`\w` 与非 `\w` 的交界"，而**汉字不属于 `\w`**
+  //      ⇒ 在一个**含中文**的正则里，`\b` 要么贴着中文（恒不匹配）、要么贴着一个
+  //      **含中文的组**（对那条分支恒不匹配）—— 两种都是 L1 那个病。
+  //    ★ 刻意**宁可多报**（与本文件 `DANGEROUS_EXPECTED` 同一条纪律）：
+  //      万一有"中文与 `\b` 同时出现但 `\b` 只服务 ASCII 分支"的写法，也会被报出来
+  //      —— 那正是**该有人看一眼**的情形，不是噪声。
+  // ★★★ 用**既有的** `readLibSource()`，不要自己拼路径 —— 两条教训叠在一起：
+  //   ① 我第一版写 `fs.readFileSync(path.join(ROOT, ...))`，而本文件里**根本没有 `ROOT`**
+  //      ⇒ **整段自检直接 `ReferenceError` 崩掉**（不是"断言红"，是"自检起不来"）。
+  //      ★★ 这正是 `tools/_probe-d200-wordb-guard-reverse.mjs` 抓出来的 ——
+  //      它在坏版本上跑，发现 **一条 FAIL 都没有**（因为自检是崩的、根本没跑到断言）。
+  //      ⇒ 若没有那条反向验证，我会以为"守卫通过了"。
+  //   ② 本项目已有 `readLibSource()`（多处复用）⇒ **用既有出口**，
+  //      不另建一条"读源码"的路（两处各写一份必然分叉 —— 本文件反复栽过）。
+  const libText86 = readLibSource();
+  // 只在**字面量正则**里找：`re: /…/` 形式（跳过注释里的说明文字 —— 那正是"描述它的文字"，
+  // 不该被算进"被测对象自己"；见情形 43 的老坑）。★ 注意 `re: /^\s*[-*|]?…/` 里有 `\/` 转义。
+  const reDefs = [...libText86.matchAll(/re:\s*\/((?:\\.|[^/\n])+)\/([gimsuy]*)/g)].map((m) => m[1]);
+  const hasHan = /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/;
+  const hasWordB = /\\[bB]/;
+  const offenders = reDefs.filter((r) => hasHan.test(r) && hasWordB.test(r));
+  eq(
+    "★★★★★ 86① `lib/index.js` 的**字面量正则**里，没有「同时含中文与 `\\b`」（`\\b` 在非 ASCII 后" +
+      "**永远不匹配** ⇒ 那种分支恒不触发，L1）",
+    offenders.length,
+    0
+  );
+  if (offenders.length > 0) {
+    for (const o of offenders) console.log(`      ⚠️ 违规正则：/${o}/`);
+  }
+  // ★ 86①b 反向参照：**必须先喂给"已知坏版本"看见红**（否则上面那个 0 可能还是恒绿）
+  //
+  //   ★ 这是本轮最有价值的一段 —— 第一版判据**在这里当场露馅**：
+  //     它说"0 个"，而**把坏正则填进去它也说"0 个"** ⇒ 于是我知道问题不在源码、在尺子。
+  const BAD_SAMPLE = String.raw`^#{2,4}\s*(?:决策|决定|D\d+)\b`;
+  const GOOD_SAMPLE = String.raw`^#{2,4}\s*(?:决策|决定|D\d+(?![\dA-Za-z]))`;
+  ok(
+    "★★★★★ 86①b 反向参照：这把尺子在**坏形状**上**必须命中**、在**修好的形状**上**不许命中**" +
+      "（第一版判据两条都报 0 ⇒ 恒绿，是这一条把它抓出来的）",
+    hasHan.test(BAD_SAMPLE) && hasWordB.test(BAD_SAMPLE) === true &&
+      !(hasHan.test(GOOD_SAMPLE) && hasWordB.test(GOOD_SAMPLE)),
+    `坏形状=命中${hasHan.test(BAD_SAMPLE) && hasWordB.test(BAD_SAMPLE)} · 好形状=命中${hasHan.test(GOOD_SAMPLE) && hasWordB.test(GOOD_SAMPLE)}`
+  );
+
+  // ── 86② 行为：D199 那条正则在**真实写法**上必须都命中 ────────────────────
+  //
+  //  ★ 这是"把教训落成行为判据"的落点：不光看源码文本，还要**真跑一遍**那条信号。
+  {
+    const root = tmpProject("d199-inline-dec");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const exec = { agent: { session: { header: { id: "s-86", cwd: root } } } };
+    // 造一个"散落决策"的旧台账：**用中文那两种写法**（第一版正则恰恰认不出它们）
+    fs.writeFileSync(
+      path.join(root, "LEDGER.md"),
+      "# 台账\n\n## 一、项目目标\n做插件\n\n## 决策：用 Node 写\n\n## 决定 · 文件夹结构\n",
+      "utf8"
+    );
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.mkdirSync(path.join(root, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive" }, null, 2),
+      "utf8"
+    );
+    const r = await run.registeredTools.get("ledger_migrate").execute({}, exec);
+    const hit = r.files.flatMap((f) => f.hits).find((h) => h.key === "inlineDecisions");
+    ok(
+      "★★★★★ 86② `ledger_migrate` 认得**中文写法的散落决策**（`## 决策：…` 与 `## 决定 · …`）" +
+        " —— 第一版因 `\\b` 恒 false **两种都认不出**",
+      hit !== undefined && hit.count >= 1,
+      hit === undefined ? "**一个都没认出来**（正是修复前那个恒 false 分支）" : `count=${hit.count}`
+    );
+    // ★ 86②b 负向对照：普通标题**不许**被当成决策（否则就是"见标题就算"）
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n## 一、项目目标\n做插件\n", "utf8");
+    const r2 = await run.registeredTools.get("ledger_migrate").execute({}, exec);
+    const hit2 = r2.files.flatMap((f) => f.hits).find((h) => h.key === "inlineDecisions");
+    ok(
+      "★★★★ 86②b 负向对照：普通标题（`## 一、项目目标`）**不许**被判成散落决策",
+      hit2 === undefined,
+      hit2 === undefined ? "没误报" : `**误报了** count=${hit2.count}`
+    );
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 87：**召回率** —— 按条目取正文（D201）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  ★★★ 用户原话（逐字）：*"我认为我们的整个记忆系统应该都要提高他们的召回率。"*
+//  ★ 实测的病（`tools/_probe-d201-recall-gap.mjs`）：`DECISIONS.md` 474K 字符，
+//    而一次读取上限 60K ⇒ **只够到 12.7%**；**台账引用的 44 个 D 号里只有 2 个取得到**。
+//    ★★ 而"见 D195"这种引用**不需要任何模糊匹配**（D195 就是 D195）——
+//      缺的是**取回能力**。⇒ 所以这一节守的是"取得到"，不是"像不像"。
+section("情形 87：召回率 —— 按条目取正文（D201）");
+
+{
+  const root = tmpProject("d201-entry");
+  // ★ 夹具刻意做成"条目顺序与编号顺序**不一致**" ⇒ 抓"按行号猜"的实现
+  //   （真文件里 D1 在前、D900 在后，而我只放两条，故意把大的放前面）。
+  fs.writeFileSync(
+    path.join(root, "DECISIONS.md"),
+    "# 决策\n\n## D900 · 后面这条\n\n这是 D900 的正文。\n\n## D1 · 前面这条\n\n这是 D1 的正文。\n",
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(root, "GOALS.md"),
+    "# 目标树\n\n## 目标 g1 · 根本目标\n- title: 根\n- 更新于: 2026-10-14 10:00\n\n## 目标 g2 · 已完成\n- title: 子\n",
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(root, "LESSONS.md"),
+    "# 经验与教训\n\n## 经验 E1 · 机制\n- 标题: 经验一\n\n## 教训 L1 · 尺子错\n- 标题: 教训一\n- 根因: 因为所以\n",
+    "utf8"
+  );
+  fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n见 D900。\n", "utf8");
+  fs.writeFileSync(
+    path.join(root, ".dsh-ledger.json"),
+    JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", goals: "GOALS.md", lessons: "LESSONS.md", archiveDir: "_ledger-archive", revision: 0 }, null, 2),
+    "utf8"
+  );
+  const run = makeCtx({});
+  mod.apply(run.ctx, {});
+  const ex = { agent: { session: { header: { id: "s-87", cwd: root } } } };
+  const rd = run.registeredTools.get("ledger_read");
+  // ★ 前置：确认 target 枚举里真有这几个（否则下面测的是"不支持的 target"）
+  const enumHas = (k) => (rd.parameters.properties.target.enum ?? []).includes(k);
+  ok(
+    "★ 87 前提：`ledger_read` 的 target **覆盖全部记忆文件**（含 goals / lessons）",
+    enumHas("goals") && enumHas("lessons"),
+    JSON.stringify(rd.parameters.properties.target.enum)
+  );
+
+  const d900 = await rd.execute({ target: "decisions", entry: "D900" }, ex);
+  ok(
+    "★★★★★ 87① 按条目取：`entry:\"D900\"` 取回**那一条**的正文（不是文件开头）",
+    d900.found === true && (d900.text ?? "").includes("这是 D900 的正文") && !(d900.text ?? "").includes("这是 D1 的正文"),
+    d900.found ? `第 ${d900.startLine}-${d900.endLine} 行` : d900.reason
+  );
+  // ★★ 反向对照：证明它**不是按行号顺序猜的**（D1 在 D900 后面，仍要取得到）
+  const d1 = await rd.execute({ target: "decisions", entry: "D1" }, ex);
+  ok(
+    "★★★★ 87①b 反向对照：`entry:\"D1\"` 仍取得到（**D1 排在 D900 之后** ⇒ 证明不是按顺序猜）",
+    d1.found === true && (d1.text ?? "").includes("这是 D1 的正文"),
+    d1.found ? `第 ${d1.startLine}-${d1.endLine} 行` : d1.reason
+  );
+  // ★★★ 目标卡：`g1` 必须能取到（第一版把 "g" 吃在捕获组外 ⇒ 一个都匹配不到）
+  const g1 = await rd.execute({ target: "goals", entry: "g1" }, ex);
+  ok(
+    "★★★★★ 87② `entry:\"g1\"` 取得到目标卡（★ 第一版丢了 `g` 前缀 ⇒ 一个都匹配不到）",
+    g1.found === true && (g1.text ?? "").includes("目标 g1"),
+    g1.found ? `${g1.text.length} 字符` : g1.reason
+  );
+  // ★★ 教训 vs 经验：编号同形，**不许串**
+  const l1 = await rd.execute({ target: "lessons", entry: "L1" }, ex);
+  const e1 = await rd.execute({ target: "lessons", entry: "E1" }, ex);
+  ok(
+    "★★★★ 87②b `L1` 取到**教训**、`E1` 取到**经验**（两种编号同形，不许串）",
+    l1.found === true && (l1.text ?? "").includes("教训一") && e1.found === true && (e1.text ?? "").includes("经验一"),
+    `L1=${l1.found} E1=${e1.found}`
+  );
+  // ★★★ 取不到 ⇒ **如实说没有 + 给目录**，绝不许硬凑一条相近的
+  const miss = await rd.execute({ target: "decisions", entry: "D99999" }, ex);
+  ok(
+    "★★★★★ 87③ 取**不存在**的条目 ⇒ `found:false` + 给目录，**绝不返回相近的一条**" +
+      "（硬凑 = 制造假记忆，比「查不到」危险得多）",
+    miss.found === false && miss.reason !== undefined && miss.toc !== undefined,
+    `found=${miss.found} toc=${miss.toc?.count}`
+  );
+  // ★★ 超长文件被截断 ⇒ 必须指路（不能把模型丢在黑暗里）
+  fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n\n" + "x".repeat(90000) + "\n", "utf8");
+  const big = await rd.execute({ target: "decisions" }, ex);
+  ok(
+    "★★★★ 87④ 超长文件被截断时，如实标 `truncated` **并给出按条目取的指路**",
+    big.truncated === true && typeof big.hint === "string" && big.hint.includes("entry"),
+    `chars=${big.chars} truncated=${big.truncated}`
+  );
+  // ★★ 反面对照：**短文件不许谎报截断**
+  fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n\n短\n", "utf8");
+  const small = await rd.execute({ target: "decisions" }, ex);
+  ok(
+    "★★★★ 87④b 负向对照：**短文件不许报截断**（判据不许恒真）",
+    small.truncated === false,
+    `truncated=${small.truncated}`
+  );
+  rmrf(root);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 88：**卡片化**（一卡一文件 + 多维索引表）（D202）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  用户原话（逐字）：*"所有的台账类别全部变成文件夹，然后各种内容变成卡片类和区块化"*
+//  + *"问题是实现之后他们就是一整个文件，导致模型有时候很难读取，特别是内容最大的那一些"*
+//  + *"而且最好也在每个文件夹里面有一张索引表，这张索引表是用来按之前搞的那多重维度分区块的"*
+//
+//  ★★★ 本节**第一条**就是"切片必须无损" —— 迁移会动一个 474K 的大文件，
+//    丢字是**不可逆的记忆损坏**。★ 判据用**逐段逐字复核**（比"总长度相等"硬得多）。
+section("情形 88：卡片化 —— 一卡一文件 + 多维索引表（D202）");
+
+{
+  // ── 88① 无损：**逐段逐字**（不是"总长度相等"）────────────────────────
+  {
+    const src = "# 决策\n\n前言一句。\n\n## D1 · 甲\n\n甲正文。\n\n## D2 · 乙\n\n乙正文。\n\n## D10 · 丙\n\n丙正文。\n";
+    const parts = mod.__test.splitIntoCardParts(src, "decisions");
+    eq("★ 88① 按条目切出 3 张卡", parts.length, 3);
+    ok("★ 88①a 键正确（含两位数编号 `D10`）", parts.map((p) => p.key).join(",") === "D1,D2,D10", parts.map((p) => p.key).join(","));
+    // ★★★ 逐段复核：每张卡 = 原文里对应那段（第一张卡多带前言）
+    const lines = src.split("\n");
+    const starts = [];
+    lines.forEach((l, i) => { if (/^##\s*D\d+(?![\dA-Za-z])/.test(l)) starts.push(i); });
+    let mismatched = 0;
+    for (let i = 0; i < starts.length; i++) {
+      const expect = lines.slice(starts[i], i + 1 < starts.length ? starts[i + 1] : lines.length).join("\n").replace(/\s+$/, "");
+      const got = parts[i].text;
+      const okOne = i === 0 ? got.endsWith(expect) : got === expect;
+      if (!okOne) mismatched++;
+    }
+    eq("★★★★★ 88①b **逐段逐字复核：每张卡 == 原文对应段**（丢字是不可逆的记忆损坏）", mismatched, 0);
+    ok("★★ 88①c 前言**并进第一张卡**（没有丢）", parts[0].text.includes("前言一句"), parts[0].text.slice(0, 40));
+  }
+
+  // ── 88② ★★★★ 安全：`key` 会变成**文件名** ⇒ 路径穿越必须全挡 ────────
+  {
+    const BAD = ["../../etc/passwd", "..", ".", "", "a/b", "a\\b", "D1.md", "D 1", "D1\nD2"];
+    const GOOD = ["D1", "D195", "L1", "E7", "g4", "a.b-c_d"];
+    const badPassed = BAD.filter((b) => mod.__test.isSafeCardKey(b) === true);
+    const goodRejected = GOOD.filter((g) => mod.__test.isSafeCardKey(g) === false);
+    eq("★★★★★ 88② 路径穿越串**一个都不许通过**", badPassed.length, 0);
+    eq("★★★★ 88②b 合法键**一个都不许被误拒**", goodRejected.length, 0);
+    if (badPassed.length > 0) console.log(`      ⚠️ 被放过的：${badPassed.join(", ")}`);
+  }
+
+  // ── 88③ ★★★★ 重复编号：**拒绝**并报行号（静默覆盖 = 丢一张卡）────────
+  {
+    const root = tmpProject("d202-dup");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n\n## D1 · 甲\n\n甲。\n\n## D1 · 甲的重号\n\n乙。\n", "utf8");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", revision: 0 }, null, 2), "utf8");
+    const r = mod.__test.splitFileIntoCards(root, { decisionsRel: "DECISIONS.md" }, "decisions", { apply: true, dir: "cards" });
+    ok("★★★★★ 88③ 重号 ⇒ **拒绝迁移**（不是静默覆盖）", r.ok === false, `ok=${r.ok}`);
+    ok("★★ 88③b 并报出**两处行号**（可行动的报错）", Array.isArray(r.duplicates) && r.duplicates.length === 1 && typeof r.duplicates[0].first === "number", JSON.stringify(r.duplicates));
+    ok("★★★★ 88③c **拒绝时一个文件都没写**（连目录都没建）", !fs.existsSync(path.join(root, "cards")), `目录存在=${fs.existsSync(path.join(root, "cards"))}`);
+    rmrf(root);
+  }
+
+  // ── 88④ ★★★★ 迁移真的跑通：卡片读得到 · 原文件不删 · 索引表生成 ────
+  {
+    const root = tmpProject("d202-split");
+    const src = "# 决策\n\n## D1 · 甲\n\n甲正文。\n\n## D2 · 乙\n\n" + "很长的内容。".repeat(200) + "\n\n## D10 · 丙（两位数编号）\n\n丙正文。\n";
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), src, "utf8");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.mkdirSync(path.join(root, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", revision: 0 }, null, 2), "utf8");
+    const info = { decisionsRel: "DECISIONS.md", decisionsDir: undefined };
+    // ★★ dry-run **不许写任何东西**
+    const dry = mod.__test.splitFileIntoCards(root, info, "decisions", { apply: false, dir: "cards" });
+    ok("★★★★ 88④ 预览（dry-run）**什么都不写**", dry.ok === true && !fs.existsSync(path.join(root, "cards")), `dry.ok=${dry.ok}`);
+    ok("★★★★ 88④b 预览里已**逐字校验无损**", dry.verify?.lossless === true, JSON.stringify(dry.verify));
+    const applied = mod.__test.splitFileIntoCards(root, info, "decisions", { apply: true, dir: "cards" });
+    ok("★★★ 88④c 真拆成功", applied.ok === true, applied.ok ? `写了 ${applied.written} 张` : applied.reason);
+    // ★★ 前提：夹具里**必须有 D10 与 D2**（否则下面那条排序断言是空断言 —— 我第一版就漏了）
+    const ks0 = mod.__test.listCards(root, "cards").map((c) => c.key);
+    ok("★★ 88④c2 前提：夹具里同时有 `D2` 与 `D10`（否则排序断言是空的）", ks0.includes("D2") && ks0.includes("D10"), ks0.join(","));
+    ok("★★★★★ 88④d **原文件一个字都没动**（它是迁移前的快照）", fs.readFileSync(path.join(root, "DECISIONS.md"), "utf8") === src, "逐字相同");
+    ok("★★★ 88④e 索引表 `INDEX.md` 也被生成", fs.existsSync(path.join(root, "cards", "INDEX.md")), "");
+    // ★★★ 索引表**不许**把自己当一张卡（实测踩过：toc 报出 4 张，其中一张叫 INDEX）
+    const cards = mod.__test.listCards(root, "cards");
+    ok("★★★★ 88④f 索引表**不算一张卡**（`listCards` 必须排除 `INDEX.md`）", cards.every((c) => c.key !== "INDEX"), cards.map((c) => c.key).join(","));
+    ok("★★★★ 88④g 目录按**数字**排序（`D2` 在 `D10` 前 —— 字典序会反）", (() => {
+      const ks = cards.map((c) => c.key);
+      return ks.indexOf("D2") < ks.indexOf("D10");
+    })(), cards.map((c) => c.key).join(","));
+    // ★★ 重跑必须**拒绝**（不覆盖、不合并）
+    const again = mod.__test.splitFileIntoCards(root, info, "decisions", { apply: true, dir: "cards" });
+    ok("★★★★ 88④h 目标目录已存在且非空 ⇒ **拒绝**（不覆盖）", again.ok === false && /已存在且非空/.test(again.reason ?? ""), (again.reason ?? "").slice(0, 40));
+    rmrf(root);
+  }
+
+  // ── 88⑤ ★★★★ 索引表：四维融合 + **默认只读** + 无卡片时明确拒绝 ────
+  {
+    const root = tmpProject("d202-index");
+    fs.mkdirSync(path.join(root, "cards"), { recursive: true });
+    fs.writeFileSync(path.join(root, "cards", "D1.md"), "## D1 · 小\n\n一句。\n", "utf8");
+    fs.writeFileSync(path.join(root, "cards", "D2.md"), "## D2 · 大 ★★★\n\n" + "内容。".repeat(300) + "\n", "utf8");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.mkdirSync(path.join(root, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", decisionsDir: "cards", archiveDir: "_ledger-archive", revision: 0 }, null, 2), "utf8");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const ex = { agent: { session: { header: { id: "s-88", cwd: root } } } };
+    const idx = run.registeredTools.get("ledger_index");
+    ok("★ 88⑤ 前提：`ledger_index` 已注册", idx !== undefined, "");
+    const show = await idx.execute({ kind: "decisions" }, ex);
+    ok("★★★ 88⑤a 现算出索引（2 张）", show.ok === true && show.count === 2, `count=${show.count}`);
+    ok("★★★★★ 88⑤b 每行都给**「为什么这个位置」**（四维融合可解释）", (show.rows ?? []).every((r) => typeof r.why === "string" && r.why.length > 0), show.rows?.[0]?.why);
+    ok("★★★★ 88⑤c **默认不落盘**（只读重算 —— 派生物不当权威）", !fs.existsSync(path.join(root, "cards", "INDEX.md")), `存在=${fs.existsSync(path.join(root, "cards", "INDEX.md"))}`);
+    const wrote = await idx.execute({ kind: "decisions", op: "write" }, ex);
+    ok("★★★ 88⑤d `op:\"write\"` 才落盘", wrote.ok === true && fs.existsSync(path.join(root, "cards", "INDEX.md")), wrote.indexPath ?? "");
+    const md = fs.readFileSync(path.join(root, "cards", "INDEX.md"), "utf8");
+    // ★ 断言"几个关键词都在"（别断言带 markdown 斜体的整句 —— 那会假红）
+    ok("★★★★ 88⑤e 落盘那份自带**「这只是缓存」声明**（防止后人把它当权威）", md.includes("只是缓存") && md.includes("权威") && /从.?不读它/.test(md), "");
+    rmrf(root);
+    // ★★ 负向对照：没有卡片目录 ⇒ 明确拒绝（不许假装有索引）
+    const legacy = tmpProject("d202-index-none");
+    fs.writeFileSync(path.join(legacy, "DECISIONS.md"), "# 决策\n\n## D1 · x\n\n正文\n", "utf8");
+    fs.writeFileSync(path.join(legacy, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.mkdirSync(path.join(legacy, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(path.join(legacy, ".dsh-ledger.json"), JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", revision: 0 }, null, 2), "utf8");
+    const run2 = makeCtx({});
+    mod.apply(run2.ctx, {});
+    const none = await run2.registeredTools.get("ledger_index").execute({}, { agent: { session: { header: { id: "s-88b", cwd: legacy } } } });
+    ok("★★★★ 88⑤f 负向对照：**没有卡片目录 ⇒ 明确拒绝**（而不是返回空表）", none.ok === false && /没有卡片目录/.test(none.reason ?? ""), (none.reason ?? "").slice(0, 40));
+    rmrf(legacy);
+  }
+
+  // ── 88⑥ ★★★★★ 老项目照旧：卡片化**不是破坏性升级** ───────────────────
+  {
+    const root = tmpProject("d202-legacy");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n\n## D1 · 老\n\n老内容。\n", "utf8");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.mkdirSync(path.join(root, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", revision: 0 }, null, 2), "utf8");
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const r = await run.registeredTools.get("ledger_read").execute({ target: "decisions", entry: "D1" }, { agent: { session: { header: { id: "s-88c", cwd: root } } } });
+    ok("★★★★★ 88⑥ 没登记卡片目录 ⇒ **照旧走单文件**（`mode:file`）—— 既有用户一个字节都不动", r.found === true && r.mode === "file", `mode=${r.mode}`);
+    rmrf(root);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★★ 情形 89：**卡片模式下"读写必须是同一个真源"**（D203）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  ★★★ 这一条守的是**迁移能不能成立**。病（我先在代码里查实，再写断言）：
+//    卡片化只改了**存储布局**，而 `ledger_write` / 注入 / `ledger_goals` / `ledger_lessons`
+//    全都还在问 `info.decisionsRel`（= 留在盘上那份**迁移前快照**）。
+//    ⇒ 迁完：**读**走卡片目录、**写**走进旧文件 ⇒
+//      新决策写进一个**再也没人读的文件**，模型以为自己记下来了，
+//      而它**永远不出现在任何一次读取里**。
+//    ★ 这比"没写"更坏：**记录存在 ≠ 记录可被读到**（纪律 11 同型，但**更隐蔽**——
+//     文件真的在、内容真的对、只是没有任何一条路会去读它）。
+//
+//  ★ 判据（三面各一条，都**真跑工具**、不看源码）：
+//    ① **写**进去的决策，**读**得出来（同一编号 ⇒ 同一条内容）；
+//    ② 写进去的**必须落在卡片目录**里（而不是旧文件）；
+//    ③ 显示"这一类住在哪"的那一处（注入契约 = `kindLocationOf`）**必须指向卡片目录**。
+{
+  section("情形 89：卡片模式下读写是同一个真源（D203）");
+  const root = tmpProject("d203-sot");
+  // ── 夹具：一个**已经迁移过**的项目（卡片目录存在，旧文件也还在 = 快照）──
+  fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
+  fs.mkdirSync(path.join(root, "_ledger-archive"), { recursive: true });
+  fs.mkdirSync(path.join(root, "decisions"), { recursive: true });
+  fs.writeFileSync(path.join(root, "decisions", "D1.md"), "## D1 · 老决策\n\n老内容。\n", "utf8");
+  // ★ 旧文件**故意留着**（迁移的既定行为：它是快照）—— 里面的内容与新卡**不同**，
+  //   这样才能验证"读的到底是哪一份"（若两者相同，这条断言就是空的）。
+  const SNAPSHOT = "## D1 · 老决策\n\n老内容。\n\n## D2 · 只在快照里\n\n★ 快照里的东西，不该被读到。\n";
+  fs.writeFileSync(path.join(root, "DECISIONS.md"), SNAPSHOT, "utf8");
+  fs.writeFileSync(
+    path.join(root, ".dsh-ledger.json"),
+    JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", decisionsDir: "decisions", archiveDir: "_ledger-archive", revision: 0 }, null, 2),
+    "utf8"
+  );
+  const run = makeCtx({});
+  mod.apply(run.ctx, {});
+  const ex = execFor(root, "s-89");
+
+  // ── 89① 单条读：必须**只**给卡片里的那条，**不许**夹带快照里的 D2 ──────────
+  {
+    const r = await run.registeredTools.get("ledger_read").execute({ target: "decisions", entry: "D1" }, ex);
+    ok("★★★★★ 89① 卡片模式下按条目读 ⇒ 走卡片（`mode:\"card\"`）", r.found === true && r.mode === "card", `mode=${r.mode}`);
+    ok("★★★★★ 89①b 读出来的是**卡片正文**，不是快照", /老内容。/.test(r.text ?? "") && !/快照里的东西/.test(r.text ?? ""), (r.text ?? "").slice(0, 30));
+  }
+
+  // ── 89② 整份读：**不许**把快照里的东西带出来（那等于读了一份冻结的历史）──
+  {
+    const r = await run.registeredTools.get("ledger_read").execute({ target: "decisions" }, ex);
+    ok("★★★★★ 89② 整份读走**拼卡视图**（`mode:\"card\"` + 报目录）", r.mode === "card" && r.dir === "decisions", `mode=${r.mode} dir=${r.dir}`);
+    ok("★★★★★ 89②b 整份读**不含**快照里独有的内容（读的是卡片，不是那份旧文件）", !/快照里的东西/.test(r.text ?? ""), "★ 若这里红了 ⇒ 读的还是迁移前那份快照");
+    // ★★★★★★ 89②c ★★ **必须"含"卡片正文** —— 这一条是补上 89②b 的漏洞：
+    //   ★ 89②b 只查"不含快照内容"，而**返回空也满足它** ⇒ 是「空的满足」。
+    //   ★★ 这不是我猜的：**反向验证（摘掉 `readKindRaw` 的卡片分支）当时仍然全绿** ——
+    //     因为 `cardModeOf` 在卡片模式下**不返回 `fileRel`** ⇒ 那一版会返回**空 raw**，
+    //     而 89②b 对此**无感**。⇒ 正解：**正向也要断言**（"含"比"不含"硬）。
+    ok(
+      "★★★★★★ 89②c ★ 整份读**必须真含卡片正文**（补「不含」那条的漏洞 —— 返回空也满足『不含』）",
+      /老内容。/.test(r.text ?? "") && (r.cardCount ?? 0) >= 1,
+      `cardCount=${r.cardCount} chars=${(r.text ?? "").length}`
+    );
+  }
+
+  // ── 89③ 写入：**必须**落进卡片目录，且**读得回来**（这一条是整条的命门）───
+  {
+    const w = await run.registeredTools.get("ledger_write").execute({ target: "decisions", content: "## D2 · 新决策\n\n新内容。\n" }, ex);
+    ok("★★★★★ 89③ 卡片模式下追加决策 ⇒ 写成一张**卡**（`mode:\"card\"`）", w.ok === true && w.mode === "card", `ok=${w.ok} mode=${w.mode} ${(w.reason ?? "").slice(0, 60)}`);
+    ok("★★★★★ 89③b 卡**落在卡片目录里**（`decisions/D2.md`）", fs.existsSync(path.join(root, "decisions", "D2.md")), "");
+    ok(
+      "★★★★★★ 89③c ★ **写进去的立刻读得回来**（这一条就是「两份真源」的照妖镜）",
+      (() => {
+        // 真读一次（不看返回值），并且**必须**在卡片里 —— 不是快照里
+        const card = fs.readFileSync(path.join(root, "decisions", "D2.md"), "utf8");
+        return /新内容。/.test(card);
+      })(),
+      ""
+    );
+    const back = await run.registeredTools.get("ledger_read").execute({ target: "decisions", entry: "D2" }, ex);
+    ok("★★★★★★ 89③d 用工具**真读回**刚写的那一条（端到端闭环）", back.found === true && /新内容。/.test(back.text ?? ""), (back.text ?? "").slice(0, 30));
+    ok("★★★★★ 89③e **旧文件（快照）一个字都没动**", fs.readFileSync(path.join(root, "DECISIONS.md"), "utf8") === SNAPSHOT, "");
+  }
+
+  // ── 89④ 覆盖已存在的编号 ⇒ **拒绝**（同编号两张卡 = 静默丢一张）──────────
+  {
+    const w = await run.registeredTools.get("ledger_write").execute({ target: "decisions", content: "## D1 · 想覆盖\n\n...\n" }, ex);
+    ok("★★★★ 89④ 写一个**已存在**的编号 ⇒ 拒绝（不覆盖 = 不静默丢卡）", w.ok === false && (w.duplicates ?? []).includes("D1"), (w.reason ?? "").slice(0, 50));
+    ok("★★★★ 89④b 拒绝时**一个字节都没写**（原卡内容不变）", /老内容。/.test(fs.readFileSync(path.join(root, "decisions", "D1.md"), "utf8")), "");
+  }
+
+  // ── 89⑤ 整份 replace ⇒ **拒绝**（一个目录无法被"一次写入替换"）────────────
+  {
+    const w = await run.registeredTools.get("ledger_write").execute({ target: "decisions", content: "# 全没了\n", mode: "replace" }, ex);
+    ok("★★★★ 89⑤ 卡片模式下 `mode:\"replace\"` ⇒ 明确拒绝（并告诉他该怎么改）", w.ok === false && /不能整份 replace/.test(w.reason ?? ""), (w.reason ?? "").slice(0, 50));
+  }
+
+  // ── 89⑥ 注入契约：**必须**指向卡片目录（否则模型去读快照并当成现状）──────
+  {
+    const loc = mod.__test.kindLocationOf(mod.__test.inspect(root), "decisions");
+    ok("★★★★★ 89⑥ `kindLocationOf` 在卡片模式下指向**目录**（不是旧文件）", loc.card === true && loc.rel === "decisions", JSON.stringify(loc));
+  }
+
+  // ── 89⑦ ★★★★ `readKindRaw` 是 goals / lessons / 注入**共用的整份读** ────
+  //   ★ 反向验证抓出的弱点就在这里：只断言"不含快照"时，**返回空也满足**。
+  //   ⇒ 这里**正向**断言"含卡片正文"，并把这条用在**目标树注入**那条链上。
+  {
+    const rr = mod.__test.readKindRaw(root, mod.__test.inspect(root), "decisions");
+    ok("★★★★ 89⑦ `readKindRaw` 在卡片模式下报 `mode:\"card\"` 且**真含卡片正文**", rr.mode === "card" && /老内容。/.test(rr.raw), `mode=${rr.mode} chars=${rr.raw.length}`);
+    // ★ 单文件模式必须**照旧**（既有项目零影响）
+    const legacyRoot = tmpProject("d203-legacy-raw");
+    fs.writeFileSync(path.join(legacyRoot, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.mkdirSync(path.join(legacyRoot, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(path.join(legacyRoot, "DECISIONS.md"), "## D1 · 老\n\n老文件内容。\n", "utf8");
+    fs.writeFileSync(
+      path.join(legacyRoot, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", revision: 0 }, null, 2),
+      "utf8"
+    );
+    const lr = mod.__test.readKindRaw(legacyRoot, mod.__test.inspect(legacyRoot), "decisions");
+    ok("★★★★ 89⑦b 单文件模式 `readKindRaw` 报 `mode:\"file\"` 并读到老文件", lr.mode === "file" && /老文件内容。/.test(lr.raw), `mode=${lr.mode}`);
+    rmrf(legacyRoot);
+  }
+
+  // ── 89⑧ ★★★★★★ 返回值**必须能被内核无损序列化**（真机撞出的缺陷）──────────
+  //   ★★★ 病（2026-10-14 真机当场撞出，**自检全绿也照样发生**）：
+  //     卡片模式的 `ledger_read({entry})` 返回里带了 `totalLines: undefined` ⇒
+  //     内核把返回值 JSON 化时**丢掉这个键** ⇒ 判 "value is not lossless JSON" ⇒
+  //     **整个调用被拒收**（内容其实已经读到了，模型却一个字节都拿不到）。
+  //   ★★ **为什么自检原先抓不到**：自检直接调 `tool.execute()`，
+  //     **不经过内核那道序列化** —— 它只看返回对象，`undefined` 那个键在 JS 里是可读的。
+  //     ⇒ 判据：**"能被内核序列化"是一个独立的验收面**，必须自己造一把尺子去量。
+  //   ★ 尺子：逐层找**值为 `undefined` 的键**（那就是会被内核丢掉的那个键）、
+  //     以及函数/符号/bigint（同样不可序列化）。
+  {
+    const badPaths = [];
+    const scan = (v, p) => {
+      if (v === undefined) {
+        badPaths.push(`${p} = undefined`);
+        return;
+      }
+      if (v === null) return;
+      if (typeof v === "function" || typeof v === "symbol" || typeof v === "bigint") {
+        badPaths.push(`${p} = ${typeof v}`);
+        return;
+      }
+      if (Array.isArray(v)) {
+        v.forEach((x, i) => scan(x, `${p}[${i}]`));
+        return;
+      }
+      if (typeof v === "object") {
+        for (const [k, x] of Object.entries(v)) scan(x, `${p}.${k}`);
+      }
+    };
+    const r1 = await run.registeredTools.get("ledger_read").execute({ target: "decisions", entry: "D1" }, ex);
+    scan(r1, "ledger_read(entry)");
+    const r2 = await run.registeredTools.get("ledger_read").execute({ target: "decisions", entry: "完全没有这条" }, ex);
+    scan(r2, "ledger_read(entry-miss)");
+    const r3 = await run.registeredTools.get("ledger_read").execute({ target: "decisions" }, ex);
+    scan(r3, "ledger_read(whole)");
+    const r4 = await run.registeredTools.get("ledger_write").execute({ target: "decisions", content: "## D9 · 序列化\n\nx\n" }, ex);
+    scan(r4, "ledger_write(card)");
+    ok(
+      "★★★★★★ 89⑧ 工具返回值里**不许有 `undefined`**（内核会丢掉它 ⇒ 判「不是无损 JSON」⇒ 拒收整个调用）",
+      badPaths.length === 0,
+      badPaths.slice(0, 6).join("；")
+    );
+  }
+
+  rmrf(root);
+
+  // ── 89⑨ ★★★★★★ `limit` 必须**同时**约束「给人看的那份」与「给模型的那份」──────
+  //   ★★★ 病（2026-10-14 **真机撞出**，夹具全绿也照样发生）：
+  //     `ledger_index({limit:5})` 的 `markdown` 只给 5 行，**`rows` 却返回全部**（真机回来 204 条）
+  //     —— 而工具描述白纸黑字写着 "Max rows to return (default 200)"。
+  //   ★★ 为什么这比"文档写错"严重：它直接打穿 **D79** 的预算（"小索引 + 按需翻页"）——
+  //     模型真正吃进去的是 `rows`（结构化那份）⇒ **上限形同虚设**（那一次白烧了一大笔）。
+  //   ★ 判据：**同一个上限必须约束两份输出**，只守一份 = 没守。
+  //   ★★★ **为什么夹具原先全绿**：夹具只有 2 张卡，而 `limit` 默认 200 ⇒
+  //     `markdown` 与 `rows` **恰好相同** ⇒ 断言是**空的**。⇒ 这里**必须**让总数 > limit
+  //     （与 89②c、L30 同一类："上限类断言必须先让被测对象超过那个上限"）。
+  {
+    const root2 = tmpProject("d205-limit");
+    fs.mkdirSync(path.join(root2, "decisions"), { recursive: true });
+    // ★ 造 **12** 张卡（> limit 5），才能让"上限"这件事可判。
+    for (let i = 1; i <= 12; i++) {
+      fs.writeFileSync(path.join(root2, "decisions", `D${i}.md`), `## D${i} · 第 ${i} 条 ★\n\n内容 ${i}。\n`, "utf8");
+    }
+    fs.writeFileSync(path.join(root2, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.mkdirSync(path.join(root2, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root2, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", decisionsDir: "decisions", archiveDir: "_ledger-archive", revision: 0 }, null, 2),
+      "utf8"
+    );
+    const run2 = makeCtx({});
+    mod.apply(run2.ctx, {});
+    const ex2 = execFor(root2, "s-89i");
+    const idx = await run2.registeredTools.get("ledger_index").execute({ kind: "decisions", limit: 5 }, ex2);
+    // ★★ 前提断言：总数**必须**大于 limit（否则下面两条是空的）
+    ok("★★★★ 89⑨ 前提：夹具卡片数（12）**大于** limit（5）—— 否则这条断言是空的", idx.count === 12 && idx.count > 5, `count=${idx.count}`);
+    ok("★★★★★ 89⑨b `rows` **受 `limit` 约束**（不是我撞见的「回来 204 条」）", (idx.rows ?? []).length === 5, `rows=${(idx.rows ?? []).length}`);
+    // ③ 反向对照：markdown 表格的**数据行**数也必须 ≤ limit（两边同一个上限）
+    const mdRows = (idx.markdown ?? "").split(/\r?\n/).filter((l) => /^\|\s*`?D\d+/.test(l)).length;
+    ok("★★★★★ 89⑨c `markdown` 的数据行数也 ≤ `limit`（两份输出用**同一个**上限）", mdRows === 5, `mdRows=${mdRows}`);
+    ok("★★★★ 89⑨d 被截断时**如实说还有多少**（不许静默截断）", /另有 7 张未列出/.test(idx.more ?? ""), String(idx.more));
+    rmrf(root2);
+  }
+
+  // ── 89⑩ ★★★★★★ 台账"骤降"安全网：**只拦默认、绝不拦明说**（D206）──────────
+  //   ★ 病（本会话真发生）：`ledger_write({target:"active"})` 写增量、**漏 `mode:"append"`**
+  //     ⇒ `active` 默认 replace ⇒ **330 行 → 38 行**（`changedBy: -291`）。
+  //     ★★ 而 `LEDGER.md` 被 git 忽略、盘上无自动备份 ⇒ 救回全靠"刚好有注入全文"。
+  //   ★★★ 用户当场问的**关键顾虑**：*"安全网建立的话，会不会卡死某些情况下的工作推进？"*
+  //     ⇒ 所以这条断言**必须两面都钉住**（**只测"该拦"= 半个守卫**）：
+  //       ① 该拦的拦住（漏参数 + 骤降）；
+  //       ② ★ **该放行的必须放行**（显式 replace / force / 正常精简 / append）——
+  //          这一面若不测，守卫就可能在"用户真想精简台账"时把人卡死，而且**没人会发现**。
+  {
+    const root3 = tmpProject("d206-shrink");
+    fs.writeFileSync(path.join(root3, "LEDGER.md"), "# 台账\n\n" + "旧条目。\n".repeat(80), "utf8");
+    fs.mkdirSync(path.join(root3, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root3, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", revision: 0 }, null, 2),
+      "utf8"
+    );
+    const run3 = makeCtx({});
+    mod.apply(run3.ctx, {});
+    const ex3 = execFor(root3, "s-89j");
+    const W = run3.registeredTools.get("ledger_write");
+    const before = fs.readFileSync(path.join(root3, "LEDGER.md"), "utf8");
+
+    // ① 该拦：没声明 mode + 内容骤降 ⇒ 拒绝，且**一个字节都没写**
+    const r1 = await W.execute({ target: "active", content: "# 台账\n\n只剩两行。\n" }, ex3);
+    ok("★★★★★★ 89⑩① 漏 `mode` + 骤降 ⇒ **拒绝**（这正是那次 330→38 的形状）", r1.ok === false && /拒绝写入/.test(r1.reason ?? ""), `ok=${r1.ok}`);
+    ok("★★★★★ 89⑩①b 拒绝时**一个字节都没写**", fs.readFileSync(path.join(root3, "LEDGER.md"), "utf8") === before, "");
+
+    // ② ★★★★ **该放行必须放行**（用户顾虑的那一面：不许卡死有意的推进）
+    const r2 = await W.execute({ target: "active", content: "# 台账\n\n只剩两行。\n", mode: "replace" }, ex3);
+    ok("★★★★★★ 89⑩② **显式 `mode:\"replace\"` ⇒ 放行**（用户真想精简台账时，守卫不许挡）", r2.ok === true, (r2.reason ?? "").slice(0, 60));
+
+    // ③ force 也是逃生口
+    fs.writeFileSync(path.join(root3, "LEDGER.md"), "# 台账\n\n" + "旧条目。\n".repeat(80), "utf8");
+    const r3 = await W.execute({ target: "active", content: "# 台账\n\n只剩两行。\n", force: true }, ex3);
+    ok("★★★★★ 89⑩③ `force:true` ⇒ 放行（与「超行数上限」复用同一个逃生口）", r3.ok === true, (r3.reason ?? "").slice(0, 60));
+
+    // ④ ★ **正常精简不许被拦**：删掉十几行（未到 50% 或未到 30 行）⇒ 放行
+    fs.writeFileSync(path.join(root3, "LEDGER.md"), "# 台账\n\n" + "旧条目。\n".repeat(80), "utf8");
+    const mild = "# 台账\n\n" + "旧条目。\n".repeat(70); // 少 10 行
+    const r4 = await W.execute({ target: "active", content: mild }, ex3);
+    ok("★★★★★ 89⑩④ **正常的「精简台账」（只少 10 行）⇒ 放行** —— 守卫不许误伤日常维护", r4.ok === true, (r4.reason ?? "").slice(0, 60));
+
+    // ⑤ append 一律放行（最常见的正确用法）
+    const r5 = await W.execute({ target: "active", content: "新的一行。", mode: "append" }, ex3);
+    ok("★★★★ 89⑩⑤ `mode:\"append\"` ⇒ 放行（正确用法永远畅通）", r5.ok === true, (r5.reason ?? "").slice(0, 60));
+    rmrf(root3);
+  }
+
+  // ── 89⑪ ★★★★★★ **全部工具的返回值都必须能无损序列化**（D207）───────────────
+  //   ★ 第三次复发！形状完全一样：① D188 ①（`ledger_init`）② D203（`ledger_read`）
+  //     ③ D207（`ledger_goals({op:"tree"})` 把老卡的 `updatedAt: undefined` 摊开）。
+  //   ★★★ 根因：**`undefined` 在 JS 里合法、可读、可展开，一旦跨过内核那道 JSON 化
+  //     就被丢掉、并被判「不是无损 JSON」⇒ 整个调用被拒收**（内容其实已算好）。
+  //   ⇒ 修法：在**唯一的工具注册点**统一 `lossless()`（一个包装覆盖 21 个工具）。
+  //   ★ 为什么 89⑧ 没抓住 D207：89⑧ 只测了**四个手挑的调用**（`ledger_read` ×3 + `ledger_write`），
+  //     **`ledger_goals` 不在里面** ⇒ ★ 判据：**"挑几个代表测"不是"全部测"** ——
+  //     要拦"某一类"，就得**遍历那一类**（这里：遍历**已注册的全部工具**、逐个调一次真入口）。
+  //   ★★ 而且必须**遍历 + 真调**：这里对每个工具用**最小合法参数**真跑一遍。
+  {
+    const root4 = tmpProject("d207-lossless");
+    fs.writeFileSync(path.join(root4, "LEDGER.md"), "# 台账\n\n状态。\n", "utf8");
+    fs.mkdirSync(path.join(root4, "_ledger-archive"), { recursive: true });
+    fs.mkdirSync(path.join(root4, "decisions"), { recursive: true });
+    fs.writeFileSync(path.join(root4, "decisions", "D1.md"), "## D1 · 甲\n\n甲。\n", "utf8");
+    // ★ 夹具关键：**老格式的目标卡**（没有 `- 更新于:`）—— 那正是 D207 的触发条件。
+    fs.mkdirSync(path.join(root4, "goals"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root4, "goals", "g1.md"),
+      "## 目标 g1 · 已完成\n- parent: -\n- title: 老格式的卡（没有更新于字段）\n- 关键结果: 甲\n",
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(root4, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", decisionsDir: "decisions", goals: "GOALS.md", goalsDir: "goals", archiveDir: "_ledger-archive", revision: 0 }, null, 2),
+      "utf8"
+    );
+    const run4 = makeCtx({});
+    mod.apply(run4.ctx, {});
+    const ex4 = execFor(root4, "s-89k");
+    // ★ 前提断言：老卡的 `updatedAt` **真的是 undefined**（否则这条断言是空的 —— L30 那一类）
+    const cardsRaw = mod.__test.parseGoalCards(
+      "## 目标 g1 · 已完成\n- parent: -\n- title: 老\n"
+    );
+    ok("★★★★ 89⑪ 前提：老格式的卡 `updatedAt` **真的是 `undefined`**（否则这条是空的）", cardsRaw[0]?.updatedAt === undefined, String(cardsRaw[0]?.updatedAt));
+
+    // ① 真调那个曾撞出缺陷的入口：必须 ok，且**老卡仍如实报"未知"**（清理不许改语义）
+    const gt = await run4.registeredTools.get("ledger_goals").execute({ op: "tree" }, ex4);
+    ok("★★★★★★ 89⑪① `ledger_goals({op:\"tree\"})` 带老卡时**不再被内核拒收**（`ok:true`）", gt.ok === true, JSON.stringify(gt).slice(0, 80));
+    ok("★★★★★ 89⑪①b 清理 `undefined` **不许改语义**：老卡仍如实报「未知」", JSON.stringify(gt).includes("未知"), "");
+    ok("★★★★ 89⑪①c 且**没有把 `updatedAt` 这个键变成 `null`**（那会被误读成「有时间、值为空」）", (gt.cards ?? []).every((c) => c.updatedAt !== null), "");
+
+    // ② ★★★★ **遍历全部已注册工具**，逐个真调一次，扫返回值里的 `undefined`
+    const badAll = [];
+    const scanAll = (v, p, out) => {
+      if (v === undefined) { out.push(`${p}=undefined`); return; }
+      if (v === null) return;
+      if (Array.isArray(v)) { v.forEach((x, i) => scanAll(x, `${p}[${i}]`, out)); return; }
+      if (typeof v === "object") for (const [k, x] of Object.entries(v)) scanAll(x, `${p}.${k}`, out);
+    };
+    const MIN_ARGS = {
+      ledger_status: {}, ledger_read: { target: "active" }, ledger_write: { target: "active", content: "x", mode: "append" },
+      ledger_log: {}, ledger_log_write: { title: "t" }, ledger_triage: { keep: [], stash: [], drop: [] },
+      ledger_goals: { op: "tree" }, ledger_lessons: { op: "list" }, ledger_index: { kind: "decisions" },
+      ledger_migrate: { op: "detect" }, ledger_recall: {}, ledger_checkpoint: {}, ledger_archive: {},
+      ledger_principles_access: {}, ledger_propose_principle: { op: "add", text: "x" },
+      ledger_conform: {}, ledger_init: {}, ledger_compact: {}, ledger_handoff: { title: "t" }, ledger_note: { title: "t" },
+    };
+    let called = 0;
+    for (const [nm, tool] of run4.registeredTools) {
+      let r;
+      try {
+        r = await tool.execute(MIN_ARGS[nm] ?? {}, ex4);
+      } catch (e) {
+        continue; // 抛错不算"返回值有 undefined"（那是另一个面）
+      }
+      called++;
+      scanAll(r, nm, badAll);
+    }
+    ok("★★★★ 89⑪② 前提：**真的调到了全部工具**（不是空集）", called >= 15, `called=${called}`);
+    ok(
+      "★★★★★★ 89⑪③ 遍历**全部工具**的返回值，**一个 `undefined` 都没有**（D207 的根堵在注册点）",
+      badAll.length === 0,
+      badAll.slice(0, 6).join("；")
+    );
+    rmrf(root4);
+  }
+
+  // ── 89⑫ ★★★★★★ **「当前设置」快照每回合都在**（D208）────────────────────────
+  //   ★ 用户的病（逐字）：*"我现在已经台账设置为 400，但是你仍然认为是 350，
+  //     然后有些模型认为是 150，有些模型认为是 300"* ⇒ 模型对"当前设置"没有实时真相。
+  //   ★★★ 这一条**必须吃"真渲染的注入文本"**，不能只看源码里有没有那个函数
+  //     （L14：源码 ≠ 送达文本；本项目已栽过两次"写了但没送达"：D195 / D197）。
+  {
+    const root5 = tmpProject("d208-snapshot");
+    fs.writeFileSync(path.join(root5, "LEDGER.md"), "# 台账\n\n状态。\n", "utf8");
+    fs.mkdirSync(path.join(root5, "_ledger-archive"), { recursive: true });
+    // ★ 夹具就是用户的现场：**项目清单写 350**（它管用），而面板/默认是别的值 ⇒ 分叉。
+    fs.writeFileSync(
+      path.join(root5, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", maxActiveLines: 350, revision: 0 }, null, 2),
+      "utf8"
+    );
+    const run5 = makeCtx({});
+    mod.apply(run5.ctx, {});
+    const info5 = mod.__test.inspect(root5);
+    const snap = mod.__test.renderSettingsSnapshot(info5);
+    ok("★★★★★ 89⑫① 快照**真的渲染得出来**（含标题 + 至少 5 项）", /当前设置/.test(snap) && (snap.match(/^- /gm) ?? []).length >= 5, `行数=${(snap.match(/^- /gm) ?? []).length}`);
+    ok("★★★★★★ 89⑫② ★ **「谁管用」说得清**（项目清单定了 350 ⇒ 明说「它管用」）", /项目清单定了 350/.test(snap) && /它管用/.test(snap), snap.split("\n").find((l) => l.includes("活跃台账上限")) ?? "");
+    ok("★★★★★ 89⑫③ 面板值只被**降级说明**（「只管新项目」），不许冒充生效值", /只管新项目|新项目的默认/.test(snap), "");
+    ok("★★★★ 89⑫④ 快照**占比小**（≤ 1200 字符 —— 用户要的是「占比比较小」）", snap.length <= 1200, `length=${snap.length}`);
+    // ⑤ ★ 它必须挂进**真注入**（而不是只当个孤立函数）
+    const inj = mod.__test.renderInjectionBody(info5, undefined, {});
+    ok("★★★★★★ 89⑫⑤ ★ 快照**真的进了 `renderInjectionBody` 的输出**（不是只写了个函数）", /当前设置/.test(inj), `inj含快照=${/当前设置/.test(inj)}`);
+    // ⑥ 压缩后那份**短注入**也必须带它（用户要的是"每回合"）
+    const shortInj = mod.__test.renderCompactInjection(info5, undefined);
+    ok("★★★★★ 89⑫⑥ 压缩后的**短注入也带快照**（「每回合」包括刚压完那一回合）", /当前设置/.test(shortInj), "");
+    rmrf(root5);
+
+    // ── 89⑫④b/④c ★★★★★★ **快照不许自己重新推导** project-first 的值（D209 · 真机撞出）──
+    //   ★ 病：我第一版在快照里写 `info?.blockInjection === true`，而 `inspect()` **不返回这个字段**
+    //     ⇒ 恒判"整份" ⇒ 真机注入里出现 **「区块级注入 开（整份）」** 这种**自相矛盾**
+    //     （开，却说是整份）。真正生效的判据是 `blockInjectionEnabled(info)`（**清单优先**）。
+    //   ★★ 判据：**"这个值现在是多少"只能有一个出口** —— 快照必须**问那个权威函数**
+    //     （与 D170「同一个上限不许有两个出处」同型；这次是"同一个开关两处各算一份"）。
+    {
+      const r5b = tmpProject("d209-snap-agree");
+      fs.writeFileSync(path.join(r5b, "LEDGER.md"), "# 台账\n\n状态。\n", "utf8");
+      fs.mkdirSync(path.join(r5b, "_ledger-archive"), { recursive: true });
+      fs.writeFileSync(
+        path.join(r5b, ".dsh-ledger.json"),
+        JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", revision: 0 }, null, 2),
+        "utf8"
+      );
+      const run5b = makeCtx({ blockInjection: true });
+      mod.apply(run5b.ctx, { blockInjection: true });
+      const info5b = mod.__test.inspect(r5b);
+      const snapOn = mod.__test.renderSettingsSnapshot(info5b);
+      const authoritative = mod.__test.blockInjectionEnabled(info5b);
+      ok("★★★★ 89⑫④b 前提：权威函数确实认为开关是开的", authoritative === true, `authoritative=${authoritative}`);
+      ok(
+        "★★★★★★ 89⑫④c 快照那句**与权威函数一致**（不许自己重推 ⇒ 不许出现「开（整份）」）",
+        // ★ 断言必须**匹配那个值本身**：`区块级注入` 这个词**含「块级」** ⇒ 用 `includes("块级")` 会恒真
+        //   （我第一版就是这么写的，反向验证当场证明它恒绿 —— 与 L30 同型：匹配面太宽 ⇒ 恒真）。
+        /区块级注入\s*开（\*\*块级\*\*）/.test(snapOn),
+        (snapOn.split("\n").find((l) => l.includes("区块级注入")) ?? "").slice(0, 90)
+      );
+      rmrf(r5b);
+    }
+  }
+
+  // ── 89⑬ ★★★★★★ **「设置刚改过」变更感知**（D210）─────────────────────────────
+  //   ★ 用户的病（逐字）：*"模型每回合获得的设置清单能否不影响工作还有足够的提醒效果，
+  //     否则有些标准改了之后永远不生效"*
+  //   ★★ 判据：**"知道现在的值"（D208） ≠ "知道它刚变过"（D210）**。
+  //
+  //   ★★★ 这一节里**最要紧的一条是 ⑬②** —— 它是本轮的**真发现**，而且
+  //     **旧代码会真红**（不是形式主义）：
+  //     我先写好了"变更行"的渲染，**跑探针才发现整段根本送不出去** ——
+  //     `fingerprintOf` 只哈希**台账字节**，而"只改设置、不动台账"时台账字节
+  //     一个都没变 ⇒ 指纹相同 ⇒ `skip === true` ⇒ **一个字都不注入**。
+  //     ⇒ 我原设计里那句「值变⇒文本变⇒指纹变⇒必然注出去」**是假的**：
+  //       它把"**渲染出来的文本**"与"**参与去重的指纹**"当成了同一个东西。
+  //   ★ 所以这一条断言吃的**不是渲染层**，而是**真 pre-step 的送达**（D195/D197 同款尺子）。
+  {
+    const r13 = tmpProject("d210-settings-change");
+    const LEDGER13 = "# 台账\n\n## 一、状态\n\n- 探针夹具。\n";
+    fs.writeFileSync(path.join(r13, "LEDGER.md"), LEDGER13, "utf8");
+    fs.mkdirSync(path.join(r13, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(
+      path.join(r13, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", maxActiveLines: 350, revision: 0 }, null, 2),
+      "utf8"
+    );
+    const run13 = makeCtx({ withTokenMeter: true });
+    mod.apply(run13.ctx, {});
+    const sid13 = "session-d210-settings-change";
+    const agent13 = {
+      session: { header: { id: sid13, cwd: r13 }, requestContext: () => ({ contextWindow: 1000000 }) },
+    };
+    run13.services.tokenMeter._total = 0; // 水位 0 ⇒ 不发水位提醒（保证注入内容是"快照那一路"）
+    const text13 = (d) =>
+      (d.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+
+    // ── ① 第 1 步：首轮注入快照，但**不许**报"刚改过"（初识 ≠ 变更）──────────
+    const s1 = text13(await runPreStep(run13, { agent: agent13, messages: [] }));
+    ok("★★★★ 89⑬① 前提：首轮注入了快照，且**不报**「设置刚改过」（初识不是变更）",
+      /当前设置/.test(s1) && !/设置刚改过/.test(s1),
+      `含快照=${/当前设置/.test(s1)} 含变更=${/设置刚改过/.test(s1)}`);
+
+    // ── ② ★★★★★★ **只改设置、一字不动台账** ⇒ 下一步**必须**仍注得出去 ────────
+    //   ★ 这一条就是本轮的真发现：旧代码（指纹只看台账）在这里**必然 n=0**。
+    //   ★ 改法必须走**真机面板那条路**（`setActiveSettings`），**绝不能**重跑 `apply()`
+    //     —— `apply()` 会 `newState()` 把指纹清空 ⇒ 那会让这条断言**假绿**。
+    const LEDGER_AFTER = fs.readFileSync(path.join(r13, "LEDGER.md"), "utf8");
+    const fp13Before = mod.__test.fingerprintOf(mod.__test.inspect(r13));
+    mod.__test.setActiveSettings(mod.__test.settingsOf({ capsuleMaxChars: 12345 }));
+    const NEWVAL13 = 12345;
+
+    const s2 = text13(await runPreStep(run13, { agent: agent13, messages: [] }));
+    const fp13After = mod.__test.fingerprintOf(mod.__test.inspect(r13));
+    ok("★★★★★★ 89⑬② ★ **只改设置、台账一字未动** ⇒ 下一步**必须**仍然注出去（旧代码在这里 `n=0`）",
+      s2 !== "" && s2.includes(String(NEWVAL13)),
+      `注入长度=${s2.length} 含新值=${s2.includes(String(NEWVAL13))}`);
+    ok("★★★★★ 89⑬②b 前提：台账字节**确实一个都没变**（否则这条测的是「台账变了」那条老路）",
+      fs.readFileSync(path.join(r13, "LEDGER.md"), "utf8") === LEDGER_AFTER,
+      "");
+    // ★ ③ 指纹的两个方向：**设置变了 ⇒ 必须不等**，且**变的那一段是设置、不是台账**。
+    ok("★★★★★ 89⑬③ 指纹：**设置变了 ⇒ 必须不等**（它是 ⑬② 能成立的原因）",
+      fp13After !== fp13Before,
+      `${fp13Before} vs ${fp13After}`);
+    ok("★★★★★ 89⑬③b 且**台账那一段完全没变** ⇒ 证明变的是**设置**那一段（不是台账顺带变了）",
+      fp13Before.split("|").slice(0, 3).join("|") === fp13After.split("|").slice(0, 3).join("|"),
+      `${fp13Before} vs ${fp13After}`);
+
+    // ── ④ 变更行顶出来了，且**写清了"哪一项 / 旧值 → 新值"** ────────────────
+    const changeLine13 = s2.split("\n").find((l) => l.includes("设置刚改过")) ?? "";
+    ok("★★★★★ 89⑬④ 顶出「设置刚改过」，且**说清是哪一项**（人读标签，不是内部键名）",
+      /逐字胶囊长度上限/.test(changeLine13) && !/capsuleMaxChars/.test(changeLine13),
+      changeLine13.trim().slice(0, 120));
+    ok("★★★★★ 89⑬④b 且给了**旧值 → 新值**（只说「变了」的话，模型不知道按哪个做）",
+      /16000/.test(changeLine13) && new RegExp(String(NEWVAL13)).test(changeLine13),
+      changeLine13.trim().slice(0, 120));
+
+    // ── ⑤ 零噪声：什么都不再改 ⇒ **一条都不注**（用户要的"不影响工作"）────────
+    const s3 = text13(await runPreStep(run13, { agent: agent13, messages: [] }));
+    eq("★★★★★ 89⑬⑤ 零噪声：什么都不改 ⇒ 下一步**一条都不注入**（也不重报「刚改过」）", s3, "");
+
+    // ── ⑥ ★★★ 覆盖面：**不在快照那 8 行里**的设置改了，也必须被顶出来 ────────
+    //   ★ 用户病根的另一半就是这个：快照只列 38 项里的 8 项，
+    //     其余 30 项「改了完全没人知道」。
+    //   ★ 选 `capsuleUserMsgChars`（它**不在**快照那几行里 ⇒ 只有"覆盖全部设置项"
+    //     的实现在这里才会报）。
+    mod.__test.setActiveSettings(mod.__test.settingsOf({ capsuleMaxChars: NEWVAL13, capsuleUserMsgChars: 777 }));
+    const s4 = text13(await runPreStep(run13, { agent: agent13, messages: [] }));
+    ok("★★★★★ 89⑬⑥ 变更检测**覆盖全部设置项**：改了**不在快照里**的那一项，也会被顶出来",
+      /设置刚改过/.test(s4) && /777/.test(s4),
+      (s4.split("\n").find((l) => l.includes("设置刚改过")) ?? "(没有这一行)").trim().slice(0, 120));
+
+    // ── ⑦ ★★★★★ **渲染是纯读的**（"渲染 ≠ 送达" —— 探针逼出来的那一条）────────
+    //   ★ 病（我第一版）：把"推进基线"写在**渲染**里（"渲染即推进"）⇒
+    //     只要多渲染一次（探针自己调了一次、或这一拍最终没注出去），
+    //     变更行就被**消费掉**，而模型**一个字都没看到** ⇒ 正是用户抱怨那件事。
+    //   ★ 判据：**观测者不许改变被观测对象**；**提醒只在真送出去之后才算送达**（L14 同型）。
+    //   ★ 这一条**在旧写法下会红**：连调两次渲染，第二次的变更行会消失。
+    mod.__test.setActiveSettings(mod.__test.settingsOf({ capsuleMaxChars: NEWVAL13, capsuleUserMsgChars: 777, logDefaultLimit: 42 }));
+    const info13c = mod.__test.inspect(r13);
+    // ★★★ 2026-10-15（D211）：**必须带上 sid** —— 变更基线按「项目根 + 对话 id」存
+    //   （D211 修的那个真缺陷：只按项目根存 ⇒ 同项目第二个对话收不到）。
+    //   ⇒ 这里模拟"**那个一直在跑的对话**"，与 pre-step 走的是同一个消费者。
+    //   ★ 不带 sid 会得到一个**从未渲染过的新消费者** ⇒ 它的第一轮是「初识」
+    //     ⇒ 变更行为空是**设计如此**，拿它测"渲染是否纯读"是**夹具不忠实**（纪律 8）。
+    info13c.sid = sid13;
+    const rFirst = mod.__test.renderSettingsSnapshot(info13c);
+    const rSecond = mod.__test.renderSettingsSnapshot(info13c);
+    ok("★★★★★★ 89⑬⑦ ★ 渲染是**纯读**：连渲染两次，变更行**第二次仍在**（否则「渲染了一次」就把提醒吃掉）",
+      /设置刚改过/.test(rFirst) && /设置刚改过/.test(rSecond),
+      `第一次=${/设置刚改过/.test(rFirst)} 第二次=${/设置刚改过/.test(rSecond)}`);
+    // ★ 并且：**没送达时不许推进基线** —— 只有 `commitSettingsBaseline` 会推进。
+    //   `settingsChangesOf` 连调两次必须给出**同样的**结果（纯读）。
+    const c1 = mod.__test.settingsChangesOf(info13c);
+    const c2 = mod.__test.settingsChangesOf(info13c);
+    ok("★★★★★ 89⑬⑦b `settingsChangesOf` 连调两次结果**相同**（纯读，不自己推进基线）",
+      JSON.stringify(c1) === JSON.stringify(c2) && c1.length > 0,
+      `第一次=${c1.length} 项 第二次=${c2.length} 项`);
+    // ★ 推进之后必须归零（否则它会一直重报"刚改过"）
+    mod.__test.commitSettingsBaseline(info13c);
+    ok("★★★★ 89⑬⑦c 推进基线之后 ⇒ 变更列表**归零**（不重复刷）",
+      mod.__test.settingsChangesOf(info13c).length === 0,
+      `remaining=${mod.__test.settingsChangesOf(info13c).length}`);
+
+    // ── ⑧ 值的**人读渲染**：比例给百分比、布尔给开/关、数组给逐档 ─────────────
+    ok("★★★★ 89⑬⑧ 比例类按**百分比**印（0.3 ⇒ 30%，不是裸 0.3）",
+      mod.__test.settingValueTextOf("highFidelityCompactRatio", "0.3") === "30%",
+      mod.__test.settingValueTextOf("highFidelityCompactRatio", "0.3"));
+    ok("★★★★ 89⑬⑧b 布尔类给**开/关**（不是 true/false）",
+      mod.__test.settingValueTextOf("autoCompact", "true") === "开" &&
+        mod.__test.settingValueTextOf("autoCompact", "false") === "关",
+      mod.__test.settingValueTextOf("autoCompact", "true"));
+    ok("★★★★ 89⑬⑧c 日志档位给**逐档勾叉**（不是一坨 JSON）",
+      /L0✅/.test(mod.__test.settingValueTextOf("logLevels", '{"L0":true,"L1":true,"L2":true,"L3":false,"L4":true}')),
+      mod.__test.settingValueTextOf("logLevels", '{"L0":true,"L1":true,"L2":true,"L3":false,"L4":true}'));
+    ok("★★★★ 89⑬⑧d 带单位的数值**把单位带上**（读数才不会被误解）",
+      mod.__test.settingValueTextOf("capsuleMaxChars", "16000") === "16000 字符",
+      mod.__test.settingValueTextOf("capsuleMaxChars", "16000"));
+    // ★ 边界：没有 spec 的键 / 没设过的值 ⇒ **不许崩、也不许印出 undefined**
+    ok("★★★ 89⑬⑧e 边界：未知键与「(未设)」都**不许崩、也不许印 undefined**",
+      mod.__test.settingValueTextOf("noSuchKey123", "5") === "5" &&
+        mod.__test.settingValueTextOf("capsuleMaxChars", "(未设)") === "(未设)",
+      `${mod.__test.settingValueTextOf("noSuchKey123", "5")} / ${mod.__test.settingValueTextOf("capsuleMaxChars", "(未设)")}`);
+    ok("★★★★ 89⑬⑧f 零变更时变更行是**空串**（这就是「零噪声」的直接兑现）",
+      mod.__test.renderSettingsChangeLine([]) === "",
+      JSON.stringify(mod.__test.renderSettingsChangeLine([])));
+
+    rmrf(r13);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // 情形 90 ★★★★★★ **"每个对话都读得到"，以及面板那颗「推送到所有对话」**（D211）
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  //   ★ 用户原话（逐字）：*"其实还应该在设置面板中加一个按钮，这个按钮允许主动向每个对话的
+  //     新的回复中注入这个设置，这样的话我可以真正保证那个对话读到我们的改动，而不会被忽略。"*
+  //
+  //   ★★★ 这一节里的 ①② **在 D210 的写法下会真红**（不是形式主义）—— 那是探针
+  //     `tools/_probe-d211-broadcast.mjs` 当场跑出来的两个真缺陷：
+  //     ① 变更基线**按项目根共享** ⇒ 同项目的**第二个对话收不到「刚改过」**（被第一个消费掉）；
+  //     ② 基线是**内存态** ⇒ 重启后**连提都不提**。
+  //     ⇒ 用户要的恰是"保证每个对话读到" ⇒ ① 正打在他的需求上。
+  //
+  //   ★ 判据必须吃**真 pre-step 的送达**（不是只调渲染函数）—— 与 89⑬ 同一把尺子。
+  {
+    section("情形 90：每个对话都读得到 + 面板「推送到所有对话」（D211）");
+    const r90 = tmpProject("d211-every-conversation");
+    fs.writeFileSync(path.join(r90, "LEDGER.md"), "# 台账\n\n## 一、状态\n\n- 夹具。\n", "utf8");
+    fs.mkdirSync(path.join(r90, "_ledger-archive"), { recursive: true });
+    fs.writeFileSync(
+      path.join(r90, ".dsh-ledger.json"),
+      JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", maxActiveLines: 350, revision: 0 }, null, 2),
+      "utf8"
+    );
+    const run90 = makeCtx({ withTokenMeter: true });
+    mod.apply(run90.ctx, {});
+    /** 造一个**独立对话**的假 agent（同项目根、不同 sid）。 */
+    const mkA = (sid) => ({
+      session: { header: { id: sid, cwd: r90 }, requestContext: () => ({ contextWindow: 1000000 }) },
+    });
+    run90.services.tokenMeter._total = 0;
+    const t90 = (d) =>
+      (d.messages ?? []).map((m) => (m.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+
+    // ── ① 前提：两个对话**都先渲染过一次**（各自立起基线）──────────────────
+    //   ★★ 这一步是夹具的**关键**：若 B 在改动前从未渲染过，它的第一轮本来就是
+    //     「初识」（首轮不标）—— 那时看不到「刚改过」是**设计如此**，不是缺陷。
+    //     我第一版就是这么写的，差点把自己的实现判成坏的（纪律 8：夹具前提错了，结论就是假的）。
+    const A = mkA("s-90-A");
+    const B = mkA("s-90-B");
+    const a0 = t90(await runPreStep(run90, { agent: A, messages: [] }));
+    const b0 = t90(await runPreStep(run90, { agent: B, messages: [] }));
+    ok("★★★★ 90① 前提：两个对话各自的首轮都不报「刚改过」（初识不是变更）",
+      /当前设置/.test(a0) && /当前设置/.test(b0) && !/设置刚改过/.test(a0) && !/设置刚改过/.test(b0),
+      `A=${/设置刚改过/.test(a0)} B=${/设置刚改过/.test(b0)}`);
+
+    // ── ② ★★★★★★ 改一次设置 ⇒ **两个对话各自都该收到** ──────────────────────
+    mod.__test.setActiveSettings(mod.__test.settingsOf({ capsuleMaxChars: 12345 }));
+    const a1 = t90(await runPreStep(run90, { agent: A, messages: [] }));
+    const b1 = t90(await runPreStep(run90, { agent: B, messages: [] }));
+    ok("★★★★★★ 90② ★ **同项目两个对话，改一次设置 ⇒ 两个都收到「设置刚改过」**" +
+      "（D210 只按项目根存基线 ⇒ 第二个对话收不到，这条当场红）",
+      /设置刚改过/.test(a1) && /设置刚改过/.test(b1),
+      `A=${/设置刚改过/.test(a1)} B=${/设置刚改过/.test(b1)}`);
+    // ★ 而且 B 收到的是**带新值**的那一份（不是只报"变了"却给旧值）
+    ok("★★★★★ 90②b 且 B 拿到的快照里是**新值**（不是只报变了、值却是旧的）",
+      b1.includes("12345"),
+      (b1.split("\n").find((l) => l.includes("设置刚改过")) ?? "(没有这一行)").trim().slice(0, 110));
+
+    // ── ③ 只报一次：各自看过之后 ⇒ **都不再报**（零噪声对每个对话都成立）────
+    const a2 = t90(await runPreStep(run90, { agent: A, messages: [] }));
+    const b2 = t90(await runPreStep(run90, { agent: B, messages: [] }));
+    eq("★★★★ 90③ 两个对话各自看过之后 ⇒ 都**不再重报**（零噪声对每个对话都成立）", `${a2.length},${b2.length}`, "0,0");
+
+    // ── ④ ★★★★★★ 面板那颗「推送到所有对话」：**什么都没变也要能推出去** ──────
+    //   ★ 这才是用户要的那颗按钮："值早就定了，只是要让别的对话也看一眼"。
+    //   ★ 判据：按之前注入 0 条；按之后**必然**重注，且含快照。
+    const seq90 = mod.__test.bumpSettingsBroadcast();
+    const a3 = t90(await runPreStep(run90, { agent: A, messages: [] }));
+    const b3 = t90(await runPreStep(run90, { agent: B, messages: [] }));
+    ok("★★★★★★ 90④ ★ 按一下「推送到所有对话」⇒ **两个对话都重注**那份设置快照（序号 → " + seq90 + "）",
+      /当前设置/.test(a3) && /当前设置/.test(b3),
+      `A=${/当前设置/.test(a3)}(${a3.length}) B=${/当前设置/.test(b3)}(${b3.length})`);
+    // ★ 前提：上一步本来是不注入的（否则"按了才注"证明不了是按钮起的作用）
+    ok("★★★★ 90④b 前提：上一步**本来是不注入的**（`0,0`）—— 否则证明不了是按钮起的作用",
+      a2.length === 0 && b2.length === 0,
+      `按前 A=${a2.length} B=${b2.length}`);
+    // ★ ⑤ 推送**不改变**台账正文的去重：再下一步应当**安静下来**（不许变成"每步都注"）
+    const a4 = t90(await runPreStep(run90, { agent: A, messages: [] }));
+    eq("★★★★★ 90⑤ 推送之后**立刻安静**（不许变成「每步都注」—— 那会打烂 prompt 缓存）", a4, "");
+
+    // ── ⑥ 基线键**真的带 sid**（一个事实一个出口的守卫）────────────────────
+    const info90 = mod.__test.inspect(r90);
+    info90.sid = "s-90-A";
+    const k1 = mod.__test.settingsBaselineKeyOf(info90);
+    info90.sid = "s-90-B";
+    const k2 = mod.__test.settingsBaselineKeyOf(info90);
+    ok("★★★★★ 90⑥ 基线键**随 sid 变**（`项目根 + 对话`）—— 这是 90② 能成立的结构原因",
+      k1 !== k2 && k1.startsWith(mod.__test.inspect(r90).projectRoot),
+      `k1=${k1.replace(/\u0000/, "<NUL>")} k2=${k2.replace(/\u0000/, "<NUL>")}`);
+    const noSid = mod.__test.inspect(r90);
+    ok("★★★★ 90⑥b 取不到 sid ⇒ 退回**项目根**（保守：退化成 D210 行为，不要两条都不报）",
+      mod.__test.settingsBaselineKeyOf(noSid) === noSid.projectRoot,
+      mod.__test.settingsBaselineKeyOf(noSid));
+
+    rmrf(r90);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // 情形 91 ★★★★★★ **D214/D215：过期排队必须作废 + 失败的压缩不许记成"已压缩"
+  //                      + 外来的压缩也要抓「压缩前胶囊」**
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  //   ★ 用户原话（逐字）：*"它并没有发生自动压缩，反而是一路跑到了80%的时候触发了官方的压缩……
+  //     然后又工作了一小段时间，然后不知道为什么全量压缩又跳出来了，可能是排队排在了后面，
+  //     然后导致是连续压缩了两次……也就是一共出现了三个上下文已压缩的记录。"*
+  //     以及：*"就是让80%的那次压缩也能和我们的全量压缩保留的信息，或者说至少功能类是相等的。"*
+  //
+  //   ★★★ 三条断言**都对应真机上抓到的证据**（D214/D215 卡片里有逐字时间轴与原始载荷）：
+  //     · 91① 过期排队：真机 11:51:52 在水位 72.3% 排队，12:05:17 才执行，那时只剩 55.1% ⇒ 照压了。
+  //       根因：`hfCompactAfterTurn` 里存了 `ratio`，**全库没有一处读它**。
+  //     · 91② 失败被记成成功：真机 10:24:59 那次 `error:"Request aborted"`，
+  //       而 L0 写着「上下文已压缩（自动 70%）」—— **我本轮一开始就是被它误导的**。
+  //     · 91③ 外来压缩抓不到压缩前胶囊：官方那次 `state.capsuleSnapshot` 是空的
+  //       ⇒ 重注走"现取"那条 ⇒ 胶囊**恰好缺掉被压掉的那一段**（D161 自己记下的病灶）。
+  {
+    section("情形 91：过期排队作废 + 失败不许记成「已压缩」+ 外来压缩也抓压缩前胶囊（D214/D215）");
+    const settle91 = async () => {
+      for (let i = 0; i < 8; i += 1) await new Promise((r) => setTimeout(r, 0));
+    };
+    const mkProj91 = (tag) => {
+      const dir = tmpProject(tag);
+      fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\nX\n", "utf8");
+      fs.mkdirSync(path.join(dir, "_a"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, ".dsh-ledger.json"),
+        JSON.stringify({
+          version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+          archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+        }),
+        "utf8"
+      );
+      return dir;
+    };
+    /** 读该项目 L0 里程碑里与压缩有关的那几行。 */
+    const l0CompactLines91 = (root) => {
+      const out = [];
+      const walk = (d) => {
+        let ents;
+        try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const e of ents) {
+          const p = path.join(d, e.name);
+          if (e.isDirectory()) walk(p);
+          else if (/^L0/.test(e.name)) {
+            for (const l of fs.readFileSync(p, "utf8").split("\n")) {
+              if (/上下文已压缩|压缩失败/.test(l)) out.push(l.trim());
+            }
+          }
+        }
+      };
+      walk(path.join(root, "_ledger-log"));
+      return out;
+    };
+
+    // ── ① ★★★★★★ 过期排队必须**不压**（D214 缺陷 A，主因）──────────────────
+    //
+    //   ★ 夹具必须**分两段水位**驱动，否则测不到"执行时水位已掉下来"这件事：
+    //     第一段：到线 ⇒ 排队（这一步 agent 是 running，压不了）；
+    //     第二段：**把水位降下来**（模拟"内核 80% 已经压过了"）再发 idle。
+    {
+      const root = mkProj91("d214-stale");
+      const run = makeCtx({ withTokenMeter: true, withCompaction: true, withUserQuestions: true });
+      mod.apply(run.ctx, {});
+      const sid = "session-91stale-0001";
+      const agent = {
+        session: { header: { id: sid, cwd: root }, id: sid, requestContext: () => ({ contextWindow: 1000 }) },
+        steer: () => {},
+      };
+
+      // 水位 35%（默认全量线 30%）⇒ 到线 ⇒ pre-step 应当**排队**
+      run.services.tokenMeter._total = 350;
+      const d1 = await runPreStep(run, { agent, messages: [] });
+      const t1 = d1.messages.map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok("★★★ 91① 前提：到线时 pre-step 里确实宣告了即将压缩（否则后面测的是空转）",
+        /高保真压缩/.test(t1), t1.slice(0, 200));
+
+      // 落盘（闸门要求）—— 但**注意**：过期的判定在闸门**之前**，所以这一步只是让
+      // "如果判定没生效，压缩就真的会跑"这件事成立（否则被闸门拦住就分不清是谁拦的）。
+      await flushLedger(run, root, sid);
+
+      // ★★★ 关键：**把水位降回线下**（模拟内核 80% 那一次已经压过了）
+      run.services.tokenMeter._total = 100; // 10% << 30%
+      await fire(run, "agent/status", { agent, status: "idle" });
+      await settle91();
+
+      eq("★★★★★★ 91① 执行时水位已掉回线下 ⇒ **这次排队必须作废**（真机事故：照压了）",
+        run.compacted.length, 0);
+      // ★ 前提：夹具里压缩服务是可用的（排除"压不了是因为服务缺失"这种假绿）
+      ok("★★★★ 91①b 前提：压缩服务可用（排除『没压是因为没服务』这种假绿）",
+        run.services.compaction !== undefined && typeof run.services.compaction.compactNow === "function",
+        String(typeof run.services.compaction?.compactNow));
+      rmrf(root);
+    }
+
+    // ── ② ★★★★★★ 水位**仍在线上** ⇒ 必须照旧压（不许把修复写成"全都不压"）────
+    //
+    //   ★ 这是 91① 的**反向对照**：没有它，一个"永远不压"的实现也能让 91① 全绿
+    //     —— 那正是本项目最忌的"改到另一个极端"。
+    {
+      const root = mkProj91("d214-notstale");
+      const run = makeCtx({ withTokenMeter: true, withCompaction: true, withUserQuestions: true });
+      mod.apply(run.ctx, {});
+      const sid = "session-91fresh-0001";
+      const agent = {
+        session: { header: { id: sid, cwd: root }, id: sid, requestContext: () => ({ contextWindow: 1000 }) },
+        steer: () => {},
+      };
+      run.services.tokenMeter._total = 350;
+      await runPreStep(run, { agent, messages: [] });
+      await flushLedger(run, root, sid);
+      // ★ 水位**保持** 35%（仍在 30% 线上）⇒ 应当照压
+      await fire(run, "agent/status", { agent, status: "idle" });
+      await settle91();
+      eq("★★★★★★ 91② 水位仍在线上 ⇒ **照旧压**（防止把修复做成『永远不压』）",
+        run.compacted.length, 1);
+      rmrf(root);
+    }
+
+    // ── ③ ★★★★★★ 失败的压缩**不许**写成「上下文已压缩」（D214 缺陷 B）──────────
+    //
+    //   直接喂**真机那次事件的形状**（`error: "Request aborted"`，逐字抄自会话日志）
+    //   —— 这一条若没有修复就会红：旧写法只按事件类型成文，照样写「上下文已压缩」。
+    {
+      const root = mkProj91("d215-failedend");
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const sid = "session-91failed-0001";
+      const session = { header: { id: sid, cwd: root }, id: sid };
+      // ★ 真机载荷（逐字）：{"compactionId":"5c7d51b1-…","turn":null,"error":"Request aborted"}
+      await fire(run, "session/event", session, {
+        type: "compaction/end",
+        data: { compactionId: "5c7d51b1-60f9-474a-b365-07c6ce528c37", turn: null, error: "Request aborted" },
+      });
+      for (const h of run.handlers.get("agent/turn-stopping") ?? []) {
+        await h({ agent: { session, steer: () => {} }, turn: 9 });
+      }
+      await settle91();
+      const lines = l0CompactLines91(root);
+      eq("★ 91③ 前提：确实记了一条（否则下面测的是空转）", lines.length, 1);
+      ok("★★★★★★ 91③ 失败的压缩**写成「压缩失败」**，绝不许写「上下文已压缩」",
+        /压缩失败/.test(lines[0] ?? "") && !/上下文已压缩/.test(lines[0] ?? ""),
+        String(lines[0]));
+      ok("★★★★ 91③b 且**带上错误原文**（不然读者不知道为什么失败）",
+        /Request aborted/.test(lines[0] ?? ""), String(lines[0]));
+      rmrf(root);
+    }
+
+    // ── ④ ★★★★★★ 成功的压缩**仍然**写「上下文已压缩」（不许把 ③ 做过头）────────
+    {
+      const root = mkProj91("d215-okend");
+      const run = makeCtx({});
+      mod.apply(run.ctx, {});
+      const sid = "session-91ok-0001";
+      const session = { header: { id: sid, cwd: root }, id: sid };
+      await fire(run, "session/event", session, { type: "compaction/end", data: {} });
+      for (const h of run.handlers.get("agent/turn-stopping") ?? []) {
+        await h({ agent: { session, steer: () => {} }, turn: 9 });
+      }
+      await settle91();
+      const lines = l0CompactLines91(root);
+      eq("★ 91④ 前提：记了一条", lines.length, 1);
+      ok("★★★★★★ 91④ 成功的压缩仍写成「上下文已压缩」（不许做过头）",
+        /上下文已压缩/.test(lines[0] ?? "") && !/压缩失败/.test(lines[0] ?? ""),
+        String(lines[0]));
+      rmrf(root);
+    }
+
+    // ── ⑤ ★★★★★★ 判定「成没成」必须**共用一个出口**（防两套判据分叉）──────────
+    {
+      ok("★★★★★ 91⑤ `compactionEndSucceeded` 与 `compactionEndFailed` 是**同一个判据的两面**",
+        mod.__test.compactionEndSucceeded({ type: "compaction/end", data: {} }) === true &&
+          mod.__test.compactionEndFailed({}) === false &&
+          mod.__test.compactionEndSucceeded({ type: "compaction/end", data: { error: "x" } }) === false &&
+          mod.__test.compactionEndFailed({ error: "x" }) === true,
+        "两面必须严格互补");
+    }
+
+    // ── ⑥ ★★★★★★ 外来的压缩（不是我们发起的）也必须在 start 那一刻抓胶囊 ────────
+    //
+    //   ★ 这就是用户问的"让 80% 那次和我们的全量保留的信息相等"的**兑现点**：
+    //     内核 `compaction/start` 先落盘、摘要**27 秒后**才改 surface ⇒ 那一刻历史还完整。
+    //
+    //   ★★★ 判据必须吃**"盘上真的多了一份胶囊成品"**，不能只吃"重注里有那句原话"
+    //     —— 这是本情形第一版**反向验证当场证伪**的一个假象：
+    //     重注那条路在拿不到快照时会**现取**（`renderCapsule(info, capsule.get(sid))`），
+    //     而现取照样能捞到那句用户原话 ⇒ **摘掉修复它也是绿的**（断言成了空转）。
+    //     ⇒ 真判据是**落盘那份成品**（`persistCapsule` 只在"压缩前抓"那条路上跑，
+    //       而**现取那条不落盘**）—— 那才是"官方那次的保留信息与我们的相等"的物证。
+    {
+      const root = mkProj91("d215-official-capsule");
+      const run2 = makeCtx({});
+      mod.apply(run2.ctx, {});
+      const sid = "session-91official-0001";
+      const session = { header: { id: sid, cwd: root }, id: sid };
+
+      /** 数项目里胶囊文件（`_ledger-log/<期间>/capsules/*.md`）的份数。 */
+      const capsuleFiles91 = () => {
+        const out = [];
+        const walk = (d) => {
+          let ents;
+          try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+          for (const e of ents) {
+            const p = path.join(d, e.name);
+            if (e.isDirectory()) walk(p);
+            else if (/capsules[\\/].+\.md$/.test(p)) out.push(p);
+          }
+        };
+        walk(path.join(root, "_ledger-log"));
+        return out;
+      };
+
+      // ① 先喂一条**用户原话**（胶囊要有的素材）
+      await fire(run2, "session/event", session, {
+        type: "user/message",
+        time: Date.now(),
+        data: {
+          id: "m-91off",
+          role: "user",
+          content: [{ type: "text", text: "官方压缩时这句原话也必须被逐字保住" }],
+          source: { kind: "user" },
+        },
+      });
+      eq("★ 91⑥ 前提：此刻盘上还没有胶囊成品", capsuleFiles91().length, 0);
+
+      // ② 外来压缩开始（**不入队** ⇒ 我们没发起）—— 这就是那 27 秒窗口的开端
+      await fire(run2, "session/event", session, {
+        type: "compaction/start",
+        data: { compactionId: "official-91", turn: null },
+      });
+
+      // ★★★ 关键断言：**盘上必须已经有一份胶囊成品**（= 压缩前抓紧，赶上那 27 秒窗口）
+      const files = capsuleFiles91();
+      eq("★★★★★★ 91⑥ 外来压缩**开始那一刻**就要落一份胶囊成品（27 秒窗口内抓紧）", files.length, 1);
+      const body = files.length > 0 ? fs.readFileSync(files[0], "utf8") : "";
+      ok("★★★★★ 91⑥b 那份成品里**逐字保住**了用户原话（这才是『保留信息相等』）",
+        /这句原话也必须被逐字保住/.test(body), body.slice(0, 200));
+      ok("★★★★ 91⑥c 且来源**如实标成外来压缩**，不许冒充插件自己压的（也不许印内部键 official）",
+        /内核（官方）/.test(body) && !/\bofficial\b/.test(body.split("\n").slice(0, 8).join("\n")),
+        (body.split("\n").find((l) => /来源/.test(l)) ?? "(没有来源行)"));
+
+      // ③ 那次压缩完成 ⇒ 走"压缩后重注"分支
+      await fire(run2, "session/event", session, {
+        type: "compaction/end",
+        data: { compactionId: "official-91", turn: null },
+      });
+      const agent = {
+        session: {
+          header: { id: sid, cwd: root }, id: sid,
+          requestContext: () => ({ contextWindow: 1000000 }),
+        },
+        steer: () => {},
+      };
+      const d = await runPreStep(run2, { agent, messages: [] });
+      const t = d.messages.map((m) => m.content.map((c) => c.text).join("")).join("\n");
+      ok("★★★★★ 91⑥d 重注里也带上了胶囊（用户看得见『历史没丢』）",
+        /这句原话也必须被逐字保住/.test(t), t.slice(0, 300));
+      ok("★★★★ 91⑥e 并**如实标明**这不是插件自己压的（不许冒充）",
+        /较早历史已被压缩/.test(t), t.slice(0, 300));
+      rmrf(root);
+    }
+  }
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

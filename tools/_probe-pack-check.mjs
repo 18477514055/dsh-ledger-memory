@@ -30,8 +30,28 @@ console.log(`═══ ${tgz} ═══`);
 console.log(`包内文件 ${files.length} 个：`);
 files.forEach((f) => console.log(`  ${f}`));
 
-const libSrc = fs.readFileSync(path.join(pkg, "lib", "index.js"), "utf8");
-const localSrc = fs.readFileSync("lib/index.js", "utf8");
+// ★★★ 2026-10-15（D216）：**必须读"包内整棵 lib/ 的拼接"，不能只读 `lib/index.js`。**
+//
+//   ★ 病（拆分之后当场暴露）：`lib/index.js` 被拆成 8 个模块（`defs` + `part1~6` + `index`），
+//     代码搬到了 `part*.js` 里 ⇒ 只读 `index.js` 时**7 个标志物全部报 ✗**。
+//   ★ 而那是**夹具过时**，不是"包里没有修复" —— 实测（`tools/_probe-d216-markers.mjs`）
+//     7/7 全在包里（分布：part5 / part4 / defs）。
+//   ⇒ ★ 判据必须是"整个 lib/ 的拼接"，这与 `selftest.mjs` 的 `readLibSource()`（D146）**同一条纪律**：
+//     **判据的输入必须是被测对象自己产生的那部分**（拆分不该让断言失明）。
+const libDirPkg = path.join(pkg, "lib");
+const libSrc = fs
+  .readdirSync(libDirPkg)
+  .filter((f) => f.endsWith(".js"))
+  .sort()
+  .map((f) => fs.readFileSync(path.join(libDirPkg, f), "utf8"))
+  .join("\n");
+const libDirLocal = path.join(process.cwd(), "lib");
+const localSrc = fs
+  .readdirSync(libDirLocal)
+  .filter((f) => f.endsWith(".js"))
+  .sort()
+  .map((f) => fs.readFileSync(path.join(libDirLocal, f), "utf8"))
+  .join("\n");
 const pj = JSON.parse(fs.readFileSync(path.join(pkg, "package.json"), "utf8"));
 
 console.log(`\n版本 = ${pj.version}`);

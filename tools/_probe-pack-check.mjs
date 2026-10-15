@@ -32,7 +32,7 @@ files.forEach((f) => console.log(`  ${f}`));
 
 // ★★★ 2026-10-15（D216）：**必须读"包内整棵 lib/ 的拼接"，不能只读 `lib/index.js`。**
 //
-//   ★ 病（拆分之后当场暴露）：`lib/index.js` 被拆成 8 个模块（`defs` + `part1~6` + `index`），
+//   ★ 病（拆分之后当场暴露）：`lib/index.js` 被拆成 7 个模块（`defs` + `part1~5` + `index`），
 //     代码搬到了 `part*.js` 里 ⇒ 只读 `index.js` 时**7 个标志物全部报 ✗**。
 //   ★ 而那是**夹具过时**，不是"包里没有修复" —— 实测（`tools/_probe-d216-markers.mjs`）
 //     7/7 全在包里（分布：part5 / part4 / defs）。

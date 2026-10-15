@@ -92,10 +92,18 @@ const origMap = new Map(origDecls.map((d) => [d.name, d]));
 const libDir = path.join(REPO, "lib");
 const modFiles = fs.readdirSync(libDir).filter((f) => f.endsWith(".js") && f !== "client.js");
 const splitText = modFiles.map((f) => fs.readFileSync(path.join(libDir, f), "utf8")).join("\n");
+// ★★★★★ 2026-10-15（D216 修补）：这里原来写的是 `if (!splitDecls.has(d.name)) set(…)`
+//   —— **第一个赢**。拼接顺序里 `index.js` 排在 `part6.js` 前面 ⇒
+//   `apply` 的**重复副本**被**静默忽略** ⇒ 这条判据证明了"467 条一条不丢"，
+//   却**完全看不见"多出来一份 apply"**（那份一路进了 v1.2.0 的发布包）。
+//   ⇒ 改成**保留全部出现点**，另立一条"跨文件重复"的判据（见 ④）。
+//   ★ 纪律 2 的同型复发：判据必须覆盖**两个方向**（丢了 / 多了），只核一边 = 半边瞎。
 const splitDecls = new Map();
+const splitAll = []; // ★ 全部出现点（含跨文件重复），供 ④ 判重
 for (const f of modFiles) {
   const t = fs.readFileSync(path.join(libDir, f), "utf8");
   for (const d of declsOf(t)) {
+    splitAll.push({ ...d, file: f });
     if (!splitDecls.has(d.name)) splitDecls.set(d.name, { ...d, file: f });
   }
 }
@@ -124,6 +132,19 @@ console.log(`\n② 正文不一致的声明：${diff.length} 条`);
 for (const d of diff.slice(0, 25)) {
   console.log(`     ⛔ ${d.name}（${d.file}）原 ${d.origLen} 字符 vs 拆后 ${d.splitLen} 字符`);
 }
+// ★★ 2026-10-15（D216 修补）：**读这条输出前先看这一句** ——
+//   本判据比的是"原文件 vs **当下工作区**"。若你传的原件是**拆分那一刻**的备份，
+//   而此后又有**有意的**文案/隐私改动，那些改动**会**被算进"正文不一致"。
+//   ★ 判别法（别凭印象）：用 `tools/_probe-d216-diff5.mjs` 把不同的行**逐字打出来**，
+//     看它们是不是"自己刚改的那些"。
+//   ★ 实测（2026-10-15 20:4x）：对 `2026-10-15-181611-拆分实施前` 跑出 **5 条**，
+//     逐字核对后**全部是有意改动**：4 处隐私清理（删掉会话号 ×2 / 本机用户名的路径 /
+//     一个真实用户名）+ 1 处 D221 文案（`LEDGER_SUBCOMMANDS` 的「四档→五档」与 mode 标签）。
+//     ⇒ **不是拆分损坏**（丢失 0 / 多余 0 才是本判据要守的东西）。
+//   ⚠️ **本条注释本身踩过一次坑（留档）**：第一版我把那几个真值**逐字写进了这里**，
+//     而 `tools/` 在公开仓库里 ⇒ 等于**为了解释"隐私清理"而又泄露一次**
+//     （被 `_probe-d216-privacy.mjs` 当场抓到）。⇒ **反例一律写占位，不写真值。**
+//   ⇒ 想要一条"纯搬家"的干净对照，请传**拆分刚完成、尚未做任何编辑**的那份备份。
 
 // ── ③ 增量解释 ─────────────────────────────────────────────────────────────
 const origBytes = Buffer.byteLength(original, "utf8");
@@ -135,6 +156,35 @@ const importLines = modFiles.reduce(
 console.log(`\n③ 字节：原 ${origBytes} → 拆后 ${splitBytes}（+${splitBytes - origBytes}）`);
 console.log(`    拆分后共 ${importLines} 行 import（每行约 40~90 B ⇒ 合计约 ${importLines * 60} B 属于新增）`);
 
-const bad = missing.length + diff.length;
-console.log(`\n${bad === 0 ? "✅" : "⛔"} 结论：${bad === 0 ? "**纯搬家** —— 无丢失、无篡改" : `${bad} 处问题`}`);
+// ── ④ ★★★ 新增（D216 修补）：**多出来的声明** —— 原来缺的就是这个方向 ────────
+//
+// 判据：同一个名字出现在**两个不同的模块文件**里 ⇒ 重复声明。
+//   ★ 这正是当初漏掉的那半边：① 只问"原文件的都在吗"（丢了没有），
+//     **从不问"拆出来的都在原文件里吗"（多了没有）**。
+//   ★ 2026-10-15 实测：`apply` 同时出现在 `index.js` 与 `part6.js`，
+//     而本判据当时是绿的 —— 那份副本进了 v1.2.0 的 npm 包。
+const byName2 = new Map();
+for (const d of splitAll) {
+  if (!byName2.has(d.name)) byName2.set(d.name, []);
+  byName2.get(d.name).push(d.file);
+}
+const dupAcross = [...byName2.entries()].filter(([, fs_]) => new Set(fs_).size > 1);
+console.log(`\n④ ★ 跨模块重复的声明：${dupAcross.length} 个（这一条是 2026-10-15 补上的）`);
+for (const [nm, fs_] of dupAcross) {
+  console.log(`     ⛔ ${nm} —— ${[...new Set(fs_)].join(" / ")}`);
+  // 尽最大努力指出"多余的那一份"在哪个文件（及其字节数），便于处置
+  for (const f of new Set(fs_)) {
+    const d = splitAll.find((x) => x.name === nm && x.file === f);
+    console.log(`          ${f}（该声明 ${Buffer.byteLength(d.body, "utf8")} B）`);
+  }
+}
+if (dupAcross.length === 0) console.log("     ✅ 无（每个名字只属于一个模块）");
+
+const bad = missing.length + diff.length + dupAcross.length;
+console.log(
+  `\n${bad === 0 ? "✅" : "⛔"} 结论：` +
+    (bad === 0
+      ? "**纯搬家** —— 无丢失、无篡改、**无多余**（两个方向都核过了）"
+      : `${bad} 处问题（丢失 ${missing.length} · 篡改 ${diff.length} · 多余 ${dupAcross.length}）`)
+);
 if (bad > 0) process.exitCode = 1;

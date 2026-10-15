@@ -7809,7 +7809,13 @@ section("情形 27：官方设置面板");
   //     ★ 它**只读**（扫已跟踪文件里有没有本机专有信息），但正文里写着 `lib/index.js` 之类
   //     的路径字面量 ⇒ 命中第三条模式 ⇒ **已知假阳性**（与 `_probe-d194-entrypoints.mjs` 同类）。
   //     ★★ 发布前跑它：`node tools/_probe-d216-privacy.mjs` —— 它抓出过**真泄露**（见该文件注释）。
-  const DANGEROUS_EXPECTED = 59;
+  //   ★★ 2026-10-15（D216 修补 · 发现 `part6.js` 是纯多余副本）：新增
+  //     `_probe-d216-dup-decls.mjs` ⇒ 59 → **60**。★ 第九次当场变红 —— 同上，每次都会响。
+  //     ★ 又一个**已知假阳性**：它**只读**（普查 `lib/` 的顶层声明名），但注释里写了
+  //       `` `lib/index.js` `` 与 `` `lib/part6.js` `` ⇒ 命中第三条模式。
+  //     ⇒ 处置**照 D194 的先例**：**改数字并记明原因**，**不去改写探针绕开判据**
+  //       （判据刻意"宁可多报"，真正的闸门是下面那条"这些文件都不在打包清单里"）。
+  const DANGEROUS_EXPECTED = 60;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
@@ -8137,6 +8143,65 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
     literalNames.every((n) => n.startsWith("ledger_")),
     literalNames.join(", ")
   );
+
+  // ── ⑤之二 ★★★★★ 拆分后**不许有跨模块的重复顶层声明** ──────────────────────
+  //
+  // ★★★ 为什么加它（2026-10-15，**这是一个真发出去过的缺陷**）：
+  //   拆分时我立的判据是"完整性"（467 条声明 0 丢 / 0 改）——
+  //   ★ 可它**只核一个方向：丢了没有**，**从不核另一个方向：多了没有**。
+  //   ⇒ 结果 `apply()` 被**同时**写进 `lib/index.js` 和 `lib/part6.js`
+  //     （`part6.js` 全文件只有 1 个声明，就是那份副本，111,916 B），
+  //     **两条判据都看不见**，一路进了 **v1.2.0 的 npm 包**（已实测：包里真有 `lib/part6.js`）。
+  //
+  // ★ 为什么"多了"也有害（不是洁癖，有两条实证）：
+  //   ① 本文件的 `readLibSource()` 是**按目录拼接全部 `lib/*.js`** ⇒ 重复的那份会进判据输入
+  //      ⇒ 任何"apply 接上了没有"的**静态**断言，都可能被**那份陈旧副本**满足
+  //      ⇒ ★ **改了 `index.js` 却不红 = 假绿**（纪律 8：夹具前提错了全绿就是假绿）。
+  //   ② 每个用户下载的包里白多 11 万字节，而它**一个 import 都没有**（纯死代码）。
+  //
+  // ★ 判据（刻意做窄，免得误报）：
+  //     把 `lib/` 下每个 `.js` 的**行首**顶层声明名抽出来，同一个名字出现在
+  //     **≥2 个不同文件** ⇒ 重复。
+  //   ★ 明确**不算**重复的（否则会误报一堆，把真问题淹掉）：
+  //     · `export { a, b } from "./x.js"` —— 那是**再导出**，不是声明；
+  //     · 同名在**同一个文件**里出现两次 —— 那是另一个病，本条不判。
+  //   ★ 只锚**行首**（`^\s*` 会吃掉缩进 ⇒ 把函数体内那些也算进来）——
+  //     这正是本节 ④ 数 `section(` 时**连错三次**的那个坑，同一个教训。
+  {
+    const libDirAbs = path.join(HERE, "..", "lib");
+    const declNameRe =
+      /^(?:export\s+)?(?:(?:async\s+)?function|class)\s+([A-Za-z_$][\w$]*)|^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)/;
+    const seen = new Map(); // name → Set(file)
+    let filesScanned = 0;
+    for (const nm of fs.readdirSync(libDirAbs).filter((n) => n.endsWith(".js")).sort()) {
+      filesScanned += 1;
+      const src = fs.readFileSync(path.join(libDirAbs, nm), "utf8");
+      for (const line of src.split("\n")) {
+        if (/^export\s*\{[^}]*\}\s*from\b/.test(line)) continue; // 再导出 ≠ 声明
+        const m = declNameRe.exec(line);
+        if (m === null) continue;
+        const name = m[1] ?? m[2];
+        if (name === undefined) continue;
+        if (!seen.has(name)) seen.set(name, new Set());
+        seen.get(name).add(nm);
+      }
+    }
+    const dupes = [...seen.entries()].filter(([, fs_]) => fs_.size > 1);
+    ok(
+      "★★★★★ 拆分后**没有跨模块的重复顶层声明**" +
+        "（`apply` 曾同时进 `index.js` 与 `part6.js` ⇒ 副本进了 v1.2.0 的 npm 包）",
+      dupes.length === 0,
+      dupes.length === 0
+        ? `扫了 ${filesScanned} 个模块 / ${seen.size} 个唯一名字`
+        : `⛔ 重复：${dupes.map(([n, fs_]) => `${n}（${[...fs_].join(" / ")}）`).join("；")}`
+    );
+    // ★ 自证这条判据**真的在读代码**（否则 `readdir` 拿空 ⇒ 它永远绿 = 假绿）。
+    ok(
+      "　└ 且这条判据的自证：确实扫到了模块与声明（否则它是空判据）",
+      filesScanned >= 3 && seen.size >= 100,
+      `filesScanned=${filesScanned} uniqueNames=${seen.size}`
+    );
+  }
 
   // ── ⑥ ★★★ 引用必达：台账/归档引用的每个 D<n> 都必须在 DECISIONS 里有正文 ──
   //

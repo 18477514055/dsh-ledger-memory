@@ -122,7 +122,25 @@ for (const d of decls) if (d.eager.length) for (const n of d.eager) inDefs.add(n
 for (const M of mutables) for (const w of M.writers) inDefs.add(w);
 
 const defsDecls = decls.filter((d) => inDefs.has(d.name)).sort((a, b) => a.line - b.line);
-const fnDecls = decls.filter((d) => !inDefs.has(d.name)).sort((a, b) => a.line - b.line);
+// ★★★★★ 2026-10-15（D216 修补）：`apply` **必须排除在函数分箱之外**。
+//
+//   病（**真发出去过**：v1.2.0 的 npm 包与 GitHub 都在里面）：
+//     `apply` 是 `function` 声明 ⇒ 不在 `inDefs` 里 ⇒ 上面这一行会把它**收进 fnDecls**
+//     ⇒ 它被分进最后一箱 `part6.js`（那箱只有它一条）。
+//     而下面第 153 行又把 `modOf` 里的 `apply` **覆盖**成 `"index.js"` ——
+//     ★ 覆盖的只是**映射表**，**分箱里那份正文并没有被拿掉** ⇒
+//     `apply` 被**同时**写进 `index.js` 与 `part6.js`（副本 111,916 B）。
+//
+//   ★ 为什么当时没被发现（两个盲点叠在一起，缺一个都不会漏）：
+//     ① 分箱写成"按字节打包"，一箱只有一条声明时**看不出来**它本该属于别处；
+//     ② 而最关键的那条判据 `_probe-d216-completeness.mjs` 收声明时写的是
+//        `if (!splitDecls.has(d.name)) splitDecls.set(…)` —— **第一个赢**。
+//        拼接顺序里 `index.js` 排在 `part6.js` **前面** ⇒ 重复的那份被**静默忽略**。
+//     ⇒ 于是那条判据证明了"467 条一条不丢"，却**完全看不见"多了一份"**。
+//     ★ 纪律 2 的同型复发：判据的输入**必须覆盖两个方向**（丢了 / 多了），只核一边 = 半边瞎。
+//
+//   ⇒ 修法：显式把 `apply` 从 fnDecls 里剔掉（它是 index.js 的独占内容）。
+const fnDecls = decls.filter((d) => !inDefs.has(d.name) && d.name !== "apply").sort((a, b) => a.line - b.line);
 
 // ── ⑤ defs 若超限 ⇒ 按文件顺序再切（后一个 import 前一个 ⇒ 反向读，安全）────
 function packByOrder(list, budget) {

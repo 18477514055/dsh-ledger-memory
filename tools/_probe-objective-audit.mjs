@@ -7,8 +7,25 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const DIR = path.resolve(import.meta.dirname, "..");
-const host = fs.readFileSync(path.join(DIR, "lib", "index.js"), "utf8");
-const client = fs.readFileSync(path.join(DIR, "lib", "client.js"), "utf8");
+/**
+ * ★★★★★ 2026-10-16（D221）就地修：**这里原来只读 `lib/index.js` 一个文件**。
+ *
+ * ★ 后果：D216/D217 把宿主拆成 `defs` + `part1~5` + `index` 之后，
+ *   绝大多数标识符都搬走了 ⇒ 这条探针**自拆分起就一直大面积假红**
+ *   （实测：23 项"未达成"，而其中大半是"读错文件"造成的，不是真的没做）。
+ * ★ 修法与自检 `readLibSource()`、情形 43 同口径：
+ *   **整个 `lib/` 按文件名排序拼接** —— 拆成几个文件都看得见。
+ *   （纪律 2：判据的输入必须是**被测对象自己产生的那部分**；
+ *     纪律 8：夹具前提错了，全绿就是假绿 —— 这里反之，是**假红**。）
+ */
+const LIB_DIR = path.join(DIR, "lib");
+const host = fs
+  .readdirSync(LIB_DIR)
+  .filter((n) => n.endsWith(".js") && n !== "client.js")
+  .sort()
+  .map((n) => fs.readFileSync(path.join(LIB_DIR, n), "utf8"))
+  .join("\n");
+const client = fs.readFileSync(path.join(LIB_DIR, "client.js"), "utf8");
 const pkg = JSON.parse(fs.readFileSync(path.join(DIR, "package.json"), "utf8"));
 
 let fail = 0;
@@ -38,7 +55,36 @@ ok('③ 客户端不另抄一份（元数据由宿主经 HTTP 提供）', !SEVEN
 ok('④ 导出了 Config', /export \{ Config \}|export const Config/.test(host));
 ok('④ Config 带 ~standard.validate', host.includes('"~standard"') && host.includes("validate(input)"));
 const hostImports = [...host.matchAll(/^import .*?from "([^"]+)"/gm)].map((m) => m[1]);
-ok('④★ 宿主只 import node:* 内置模块（零 @deepseek-ai/*）', hostImports.every((s) => s.startsWith("node:")), hostImports.join(", "));
+// ★★★★★ 2026-10-16（D221）就地修：这条原来的判据是「**每个** import 都以 `node:` 开头」——
+//   那在**单文件时代**成立（那时宿主只有一个 `lib/index.js`，只 import node 内置）。
+//   ★ D216/D217 拆分成 8 个文件之后，**模块之间必然互相 import**（`./defs.js` / `./part1.js` …）
+//   ⇒ 旧判据必然假红（实测：`node:fs, ./part1.js, ./part2.js, …`）。
+//   ★ 但这条要守的**那条红线没变**，而且正是拆分最该盯的地方：
+//     **绝不 `import "@deepseek-ai/*"`**（那是本项目从第一天起的硬规矩 ——
+//       一旦 import 官方包，插件就被钉死在某一个内核版本上，还会把别人的生命周期绑进来）。
+//   ⇒ 判据改成**按类判**：
+//     ① 每个 import 必须是 **`node:` 内置** 或 **本目录内的相对路径**（`./` / `../`）；
+//     ② 并**显式断言**没有任何 `@deepseek-ai/*`（哪怕它以别种写法出现）。
+//   ★ 这不是"放宽到全绿"：① 之外的一切（裸包名 `zod`、绝对路径、`@deepseek-ai/*`）
+//     仍然会红 —— 而且 ② 把那条真正的红线**单独钉死**了（原来它只是①的副产品）。
+const badImports = hostImports.filter((s) => !s.startsWith("node:") && !s.startsWith("./") && !s.startsWith("../"));
+ok(
+  "④★ 宿主只 import node:* 内置模块 + 自己目录内的相对模块（拆分后允许互 import）",
+  badImports.length === 0,
+  badImports.join(", ")
+);
+// ★★★ 注意：**判据只吃"import 说明符"这一份清单**，不去全文正则扫源码。
+//   为什么（我第一版就栽在这）：全文扫会把**注释里提到的** `@deepseek-ai/...`
+//   也算成违规 —— 而本项目恰恰**故意在注释里大量引用官方包名**来解释设计
+//   （例如 `lib/part2.js` 引官方 webserver README、`lib/defs.js` 引官方 registry 源码）
+//   ⇒ 那样写必然假红，而且会逼着人**删掉有价值的注释**去迁就一条错判据。
+//   （纪律 2：判据的输入必须是"被测对象自己产生的那部分" —— 这里就是 import 说明符。
+//     纪律 7：结论与自己手工验证过的事实冲突时，先怀疑尺子。）
+ok(
+  "④★★ 且**绝不 import `@deepseek-ai/*`**（那条红线单独立一条，不靠上面那条副产品）",
+  hostImports.every((s) => !s.startsWith("@deepseek-ai/")),
+  hostImports.filter((s) => s.startsWith("@deepseek-ai/")).join(", ")
+);
 
 // ⑤ webServer 路由
 ok('⑤ 用 ctx.inject(["webServer"])（可选依赖）', host.includes('ctx.inject(["webServer"]'));
@@ -56,7 +102,17 @@ const green = /通过 (\d+) 项，失败 0 项/.exec(st.stdout ?? "");
 ok(`⑦ 自检全过（${green ? green[1] : "?"} 项）`, green !== null);
 ok('⑦ 自检里有「情形 27：官方设置面板」', (st.stdout ?? "").includes("情形 27：官方设置面板"));
 ok('⑦ README 有设置面板一节', fs.readFileSync(path.join(DIR, "README.md"), "utf8").includes("设置面板"));
-ok('⑦ DECISIONS 有 D38', fs.readFileSync(path.join(DIR, "DECISIONS.md"), "utf8").includes("## D38"));
+// ★★★★★ 2026-10-16（D221）就地修：**这里原来读根目录的 `DECISIONS.md`** ——
+//   那个单文件已在 **D220 卡片化**时删掉（现在是一卡一文件 `decisions/D38.md`）
+//   ⇒ 这条探针**自卡片化起就一直 ENOENT 崩掉**（整条探针跑不完，后面的检查全没执行）。
+//   ★ 修法与插件自己同口径：**问"决策现在住在哪"**，别写死单文件。
+//     （本项目纪律：记录的单一真源在清单的 `decisionsDir`；这里探针图省事，直接按卡片找。）
+const d38Cards = fs.readdirSync(path.join(DIR, "decisions")).filter((n) => /^D38\.md$/i.test(n));
+ok(
+  '⑦ DECISIONS 有 D38（★ 卡片化后读 decisions/D38.md，不再读已删的单文件）',
+  d38Cards.length === 1 &&
+    fs.readFileSync(path.join(DIR, "decisions", d38Cards[0]), "utf8").includes("D38")
+);
 
 // ⑧ ★★★ 两个模式（2026-10-10 用户拍板）
 //

@@ -4,7 +4,12 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const ASAR = "C:/Users/24239/AppData/Local/Programs/DeepSeek Harness/resources/app.asar";
+// ★ 隐私（D221）：**绝不把真实用户名写进 tools/**（它是 PUBLIC 的）。
+//   路径按环境变量拼 ⇒ 任何人的机器上都能解析，且源码里没有本机专有信息。
+const ASAR = path.join(
+  process.env.LOCALAPPDATA ?? "",
+  "Programs", "DeepSeek Harness", "resources", "app.asar"
+);
 const OUT = process.argv[2];
 if (!OUT) {
   console.error("用法：node tools/_probe-d217-extract-kernel.mjs <输出目录>");

@@ -135,6 +135,21 @@ function makeCtx({
   withAgents = false,
   withWebServer = false,
   withConfigEditor = false,
+  /**
+   * ★★★★★ 2026-10-16（D221）：宿主请求授权上下文（`connection` 服务）。
+   *
+   * 为什么**默认给**（而不是默认不给）：真实 Web 宿主里它就是**一直在**的
+   * （`dsh-client-connection` 是官方 Web 组合的固定成员）⇒ 默认给才贴近现实，
+   * 也才不会把上面那些"面板能用"的断言全变成 503。
+   * ⇒ 「取不到就拒绝」那条 fail-closed 行为**单独用 `withConnection:false` 测**。
+   */
+  withConnection = true,
+  /**
+   * ★ 让假的 `requestRejection` 返回一个拒绝码（`401` / `403`），
+   *   用来验「闸门真的会被拒」与「拒绝时**没有**进业务 handler」。
+   *   `undefined` = 放行（真实放行路径）。
+   */
+  connectionRejection = undefined,
   agentPresetServices = null,
   compactionBusy = false,
   /**
@@ -169,6 +184,8 @@ function makeCtx({
 
   /** 注册过的 HTTP 路由：path → handler（情形 27 直接调 handler，不真起服务器）。 */
   const routes = new Map();
+  /** D221：`connection.requestRejection` 每次被调用就记一笔（断言闸门真的跑了）。 */
+  const connectionChecks = [];
   /** `configEditor.edit()` 被调了几次、每次改了什么（情形 27 用）。 */
   const edits = [];
   /**
@@ -245,10 +262,28 @@ function makeCtx({
           },
         }
       : {}),
+    ...(withConnection
+      ? {
+          /**
+           * ★★★★★ 假的「宿主请求授权上下文」（D221）。
+           * ★ 形状照活内核 `cordis_inspect` 给出的真实契约：
+           *   `requestRejection(request): 401 | 403 | undefined`
+           *   —— 逐字 *"Apply Connection's Host/Origin checks and browser
+           *      authentication to another Web route."*
+           * ★ 每次被调用都记一笔（`connectionChecks`）⇒ 可以断言"闸门真的跑了"、
+           *   以及"被拒时**没有**进业务 handler"。
+           */
+          connection: {
+            requestRejection(req) {
+              connectionChecks.push(req);
+              return connectionRejection;
+            },
+          },
+        }
+      : {}),
     ...(withCommands
       ? {
-          commands: {
-            register(def) {
+          commands: {            register(def) {
               if (registeredCommands.has(def.name)) throw new Error(`duplicate command ${def.name}`);
               registeredCommands.set(def.name, def);
               const d = () => registeredCommands.delete(def.name);
@@ -466,6 +501,8 @@ function makeCtx({
     routes,
     edits,
     fakeEntry,
+    /** D221：闸门被调用过几次、每次收到的 req（断言用）。 */
+    connectionChecks,
     setAnswer(fn) {
       answerFor = fn;
     },
@@ -5683,6 +5720,124 @@ section("情形 27：官方设置面板");
     }
   }
 
+  // 27s：★★★★★ D221 **面板路由的请求授权闸门**（DSH STORE 审核员指出的唯一阻塞）
+  //
+  //   ★ 官方 webserver 逐字自述（`@deepseek-ai/dsh-host-webserver` README「Known Limitations」）：
+  //     *"**No server-wide TLS, authentication, or origin policy** — route owners such as
+  //       `dsh-client-connection` enforce their own request policy."*
+  //     ⇒ **谁注册路由谁负责鉴权**；我们原来没做 ⇒ 实测复现：
+  //        我们的路由 `200` + 9532 字节全量设置，而同一时刻官方 `/api/health` 是 `401`。
+  //
+  //   ★ 修法用官方**专为这种情形准备**的那个方法（活内核 Service 契约，逐字）：
+  //     `connection.requestRejection(request)` ——
+  //     *"Apply Connection's Host/Origin checks and browser authentication to **another Web route**."*
+  //     *"rejection status, or undefined when the route may accept the request."*
+  //
+  //   ★★★ 这一组守四件事（缺一条，闸门就等于不存在）：
+  //     ① 放行时**照常工作**（别把面板修坏）；
+  //     ② 被拒时**没有进业务 handler**（不是"进了但顺手报个错"）；
+  //     ③ `401` / `403` 都按原样透传（不是一律 403）；
+  //     ④ ★ **取不到授权上下文 ⇒ 拒绝**（fail closed）——
+  //        「拿不到 `connection` 就当没这回事」**正是被指出的那个毛病本身**。
+  {
+    const P = "/dsh-ledger-memory-settings";
+
+    // ① 放行：闸门通过 ⇒ 业务照常（GET 200 + 有 settings）
+    {
+      const run = makeCtx({ withWebServer: true, withConfigEditor: true });
+      mod.apply(run.ctx, {});
+      const r = await callRoute(run, `${P}/config.json`);
+      eq("★★ 27s① connection 放行 ⇒ 面板照常（200）", r.status, 200);
+      ok("★★ 27s① 且真的取到了设置（闸门没把面板修坏）", r.body?.settings !== undefined, JSON.stringify(r.body).slice(0, 160));
+      ok("★★★ 27s① 闸门**真的被调用过**（不是碰巧没走它）", run.connectionChecks.length >= 1, `checks=${run.connectionChecks.length}`);
+    }
+
+    // ② 拒绝 401：透传 401，且**没有** settings（业务 handler 没跑）
+    {
+      const run = makeCtx({ withWebServer: true, withConfigEditor: true, connectionRejection: 401 });
+      mod.apply(run.ctx, {});
+      const r = await callRoute(run, `${P}/config.json`);
+      eq("★★★★★ 27s② 未授权 ⇒ 401（不再把设置送出去）", r.status, 401);
+      ok("★★★★★ 27s② 且**没有**返回设置正文（业务 handler 真没跑）", r.body?.settings === undefined, JSON.stringify(r.body).slice(0, 160));
+      eq("★★ 27s② ok=false", r.body?.ok, false);
+      ok("★ 27s② 说明了原因", typeof r.body?.error === "string" && r.body.error !== "", r.body?.error);
+    }
+
+    // ③ 拒绝 403：原样透传（不是一律 403，也不是把 403 说成 401）
+    {
+      const run = makeCtx({ withWebServer: true, withConfigEditor: true, connectionRejection: 403 });
+      mod.apply(run.ctx, {});
+      const r = await callRoute(run, `${P}/config.json`);
+      eq("★★★★ 27s③ 跨站/非同源 ⇒ 403（Host/Origin 围栏那条）", r.status, 403);
+      ok("★★ 27s③ 也没有返回设置正文", r.body?.settings === undefined, JSON.stringify(r.body).slice(0, 160));
+    }
+
+    // ④ ★★★★★ fail closed：取不到授权上下文 ⇒ 503 拒绝（**不许静默放行**）
+    //
+    //   ★ 这一条是整组的**灵魂**：如果实现写成"拿不到 connection 就照常放行"，
+    //     那正是审核员指出的毛病原封不动地留着（而且更难发现 —— 因为
+    //     桌面端有 connection，本地测试全绿）。
+    {
+      const run = makeCtx({ withWebServer: true, withConfigEditor: true, withConnection: false });
+      mod.apply(run.ctx, {});
+      const r = await callRoute(run, `${P}/config.json`);
+      eq("★★★★★ 27s④ 取不到 connection ⇒ **503 拒绝**（fail closed，绝不放行）", r.status, 503);
+      eq("★★★★★ 27s④ 且**没有**返回设置正文", r.body?.settings, undefined);
+      ok("★★ 27s④ 说明了缺什么（不是一句无头无尾的失败）", /connection/.test(r.body?.error ?? ""), r.body?.error);
+    }
+
+    // ⑤ POST 同样过闸（读写都要过 —— 审核员原话是 "config.json 的 POST 直接进入 saveSettings"）
+    {
+      const run = makeCtx({ withWebServer: true, withConfigEditor: true, connectionRejection: 401 });
+      mod.apply(run.ctx, {});
+      const r = await callRoute(run, `${P}/config.json`, {
+        method: "POST",
+        body: JSON.stringify({ settings: { turnEndOffer: true } }),
+      });
+      eq("★★★★★ 27s⑤ 未授权的 POST ⇒ 401", r.status, 401);
+      eq("★★★★★ 27s⑤ 且**一个字都没落盘**（edit 没被调）", run.edits.length, 0);
+    }
+
+    // ⑥ `/broadcast.json` 也要过闸（审核员点名了它："也会修改广播状态"）
+    {
+      const run = makeCtx({ withWebServer: true, withConfigEditor: true, connectionRejection: 401 });
+      mod.apply(run.ctx, {});
+      const before = mod.__test.settingsBroadcastSeqOf();
+      const r = await callRoute(run, `${P}/broadcast.json`, { method: "POST" });
+      eq("★★★★ 27s⑥ 未授权的 broadcast ⇒ 401", r.status, 401);
+      eq("★★★★★ 27s⑥ 且**广播序号没被推进**（未授权的请求改不了状态）", mod.__test.settingsBroadcastSeqOf(), before);
+    }
+
+    // ⑦ 反向验证：★ 证明上面那几条**真能看见红**（不是碰巧全绿的假绿）。
+    //
+    //   ★ 判据（结构性、可证伪）：`installSettingsRoutes` 里注册进 webServer 的
+    //     handler **必须是** `handleFor(settingsGate(...))` 包出来的 ——
+    //     把闸门摘掉（改回 `handleFor(handler)`）这一条立刻红。
+    //     ★ 为什么用"读源码"而不是"再跑一次"：跑只能证明"当前行为对"，
+    //       证明不了"闸门还挂在注册那一行上"（有人可能把闸门挪去别处、
+    //       在别处失效）—— 而这一行**就是**审核员点的那一处
+    //       （"config.json 的 POST 直接进入 saveSettings，注册包装和 handler 中
+    //        未建立调用者授权边界"）。
+    {
+      const src = readLibSource();
+      ok(
+        "★★★★★ 27s⑦ 注册那一行必须包着闸门（摘掉它 ⇒ 这条当场红）",
+        /handler:\s*handleFor\(\s*settingsGate\(/.test(src),
+        "`installSettingsRoutes` 里没有 `handleFor(settingsGate(...))` —— 授权边界被摘掉了"
+      );
+      ok(
+        "★★★★ 27s⑦b 闸门用的是官方那个方法（`requestRejection`），不是自己另造一套",
+        /requestRejection\s*\(/.test(src),
+        "没找到对 `connection.requestRejection` 的调用"
+      );
+      ok(
+        "★★★★★ 27s⑦c 取不到授权上下文时**必须拒绝**（`503`），绝不许静默放行",
+        /sendJson\(\s*res\s*,\s*503/.test(src),
+        "没找到 fail-closed 的 503 分支 —— 这正是审核员指出的毛病本身"
+      );
+    }
+  }
+
   // 28：★★★ 压缩前**强制**落盘（用户 2026-10-09 反复强调的那一条）
   //
   //   ★ 用户原话：*"每次压缩之前强制进行台账更新和日志更新"*；
@@ -7815,7 +7970,26 @@ section("情形 27：官方设置面板");
   //       `` `lib/index.js` `` 与 `` `lib/part6.js` `` ⇒ 命中第三条模式。
   //     ⇒ 处置**照 D194 的先例**：**改数字并记明原因**，**不去改写探针绕开判据**
   //       （判据刻意"宁可多报"，真正的闸门是下面那条"这些文件都不在打包清单里"）。
-  const DANGEROUS_EXPECTED = 60;
+  //   ★★ 2026-10-16（D221 · 面板路由授权闸门）：60 → **62**（**不是 61** —— 我第一次就是
+  //     按"我新加的探针 +1"去改的，**改错了**，下一跑又红）。
+  //
+  //     ⚠️⚠️ **这一条的数字是被"注释"推动的，务必看懂再改**：
+  //       我新增的 `_probe-d221-reverse-failopen.mjs`（真会改写 `lib/part2.js`）
+  //       **一个模式都没命中** —— 它把目标路径拼在变量 `TARGET` 里、不写 `lib/index.js`
+  //       字面量 ⇒ **它没被算进来**（这是本判据**已知的假阴性**，与
+  //       `_probe-d216-rollback.mjs` 同类，见上面的诚实说明）。
+  //       而真正让数字 +2 的是**两个"只读"探针，因为我在它们的注释里写了
+  //       `` `lib/index.js` `` 这个字面量**：
+  //         · `_probe-settings-http.mjs` —— 我在说明"这行原来只读一个文件"时写了它；
+  //         · `_probe-objective-audit.mjs` —— 我在说明"输入要改成整个 lib/"时写了它。
+  //       ⇒ 两个都是**已知假阳性**（判据第三条模式刻意宽：宁可多报，不可漏报）。
+  //     ★ 处置**照 D194/D216 先例**：**改数字并记明原因**，**不去改注释绕开判据**
+  //       （那正是"改夹具让断言变绿"的反面教材）。
+  //     ★★★ **这一条真正值得记的是**：这个数字**会被纯注释改动推动** ——
+  //       以后加/改注释时若提到 `lib/index.js`，它会漂，而且**报出来的名字看着毫不相干**
+  //       （"我明明没碰探针，怎么数变了"）。**先看名单，别急着改数字**
+  //       （我自己第一次就凭"我加了一个探针"的印象拍了个 61）。
+  const DANGEROUS_EXPECTED = 62;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
@@ -12703,9 +12877,40 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       const b = src.indexOf(endMark, a);
       return b < 0 ? src : src.slice(0, a) + src.slice(b);
     };
+    /**
+     * ★★★★★ 2026-10-16（D221）：**"下一个顶层声明"必须用正则锚行首找**，
+     *   不能拿字面 `"\nfunction "` 当边界。
+     *
+     * ★ 怎么发现的：我给 `part2.js` 加了一个**非 export 的**顶层函数
+     *   （`function settingsGate(...)`，请求授权闸门）—— 它是全库**唯一**一个
+     *   行首不带 `export` 的函数声明 ⇒ 旧边界 `"\nfunction "` 一下从
+     *   `settingDefaults()` 之后 3.7KB 处**跳到 208KB 之后**，
+     *   把 `numOf()` / `currentSettings()` 那整段（含 5 个设置键的消费者）
+     *   一并**剥掉** ⇒ 那 5 个键被误判成"空承诺"。
+     *
+     * ★★ 这是**尺子脆弱**，不是被测对象坏了（纪律 1：指标要有正确边界；
+     *   纪律 7：结论与自己手工验证过的事实冲突时，**先怀疑尺子**）。
+     *   ⇒ 修**尺子**（把边界定义成"下一个顶层声明"），**不是**去把那个函数改名
+     *     或强行 export 来迁就一条错判据 —— 那样下一个人加一个同样形状的函数
+     *     会再栽一次，而且**更难查**（症状是"某个设置项忽然变成空承诺"）。
+     */
+    const nextTopLevelDecl = (src, from) => {
+      // 行首的：export function / export async function / export const / function / const / class
+      const re = /^(?:export\s+)?(?:async\s+)?(?:function|const|let|class)\s/m;
+      const rest = src.slice(from);
+      const m = rest.match(re);
+      return m === null ? -1 : from + m.index;
+    };
+    const stripDecl = (src, startMark) => {
+      const a = src.indexOf(startMark);
+      if (a < 0) return src;
+      // 从 startMark 之后一行开始找下一个顶层声明，避免匹配到 startMark 自己
+      const b = nextTopLevelDecl(src, a + 1);
+      return b < 0 ? src : src.slice(0, a) + src.slice(b);
+    };
     let body = libSrc;
     body = stripBlock(body, "const SETTING_SPECS = [", "const SETTING_GROUPS = [");
-    body = stripBlock(body, "function settingDefaults() {", "\nfunction ");
+    body = stripDecl(body, "function settingDefaults() {");
     const noConsumer = [];
     for (const k of specs.map((s) => s.key)) {
       // ★ 词边界匹配标识符（`numOf("x")`、`cfg.x`、`settings.x` 都能命中）

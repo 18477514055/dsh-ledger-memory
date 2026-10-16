@@ -935,11 +935,19 @@ section("情形 4：ledger_write 与阈值闸门");
   const a = await T.get("ledger_write").execute({ target: "active", content: "- 追加一行\n", mode: "append" }, exec);
   eq("追加 ok", a.ok, true);
 
-  // ★ 用**清单自己登记的阈值**来构造超限内容，而不是写死 150/200 ——
+  // ★ 用**当前真正生效的阈值**来构造超限内容，而不是写死 150/200 ——
   //   `initedRoot` 是跨小节共享的夹具，别处再 init 一次会把阈值改掉
   //   （实测撞到：这里以为上限是 150，实际已是 300 ⇒ 200 行不再超限，用例假红）。
-  //   这样断言就只依赖"闸门与清单一致"，不依赖夹具的历史。
-  const limit = JSON.parse(fs.readFileSync(path.join(initedRoot, ".dsh-ledger.json"), "utf8")).maxActiveLines;
+  //   这样断言就只依赖"闸门与生效值一致"，不依赖夹具的历史。
+  //
+  // ★★★★★ 2026-10-16（D222）**就地修**：这里原来读**清单**里的 `maxActiveLines`。
+  //   默认「以面板为准」之后清单那个数**不再管用**（那正是本轮修的），而且
+  //   `ledger_init` 在新口径下**根本不写这个键** ⇒ `limit` 变成 `undefined`
+  //   ⇒ `limit + 50` = NaN ⇒ 构造出**空内容** ⇒ "超限"不成立 ⇒ 四条断言假红。
+  //   ⇒ 正解：读**真正生效**的那个值（`inspect().maxActiveLines`）——
+  //     它已经是"谁管用"的出口算出来的，夹具不必自己判一次（否则又是两把尺子）。
+  const limit = mod.__test.inspect(initedRoot).maxActiveLines;
+  ok("前提：拿到了**生效的**行数上限（不是清单里那个可能不管用的）", Number.isFinite(limit) && limit > 0, `limit=${limit}`);
   const big = Array.from({ length: limit + 50 }, (_, i) => `- 第 ${i} 行`).join("\n");
   const refused = await T.get("ledger_write").execute({ target: "active", content: big, mode: "replace" }, exec);
   eq("超阈值被拒", refused.ok, false);
@@ -1016,8 +1024,10 @@ section("情形 5：ledger_archive");
   ok("新条目已追加", second.includes("- [ ] 起步"), second);
 
   // newActive 仍超阈值 ⇒ 拒绝改活跃台账（归档不能白做）
-  // ★ 同样按**清单自己的阈值**构造（别写死 200；见情形 4 的说明）。
-  const limit2 = JSON.parse(fs.readFileSync(path.join(initedRoot, ".dsh-ledger.json"), "utf8")).maxActiveLines;
+  // ★ 同样按**当前真正生效的阈值**构造（别写死 200；见情形 4 的说明）。
+  //   ★ D222：清单里那个值在默认口径下**不管用**，且 `ledger_init` 也不再写它
+  //     ⇒ 必须读 `inspect().maxActiveLines`（生效值），否则构造出空内容、断言假红。
+  const limit2 = mod.__test.inspect(initedRoot).maxActiveLines;
   const big = Array.from({ length: limit2 + 50 }, (_, i) => `- x${i}`).join("\n");
   const refused = await T.get("ledger_archive").execute({ entries: "- 一条\n", newActive: big }, exec);
   eq("newActive 超阈值被拒", refused.ok, false);
@@ -1960,6 +1970,26 @@ section("情形 14：活动日志");
   const LOGDIR = "_ledger-log";
 
   /** 造一个"已初始化 + 已启用日志"的项目。 */
+  /**
+   * ★★★★★ 2026-10-16（D222）：日志档位的夹具**必须同时说清"谁说了算"**。
+   *
+   * ★ 为什么：D222 之前 `levelOn` **只读清单** ⇒ 把档位写进清单就等于生效。
+   *   D222 之后默认「以面板为准」⇒ 清单里那份**不再管用**（这是**故意**的修复，
+   *   不是回归）⇒ 老夹具只写清单就会"档位似乎没生效"，其实是**口径变了**。
+   *   ⇒ 夹具按新口径写：**面板值**写进 apply() 的 cfg，清单里那份作为"老项目遗留值"保留
+   *     （顺带把"面板盖过清单"这件事**每一条用例都在验**）。
+   * ★ 判据：夹具要表达的意图是「这几档开着」⇒ 就说清它是**面板**的意思。
+   */
+  /**
+   * ★★★★★ 2026-10-16（D222）：日志档位夹具**必须按新口径把"意思"说给谁**。
+   *
+   * ★ 为什么：D222 之前 `levelOn` **只读清单** ⇒ 档位写进清单就等于生效。
+   *   D222 之后默认「以面板为准」⇒ 清单里那份**不再管用**（这正是**修好的那个行为**，
+   *   不是回归）⇒ 老夹具只写清单会表现为"档位没生效"，其实是**判定口径变了**。
+   * ★ 关键：`settingPrecedence` **本身是面板设置**（`precedenceValue` 读的是
+   *   `currentSettings()`）⇒ **不能**靠清单里的键把它切到 project。
+   *   ⇒ 夹具把档位**同时**记在一张表里，由 `applyLogged()` 以**面板 cfg** 传给 `apply()`。
+   */
   function loggedProject(tag, levels) {
     const dir = tmpProject(tag);
     fs.writeFileSync(path.join(dir, "LEDGER.md"), "# 台账\n\n## 目标\nX\n", "utf8");
@@ -1971,11 +2001,23 @@ section("情形 14：活动日志");
         decisions: "DECISIONS.md",
         archiveDir: "_a",
         logDir: LOGDIR,
+        // ★ 清单里那份**留着**：它现在代表"老项目遗留值"，而默认口径下面板会盖过它
+        //   ⇒ 每条用例都顺带验了"面板真的盖过清单"这件事。
         ...(levels === undefined ? {} : { logLevels: levels }),
       }),
       "utf8"
     );
+    if (levels !== undefined) loggedLevels.set(dir, levels);
     return dir;
+  }
+
+  /** 夹具档位表：`root → 面板 cfg`（由 `applyLogged` 读）。 */
+  const loggedLevels = new Map();
+
+  /** D222：给日志档位类用例用 —— 按**面板**口径应用设置。 */
+  function applyLogged(run, root) {
+    const levels = loggedLevels.get(root);
+    mod.apply(run.ctx, levels === undefined ? {} : { logLevels: levels });
   }
 
   /** 找一个日志文件（按档位），返回绝对路径或 undefined。 */
@@ -2024,7 +2066,7 @@ section("情形 14：活动日志");
   {
     const root = loggedProject("log-l2", { L0: true, L1: true, L2: true, L3: false });
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, root); // D222：档位按面板口径给
     const sid = "s-log-1";
     await callPair(run, root, sid, { callId: "c1", name: "write", args: { file_path: path.join(root, "a.ts") } });
     await callPair(run, root, sid, { callId: "c2", name: "edit", args: { file_path: path.join(root, "a.ts") } });
@@ -2046,7 +2088,7 @@ section("情形 14：活动日志");
   {
     const off = loggedProject("log-l3-off", { L0: true, L1: true, L2: true, L3: false });
     const runOff = makeCtx();
-    mod.apply(runOff.ctx, {});
+    applyLogged(runOff, off); // D222：档位按面板口径给
     await callPair(runOff, off, "s-off", { callId: "c1", name: "pwsh", args: { command: "x", description: "d" } });
     await flush(runOff, off, "s-off");
     ok("L3 关着时不产生 L3 文件", logFile(off, "L3") === undefined);
@@ -2054,7 +2096,7 @@ section("情形 14：活动日志");
 
     const on = loggedProject("log-l3-on", { L0: true, L1: true, L2: true, L3: true });
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, on); // D222：档位按面板口径给
     const sid = "s-on";
     await callPair(run, on, sid, { callId: "c1", name: "pwsh", args: { command: "node --test", description: "Run the suite" } });
     await callPair(run, on, sid, { callId: "c2", name: "pwsh", args: { command: "boom" }, isError: true, step: 2 });
@@ -2073,7 +2115,7 @@ section("情形 14：活动日志");
   {
     const root = loggedProject("log-l1", { L0: true, L1: true, L2: true, L3: false });
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, root); // D222：档位按面板口径给
     const exec = execFor(root, "s-l1");
     const w = await run.registeredTools.get("ledger_log_write").execute(
       { title: "做了 X", goal: "要 Y", did: "干了 Z", issues: "卡在 W", next: "下一步 V" },
@@ -2097,7 +2139,7 @@ section("情形 14：活动日志");
   {
     const root = loggedProject("log-read", { L0: true, L1: true, L2: true, L3: true });
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, root); // D222：档位按面板口径给
     const sid = "s-read";
     const exec = execFor(root, sid);
     await callPair(run, root, sid, { callId: "c1", name: "write", args: { file_path: path.join(root, "a.ts") } });
@@ -2139,7 +2181,7 @@ section("情形 14：活动日志");
   {
     const root = loggedProject("log-noinject", { L0: true, L1: true, L2: true, L3: false });
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, root); // D222：档位按面板口径给
     const sid = "s-noinject";
     await callPair(run, root, sid, { callId: "c1", name: "write", args: { file_path: path.join(root, "a.ts") } });
     await flush(run, root, sid);
@@ -2180,7 +2222,7 @@ section("情形 14：活动日志");
   {
     const root = loggedProject("log-tolerance", { L0: true, L1: true, L2: true, L3: true });
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, root); // D222：档位按面板口径给
     let threw;
     try {
       await fire(run, "session/event", undefined, undefined);
@@ -2206,7 +2248,7 @@ section("情形 14：活动日志");
   {
     const root = loggedProject("log-l4", { L0: true, L1: true, L2: true, L3: false, L4: true });
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, root); // D222：档位按面板口径给
     const sid = "session-9a3f1111-2222";
     const feedUser = (text, when, extra = {}) =>
       feed(run, root, sid, {
@@ -2285,7 +2327,7 @@ section("情形 14：活动日志");
   {
     const root = loggedProject("log-l4-default", undefined); // 不指定档位 ⇒ 走默认
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, root); // D222：档位按面板口径给
     const sid = "session-77aa3333-4444";
     await feed(run, root, sid, {
       type: "user/message",
@@ -2310,7 +2352,7 @@ section("情形 14：活动日志");
   {
     const root = loggedProject("log-l4-off", { L0: true, L1: true, L2: true, L3: false, L4: false });
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, root); // D222：档位按面板口径给
     const sid = "s-l4-off";
     await feed(run, root, sid, {
       type: "user/message",
@@ -2326,7 +2368,7 @@ section("情形 14：活动日志");
   {
     const root = loggedProject("log-l4-noinject", { L0: true, L1: true, L2: true, L3: false, L4: true });
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    applyLogged(run, root); // D222：档位按面板口径给
     const sid = "s-l4-noinject";
     await feed(run, root, sid, {
       type: "user/message",
@@ -3395,7 +3437,8 @@ section("情形 21：已有项目的台账合规检测与重构");
     const body = "# 台账\n" + Array.from({ length: 20 }, (_, i) => `- 第 ${i} 条`).join("\n") + "\n";
     fs.writeFileSync(path.join(root, "LEDGER.md"), body, "utf8");
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    // ★ D222：本夹具的意思是"**这个项目的**上限是 10 行"（按项目定值）⇒ 必须显式声明口径。
+    mod.apply(run.ctx, { settingPrecedence: "project" });
     const T = run.registeredTools;
     const exec = execFor(root, "s21c");
     const r = await T.get("ledger_conform").execute({ apply: true }, exec);
@@ -3500,7 +3543,11 @@ section("情形 21：已有项目的台账合规检测与重构");
       "utf8"
     );
     const run = makeCtx({ withUserQuestions: true });
-    mod.apply(run.ctx, {});
+    // ★ D222：这个夹具想表达的是"**这个项目的**上限是 10 行 ⇒ 20 行的台账超限 ⇒ 该弹卡"。
+    //   那是**按项目**的意思 —— 新默认「以面板为准」下清单里那个 10 不再管用
+    //   ⇒ 必须把优先口径显式切到「以项目清单为准」，否则测的是"不超限 ⇒ 不弹卡"。
+    //   ★ 这不是为了让测试变绿，而是**夹具必须说清它的前提**（纪律 8）。
+    mod.apply(run.ctx, { settingPrecedence: "project" });
     run.setAnswer(() => ({ answers: [{ id: "ledger-conform", selected: ["修复台账（只补缺的）"] }] }));
     const steered = [];
     const agent = { session: { header: { id: "s21g", cwd: root }, id: "s21g" }, steer: (m) => steered.push(m) };
@@ -4893,7 +4940,8 @@ section("情形 25：台账自身的变更登记（需求 ①）");
     j.maxActiveLines = 10;
     fs.writeFileSync(mf, JSON.stringify(j), "utf8");
     const run = makeCtx();
-    mod.apply(run.ctx, {});
+    // ★ D222：上限写在清单里 ⇒ 要按项目口径才管用。
+    mod.apply(run.ctx, { settingPrecedence: "project" });
     const A = execFor(root, "session-8888bbbb-8888");
     // 正文 6 行，加登记区（标题 1 + 说明 2 + 空行 + 1 条 ≈ 9 行）⇒ 超 14
     const w = await run.registeredTools
@@ -4918,7 +4966,9 @@ section("情形 25：台账自身的变更登记（需求 ①）");
     j.changeRegisterMax = 3; // ★ 清单里点名 3 条
     fs.writeFileSync(mf, JSON.stringify(j), "utf8");
     const run = makeCtx();
-    mod.apply(run.ctx, { changeRegisterMax: 9 }); // ★ 插件级设置给 9 ⇒ 应当被清单压过去
+    // ★ D222：本夹具的意思是"**清单里点名 3 条** ⇒ 它管用" ⇒
+    //   默认「以面板为准」下那句话不再成立（这正是修的），必须显式声明口径。
+    mod.apply(run.ctx, { settingPrecedence: "project", changeRegisterMax: 9 }); // ★ 插件级给 9 ⇒ 应当被清单压过去
     const A = execFor(root, "session-9999cccc-9999");
 
     for (let i = 0; i < 6; i += 1) {
@@ -5404,9 +5454,9 @@ section("情形 27：官方设置面板");
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
     // ★★★★ 2026-10-13（D157/D158）：36 → **37**（新增 `triageKeepTotalMax`）。
     // ★★★★★ 2026-10-13（D179）：37 → **38**（新增 `hardMaintenanceGate`，收尾维护硬门）。
-    eq("★ 回报了三十八项元数据（D179 新增 hardMaintenanceGate）", r.body.specs?.length, 38);
+    eq("★ 回报了三十九项元数据（D222 新增 settingPrecedence）", r.body.specs?.length, 39);
     ok(
-      "★★ 三十八项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
+      "★★ 三十九项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
       JSON.stringify([...r.body.specs.map((s) => s.key)].sort()) ===
         JSON.stringify([
           "autoCompact", "blockHistoryMax", "blockInjection", "capsuleArtifactMax",
@@ -5415,7 +5465,7 @@ section("情形 27：官方设置面板");
           "deltaTriggerPoints", "hardMaintenanceGate", "highFidelityCompact", "highFidelityCompactRatio",
           "incrementalCompact", "logBriefChars", "logDefaultLimit", "logLevels",
           "maxActiveLines", "maxArchiveList", "maxReadChars", "minCompressPoints", "mode", "nudgeMinRatio",
-          "pressureTiers", "recallMaxChars", "requireFlushBeforeCompact", "shadowedIndexMax",
+          "pressureTiers", "recallMaxChars", "requireFlushBeforeCompact", "settingPrecedence", "shadowedIndexMax",
           "triageKeepMax", "triageKeepTotalMax", "triageOwedMaxAgeMs", "turnEndOffer", "userMsgMaxChars",
           "weightDoneCap", "weightMustInject", "weightPrincipleScore",
         ]),
@@ -5535,7 +5585,14 @@ section("情形 27：官方设置面板");
     rmrf(root);
   }
 
-  // 27l：★ 设置真的接进了行为 —— 日志档位（新项目登记的默认值）
+  // 27l：★ 设置真的接进了行为 —— 日志档位
+  //
+  // ★★★★★ 2026-10-16（D222）**就地重写**：这个用例原来断言"设置里的 L0 档**写进了**新项目的清单"。
+  //   那测的正是**我们刚修掉的那个行为** —— "建项目时把面板值冻结进清单"，
+  //   而那正是用户报的"面板改了老项目不跟"的真根因。
+  //   ⇒ 现在**两个方向都要测**（否则等于把 bug 的断言删掉了事）：
+  //     ① 默认「以面板为准」⇒ **不写**进清单（不留陈旧值），但**行为上立刻跟面板**；
+  //     ② 切成「以项目清单为准」⇒ 照旧写进去（那是"按项目定值"的意思）。
   {
     const root = tmpProject("settings-levels");
     fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
@@ -5549,12 +5606,36 @@ section("情形 27：官方设置面板");
       );
     ok("init 成功", r.ok === true, JSON.stringify(r).slice(0, 200));
     const mf = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
-    eq("★★ 设置里的 L0 档写进了新项目的清单", mf.logLevels.L0, false);
-    eq("★ 其余档位照常", mf.logLevels.L1, true);
+    ok("★★★ D222：默认「以面板为准」⇒ **不把面板档位冻结进清单**（这就是那个真缺陷的修法）",
+      mf.logLevels === undefined, JSON.stringify(mf.logLevels));
+    // ★ 但**行为**必须跟面板（"不写"不等于"不生效"）：L0 关着 ⇒ 清单没写也照样不采集 L0。
+    {
+      const info = mod.__test.inspect(root);
+      eq("★★★ 且行为上立刻跟面板：L0 被面板关掉（清单没写也一样）", mod.__test.levelOn(info, "L0"), false);
+      eq("★★  L1 按面板开着", mod.__test.levelOn(info, "L1"), true);
+    }
     rmrf(root);
+
+    // ② 切成「以项目清单为准」⇒ 反过来：**要**写进清单（那是按项目定值的意思）
+    const root2 = tmpProject("settings-levels-proj");
+    fs.writeFileSync(path.join(root2, "LEDGER.md"), "# 台账\n", "utf8");
+    const run2 = makeCtx();
+    mod.apply(run2.ctx, {
+      settingPrecedence: "project",
+      logLevels: { L0: false, L1: true, L2: true, L3: false, L4: true },
+    });
+    await run2.registeredTools
+      .get("ledger_init")
+      .execute(
+        { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", logDir: "_log", gitInit: false },
+        execFor(root2, "s-levels2")
+      );
+    const mf2 = JSON.parse(fs.readFileSync(path.join(root2, ".dsh-ledger.json"), "utf8"));
+    eq("★★★ 选「以项目清单为准」⇒ 档位**要**写进清单（按项目定值）", mf2.logLevels?.L0, false);
+    rmrf(root2);
   }
 
-  // 27m：★ 设置真的接进了行为 —— 行数上限（新项目登记的默认值）
+  // 27m：★ 设置真的接进了行为 —— 行数上限（**同一套 D222 口径**）
   {
     const root = tmpProject("settings-lines");
     fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
@@ -5567,8 +5648,28 @@ section("情形 27：官方设置面板");
         execFor(root, "s-lines")
       );
     const mf = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
-    eq("★★ 设置里的行数上限写进了新项目的清单", mf.maxActiveLines, 120);
+    ok("★★★ D222：默认「以面板为准」⇒ **不把行数上限冻结进清单**",
+      mf.maxActiveLines === undefined, JSON.stringify(mf.maxActiveLines));
+    {
+      const info = mod.__test.inspect(root);
+      eq("★★★ 且行为上立刻跟面板：上限就是面板的 120", info.maxActiveLines, 120);
+    }
     rmrf(root);
+
+    // ② 「以项目清单为准」⇒ 要写进清单
+    const root2 = tmpProject("settings-lines-proj");
+    fs.writeFileSync(path.join(root2, "LEDGER.md"), "# 台账\n", "utf8");
+    const run2 = makeCtx();
+    mod.apply(run2.ctx, { settingPrecedence: "project", maxActiveLines: 120 });
+    await run2.registeredTools
+      .get("ledger_init")
+      .execute(
+        { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", gitInit: false },
+        execFor(root2, "s-lines2")
+      );
+    const mf2 = JSON.parse(fs.readFileSync(path.join(root2, ".dsh-ledger.json"), "utf8"));
+    eq("★★★ 选「以项目清单为准」⇒ 上限**要**写进清单", mf2.maxActiveLines, 120);
+    rmrf(root2);
   }
 
   // 27n：★★ **项目清单优先于插件级设置**（一个事实只有一个出口）
@@ -5589,13 +5690,68 @@ section("情形 27：官方设置面板");
       "utf8"
     );
     const run = makeCtx();
-    // 插件级设置说"上限 999、L0 关" —— 项目清单应当赢
-    mod.apply(run.ctx, { maxActiveLines: 999, logLevels: { L0: false, L1: true, L2: true, L3: true, L4: true } });
+    // ★ D222：本夹具测的就是"**清单优先**"这条口径 ⇒ 必须显式选它。
+    //   插件级设置说"上限 999、L0 关" —— 项目清单应当赢（在 project 口径下）。
+    mod.apply(run.ctx, {
+      settingPrecedence: "project",
+      maxActiveLines: 999,
+      logLevels: { L0: false, L1: true, L2: true, L3: true, L4: true },
+    });
     const st = await run.registeredTools.get("ledger_status").execute({}, execFor(root, "s-prec"));
     eq("★★ 行数上限以**项目清单**为准（80，不是设置里的 999）", st.maxActiveLines, 80);
     eq("★★ 日志档位以**项目清单**为准（L1 仍是关的）", st.logLevels.L1, false);
     eq("★★ L0 以项目清单为准（仍是开的）", st.logLevels.L0, true);
     rmrf(root);
+
+    // ★★★★★ D222 新增：**默认口径下反过来** —— 面板赢（这才是用户要的那个方向）。
+    const root2 = tmpProject("settings-precedence-panel");
+    fs.writeFileSync(path.join(root2, "LEDGER.md"), "# 台账\n", "utf8");
+    fs.writeFileSync(
+      path.join(root2, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1,
+        active: "LEDGER.md",
+        archiveDir: "_a",
+        maxActiveLines: 80,
+        logDir: "_log",
+        logLevels: { L0: true, L1: false, L2: false, L3: false, L4: false },
+        revision: 0,
+      }),
+      "utf8"
+    );
+    const run2 = makeCtx();
+    mod.apply(run2.ctx, { maxActiveLines: 999, logLevels: { L0: false, L1: true, L2: true, L3: true, L4: true } });
+    const st2 = await run2.registeredTools.get("ledger_status").execute({}, execFor(root2, "s-prec2"));
+    eq("★★★★★ 默认「以面板为准」⇒ 老项目**立刻跟面板**（999，不是清单里的 80）", st2.maxActiveLines, 999);
+    eq("★★★★★ 日志档位也跟面板（L1 打开，清单里那个 false 被盖过）", st2.logLevels.L1, true);
+    eq("★★ 且 L0 跟面板（面板说关 ⇒ 关，清单里那个 true 被盖过）", st2.logLevels.L0, false);
+
+    // ★★★★★ 2026-10-16（D222）**反向验证当场逼出来的补测**：
+    //   我把「唯一出口」摘掉跑反向验证时，只有 **4 条**见红 —— 而"唯一出口"管着 **5 个键**。
+    //   一查：`blockInjection` 与 `changeRegisterMax` **只测了"清单优先"那半边**，
+    //   **没有测"默认口径下它们也跟面板"** ⇒ 那两处**摘掉了也不会红**。
+    //   ★ 这正是纪律 10 说的第二种情形："摘一处不红 ⇒ 断言太弱"。现在补齐。
+    {
+      const man2 = JSON.parse(fs.readFileSync(path.join(root2, ".dsh-ledger.json"), "utf8"));
+      man2.blockInjection = false; // 清单说"关"
+      man2.changeRegisterMax = 3; // 清单说"留 3 条"
+      fs.writeFileSync(path.join(root2, ".dsh-ledger.json"), JSON.stringify(man2), "utf8");
+      const run3 = makeCtx();
+      // 面板说"开"、面板说"留 7 条" ⇒ 默认口径下面板赢
+      mod.apply(run3.ctx, { blockInjection: true, changeRegisterMax: 7 });
+      const info3 = mod.__test.inspect(root2);
+      eq(
+        "★★★★★ 区块级注入也跟面板（清单里那个 false 被盖过）",
+        mod.__test.precedenceValue(info3, "blockInjection"),
+        true
+      );
+      eq(
+        "★★★★★ 变更登记条数也跟面板（清单里那个 3 被盖过）",
+        mod.__test.precedenceValue(info3, "changeRegisterMax"),
+        7
+      );
+      rmrf(root2);
+    }
   }
 
   // 27p：★★★ `autoCompact: false` **只拦自动、不拦手动**（这条是"差点写错"那一处的回归）
@@ -8254,7 +8410,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 38（D179 新增 hardMaintenanceGate）", settingKeys.length, 38);
+  eq("★ 口径：设置项数 = 39（D222 新增 settingPrecedence）", settingKeys.length, 39);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
   //   ★★ 2026-10-13（D180）：加入 `principles`；★ 并**实测**到 `triage` 在源码里
@@ -9868,13 +10024,23 @@ section("情形 37：两个模式（正常推进 / 反复追究）");
     const rootA = mkModeProj("mode-scope-a", "surgical");
     const rootB = mkModeProj("mode-scope-b", "steady");
     const run = makeCtx({});
-    mod.apply(run.ctx, {});
+    // ★ D222：本夹具测的是"**同一份设置下两个项目各走各的**"⇒ 那要求「以项目清单为准」。
+    mod.apply(run.ctx, { settingPrecedence: "project" });
     const st = run.registeredTools.get("ledger_status");
     const a = await st.execute({}, execFor(rootA, "s-scope-a"));
     const b = await st.execute({}, execFor(rootB, "s-scope-b"));
     const pick = (x) => x.mode ?? x.effectiveMode ?? x.project?.mode;
     ok("★★ 项目清单优先：A 项目 surgical", pick(a) === "surgical", JSON.stringify(pick(a)));
     ok("★★ 项目清单优先：B 项目 steady（同一份全局设置）", pick(b) === "steady", JSON.stringify(pick(b)));
+
+    // ★★★★★ D222 新增：**默认口径下面板赢** —— 这才是用户要的方向。
+    const run2 = makeCtx({});
+    mod.apply(run2.ctx, { mode: "surgical" });
+    const st2 = run2.registeredTools.get("ledger_status");
+    const a2 = await st2.execute({}, execFor(rootA, "s-scope-a2"));
+    const b2 = await st2.execute({}, execFor(rootB, "s-scope-b2"));
+    eq("★★★★★ 默认「以面板为准」⇒ A 项目也跟面板（清单里的 steady/surgical 都不管用）", pick(a2), "surgical");
+    eq("★★★★★ B 项目同样跟面板（不再是它清单里的 steady）", pick(b2), "surgical");
     rmrf(rootA);
     rmrf(rootB);
   }
@@ -12676,7 +12842,9 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify(man), "utf8");
 
       const run = makeCtx({});
-      mod.apply(run.ctx, {});
+      // ★ D222：本夹具原意是"**清单里**打开开关 ⇒ 生效"。新默认下面板赢
+      //   ⇒ 显式按项目口径（同时**保留了"清单里那个 true 确实能生效"**这条覆盖）。
+      mod.apply(run.ctx, { settingPrecedence: "project" });
       const visible = await runPreStep(run, {
         agent: { session: { header: { id: "s-bi-on", cwd: root } } },
         messages: [],
@@ -17562,8 +17730,39 @@ section("情形 88：卡片化 —— 一卡一文件 + 多维索引表（D202�
     const info5 = mod.__test.inspect(root5);
     const snap = mod.__test.renderSettingsSnapshot(info5);
     ok("★★★★★ 89⑫① 快照**真的渲染得出来**（含标题 + 至少 5 项）", /当前设置/.test(snap) && (snap.match(/^- /gm) ?? []).length >= 5, `行数=${(snap.match(/^- /gm) ?? []).length}`);
-    ok("★★★★★★ 89⑫② ★ **「谁管用」说得清**（项目清单定了 350 ⇒ 明说「它管用」）", /项目清单定了 350/.test(snap) && /它管用/.test(snap), snap.split("\n").find((l) => l.includes("活跃台账上限")) ?? "");
-    ok("★★★★★ 89⑫③ 面板值只被**降级说明**（「只管新项目」），不许冒充生效值", /只管新项目|新项目的默认/.test(snap), "");
+    // ★★★★★★ 89⑫②/③（2026-10-16 · D222 **就地重写**）：
+    //   原来这两条断言的是"清单定了 350 ⇒ 明说「它管用」"+"面板值只被降级说明（只管新项目）"。
+    //   ★ 那正是**旧口径**（清单优先、面板只管新项目）—— D222 把默认反过来了
+    //     ⇒ 老断言按新口径**必然红**，而它红的理由是"口径变了"，不是"坏了"。
+    //   ⇒ 改成**两个方向都测**：这才是"谁管用必须说得清"这句话在两种口径下的完整含义。
+    //     ① 默认（以面板为准）⇒ 必须说"面板值 X 管用"，且**如实**提一句清单里那个已被盖过；
+    //     ② 切成（以项目清单为准）⇒ 必须说"清单定了 350，它管用"。
+    ok(
+      "★★★★★★ 89⑫② 默认口径 ⇒ **说清「面板值管用」**（而不是让读者以为 350 还在生效）",
+      /面板值 \d+ 管用/.test(snap) && /以面板为准/.test(snap),
+      snap.split("\n").find((l) => l.includes("活跃台账上限")) ?? ""
+    );
+    ok(
+      "★★★★★ 89⑫②b 且**如实提示**清单里那个旧值已被盖过（不许装作它不存在）",
+      /已被面板盖过/.test(snap),
+      snap.split("\n").find((l) => l.includes("活跃台账上限")) ?? ""
+    );
+    ok(
+      "★★★★★ 89⑫②c 并把「谁说了算」本身印出来（用户报的困扰正是「不知道哪个数管用」）",
+      /谁说了算/.test(snap),
+      ""
+    );
+    {
+      // ② 换成「以项目清单为准」⇒ 老话术必须回来（"清单定了 350，它管用"）
+      const run5b = makeCtx({});
+      mod.apply(run5b.ctx, { settingPrecedence: "project" });
+      const snapB = mod.__test.renderSettingsSnapshot(mod.__test.inspect(root5));
+      ok(
+        "★★★★★★ 89⑫③ 选「以项目清单为准」⇒ 仍明说「项目清单定了 350 … 它管用」",
+        /项目清单定了 350/.test(snapB) && /它管用/.test(snapB),
+        snapB.split("\n").find((l) => l.includes("活跃台账上限")) ?? ""
+      );
+    }
     ok("★★★★ 89⑫④ 快照**占比小**（≤ 1200 字符 —— 用户要的是「占比比较小」）", snap.length <= 1200, `length=${snap.length}`);
     // ⑤ ★ 它必须挂进**真注入**（而不是只当个孤立函数）
     const inj = mod.__test.renderInjectionBody(info5, undefined, {});

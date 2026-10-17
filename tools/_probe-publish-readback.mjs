@@ -12,8 +12,15 @@ import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 
 const NAME = "dsh-ledger-memory";
-const VER = "1.1.1";
+// ★★★★★ 2026-10-17（D234 发布时撞出）：这里原来**硬编码 `VER = "1.1.1"`** ——
+//   于是每发一版，它都去回读 **1.1.1**，再拿那个旧包和**当前**工作树比。
+//   ⇒ 第④条（包内源码与本机逐字节相同）**必然报红**，而发布其实是成功的。
+//   ★ 这是"**记录存在 ≠ 记录适用**"的新形态：探针在、断言在、**它测的是另一个版本**。
+//   ★★ 更糟的是它会让人去"修"一个没坏的东西（`git` 里的源码明明是新的）。
+//   ⇒ 正解：**版本号只有一个出处** —— 从 `package.json` 现读，绝不手抄。
+const VER = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const MAX_TRIES = 40;
+console.log(`（回读目标版本：${VER} —— 从 package.json 现读，不硬编码）`);
 
 const get = (url, raw = false) =>
   new Promise((resolve, reject) => {
@@ -64,34 +71,65 @@ const internalSmell = /只提交插件本体|开发过程记录留在本机|给�
 console.log(`③ ${internalSmell ? "✗ 像是内部版" : "✓"} README 是对外版（含内部痕迹=${internalSmell}）`);
 
 // ── ④ 包内源码与本机逐字节相同 ───────────────────────────────────────────
+//
+// ★★★ 2026-10-17（D234）：这一条原来还比了 `tools/selftest.mjs` ——
+//   而 **`files` 白名单里根本没有 `tools/`**（那是刻意的：`tools/` 里有会改写源码的探针）。
+//   ⇒ 每次都会因为"包里没有这个文件"而读盘抛错/判红 ⇒ **一条永远红的假红**。
+//   ★ 判据：**只比"包里真有的"**；比较对象与包面清单必须同源。
+//     （这正是 `_probe-pack-check` 里那条"`tools/` 不进包（设计如此，跳过比对）"的同一条口径。）
 const pkgLib = fs.readFileSync(path.join(pkgDir, "lib", "index.js"), "utf8");
 const localLib = fs.readFileSync("lib/index.js", "utf8");
-const pkgTest = fs.readFileSync(path.join(pkgDir, "tools", "selftest.mjs"), "utf8");
-const localTest = fs.readFileSync("tools/selftest.mjs", "utf8");
-console.log(`④ ${pkgLib === localLib ? "✓" : "✗"} lib/index.js 逐字节相同`);
-console.log(`   ${pkgTest === localTest ? "✓" : "✗"} tools/selftest.mjs 逐字节相同`);
+const pkgPart6 = fs.readFileSync(path.join(pkgDir, "lib", "part6.js"), "utf8");
+const localPart6 = fs.readFileSync("lib/part6.js", "utf8");
+const pkgPkgJson = fs.readFileSync(path.join(pkgDir, "package.json"), "utf8");
+const localPkgJson = fs.readFileSync("package.json", "utf8");
+const same = (a, b) => a === b;
+console.log(`④ ${same(pkgLib, localLib) ? "✓" : "✗"} lib/index.js 逐字节相同`);
+console.log(`   ${same(pkgPart6, localPart6) ? "✓" : "✗"} lib/part6.js 逐字节相同（本版新增）`);
+console.log(`   ${same(pkgPkgJson, localPkgJson) ? "✓" : "✗"} package.json 逐字节相同`);
+console.log(`   ★ tools/selftest.mjs **不进包**（files 白名单如此）—— 跳过比对，不是失败`);
 
 // ── ⑤ 这一版修的那行确实在包里（用**独一无二**的标志物）─────────────────
-const marks = [
-  ["D62 口径修复", "Math.max(1, Math.floor(nodeSum - removeRatio * pressure.window))"],
-  ["A2 内容指纹", "batch:${bodySha}"],
-  ["A2 内容不变量", "既不在新台账、也不在 entries 里"],
-  ["A2 ifRevision 拒绝", "stale: true"],
-  ["A3 保留扩展字段", "hadPrevManifest"],
-  ["D61 胶囊落盘", "capsules.json"],
+//
+// ★★★ 2026-10-17（D234）：这一组标志物原来**停在 1.1.1 时代**
+//   （D62 / A2 / A3 / D61 / 「工具数 = 14」）⇒ 后面每一版它只能证明"**老修复还在**"，
+//   证明不了"**这一版的新修复进了包**"。这与 `_probe-pack-check` 那个病**同型**。
+//   ⇒ 现在按**当前版本**给标志物：本版 = 1.2.4（D234 文件级六维锚定 + 0.2.1-rc.2 兼容）。
+//   ★ 判据不变：**每一版新增的修复，都必须有自己独一无二、能在包里被找到的标志物。**
+const MARKS = {
+  "1.2.4": [
+    ["D234 六维函数（lib/part6.js 已进包）", "fileAnchorDims", "lib/part6.js"],
+    ["D234 按类分组（两次混类的修法）", "anchorWithinKind", "lib/part6.js"],
+    // ★ 这两条的路径**当场写错过一次**：`renderFileAnchorBlock` 与 `fileAnchor` 我都写了 `lib/index.js`，
+    //   而它们实际在 `part3.js` / `defs.js`（`grep` 复核：part3.js:1145 · defs.js:329）。
+    //   ⇒ 判据：**标志物必须带"它在哪个文件的哪一处"，并且报之前 grep 一次**
+    //     （台账纪律 9 的原话：「函数名+行号看起来最硬，却最容易凭印象编」）。
+    ["D234 注入装配点", "export function renderFileAnchorBlock", "lib/part3.js"],
+    ["D234 设置项 fileAnchor", 'key: "fileAnchor"', "lib/defs.js"],
+    ["★ 兼容当前客户端 0.2.1-rc.2", '"0.2.1-rc.2": "compatible"', "package.json"],
+  ],
+};
+// ★ 兜底：没有登记的版本 ⇒ 退回到那一组"长期存在的"标志物（仍然要能证明包没被换掉）。
+const LEGACY = [
+  ["D62 口径修复", "Math.max(1, Math.floor(nodeSum - removeRatio * pressure.window))", "lib/index.js"],
+  ["A2 内容指纹", "batch:${bodySha}", "lib/index.js"],
+  ["A2 内容不变量", "既不在新台账、也不在 entries 里", "lib/index.js"],
+  ["A2 ifRevision 拒绝", "stale: true", "lib/index.js"],
+  ["A3 保留扩展字段", "hadPrevManifest", "lib/index.js"],
+  ["D61 胶囊落盘", "capsules.json", "lib/index.js"],
 ];
+const pick = MARKS[VER] ?? LEGACY;
 let ok5 = true;
-for (const [n, k] of marks) {
-  const has = pkgLib.includes(k);
+for (const [n, k, rel] of pick) {
+  const abs = path.join(pkgDir, rel);
+  const body = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : "";
+  const has = body.includes(k);
   if (!has) ok5 = false;
-  console.log(`   ${has ? "✓" : "✗"} ${n}`);
+  console.log(`   ${has ? "✓" : "✗"} ${n}　（${rel}）`);
 }
-const hasSelfTest = pkgTest.includes("口径：工具数 = 14");
-if (!hasSelfTest) ok5 = false;
-console.log(`   ${hasSelfTest ? "✓" : "✗"} 口径自检`);
 console.log(`⑤ ${ok5 ? "✓" : "✗"} 本版全部修复都在包里`);
 
-const all = found >= 0 && buf.length > 0 && !internalSmell && pkgLib === localLib && pkgTest === localTest && ok5;
+const all = found >= 0 && buf.length > 0 && !internalSmell && same(pkgLib, localLib) && same(pkgPart6, localPart6) && same(pkgPkgJson, localPkgJson) && ok5;
 console.log(`\n═══ 回读${all ? " **五条全过**" : " **未全过**"} ═══`);
 fs.rmSync(tmp, { recursive: true, force: true });
 process.exit(all ? 0 : 1);

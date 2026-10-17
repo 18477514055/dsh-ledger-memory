@@ -96,6 +96,12 @@ console.log(`   ★ tools/selftest.mjs **不进包**（files 白名单如此）�
 //   证明不了"**这一版的新修复进了包**"。这与 `_probe-pack-check` 那个病**同型**。
 //   ⇒ 现在按**当前版本**给标志物：本版 = 1.2.4（D234 文件级六维锚定 + 0.2.1-rc.2 兼容）。
 //   ★ 判据不变：**每一版新增的修复，都必须有自己独一无二、能在包里被找到的标志物。**
+// ★★★ 2026-10-17（D234 发布时第 3 次撞同一个类）：`MARKS` 只登记了 `"1.2.4"`，
+//   于是 1.2.5 落进 `LEGACY` 兜底；而 `LEGACY` 的六条标志物**全被我写成 `lib/index.js`** ——
+//   它们其实在 `part1~part5.js`（代码早就按模块拆过了）。
+//   ⇒ 一条判据连续三次栽在「**路径/版本凭印象**」上，正对应台账纪律 9。
+//   ⇒ 正解：**不按版本分家** —— D234 的标志物 + 长期标志物**并成一组合并跑**，
+//     并且**每条都带真实路径**（下面这些路径已用 grep 复核过）。
 const MARKS = {
   "1.2.4": [
     ["D234 六维函数（lib/part6.js 已进包）", "fileAnchorDims", "lib/part6.js"],
@@ -110,15 +116,22 @@ const MARKS = {
   ],
 };
 // ★ 兜底：没有登记的版本 ⇒ 退回到那一组"长期存在的"标志物（仍然要能证明包没被换掉）。
+//   ★ 路径已 grep 复核（不是凭印象）：它们分布在 part*.js 与 defs.js，**都不在 index.js**。
 const LEGACY = [
-  ["D62 口径修复", "Math.max(1, Math.floor(nodeSum - removeRatio * pressure.window))", "lib/index.js"],
-  ["A2 内容指纹", "batch:${bodySha}", "lib/index.js"],
-  ["A2 内容不变量", "既不在新台账、也不在 entries 里", "lib/index.js"],
-  ["A2 ifRevision 拒绝", "stale: true", "lib/index.js"],
-  ["A3 保留扩展字段", "hadPrevManifest", "lib/index.js"],
-  ["D61 胶囊落盘", "capsules.json", "lib/index.js"],
+  // ★★★ 这一条我**连续猜错两次**（先 `index.js`、再 `part1.js`，实际在 `part5.js:1963`）——
+  //   `grep removeRatio` 一次就能定，我两次都是先写再试。
+  //   ⇒ 纪律 9 不是"知道就行"，是**报之前必须 grep 一次**；本文件因此每条都带 `文件:行`。
+  ["D62 口径修复", "Math.max(1, Math.floor(nodeSum - removeRatio * pressure.window))", "lib/part5.js"],
+  ["A2 内容指纹", "batch:${bodySha}", "lib/part4.js"],
+  ["A2 内容不变量", "既不在新台账、也不在 entries 里", "lib/part4.js"],
+  ["A2 ifRevision 拒绝", "stale: true", "lib/part4.js"],
+  ["A3 保留扩展字段", "hadPrevManifest", "lib/part4.js"],
+  ["D61 胶囊落盘", "capsules.json", "lib/defs.js"],
 ];
-const pick = MARKS[VER] ?? LEGACY;
+// ★★★ 合并跑（**不按版本二选一**）：D234 的标志物必须一直在，长期标志物也必须一直在。
+//   ★ 为什么不再分版本：1.2.4 与 1.2.5 是同一份代码（只差两个兼容键）⇒ "按版本分家"只会制造假红。
+//   ★ 只有在**下一代大改**时，才把它这一版的标志物并进本表 —— 那时旧标志物仍应保留。
+const pick = [...Object.values(MARKS).flat(), ...LEGACY];
 let ok5 = true;
 for (const [n, k, rel] of pick) {
   const abs = path.join(pkgDir, rel);

@@ -8499,8 +8499,10 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //   ★★ 2026-10-18（D256）：新增情形 100（设置面板重构）⇒ 94 → **95**；带编号 93 → **94**。★ 第十次。
   //   ★★ 2026-10-18（D257）：新增情形 101（回合内压缩必须真 await —— 真机 4 连败）
   //     ⇒ 95 → **96**；带编号 94 → **95**。★ 第十一次当场变红（同一天内）。
-  eq("★ 口径：section 总数 = 96（情形 93~101）", sectionCalls, 96);
-  eq("★ 口径：其中带「情形 N」编号的 = 95", numbered, 95);
+  //   ★★ 2026-10-18（D258）：新增情形 102（设置写入口两层授权）
+  //     ⇒ 96 → **97**；带编号 95 → **96**。★ 第十二次。
+  eq("★ 口径：section 总数 = 97（情形 93~102）", sectionCalls, 97);
+  eq("★ 口径：其中带「情形 N」编号的 = 96", numbered, 96);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -19415,6 +19417,79 @@ section("情形 101：回合内压缩必须真 await（D257 · 真机 4 连败�
   const fakeBare = "const out = deps.runTurnCompact();";
   const fakeCalls = [...fakeBare.matchAll(/(await\s+)?deps\.runTurnCompact\s*\(/g)];
   ok("101⑥ b ★ 反向自检：裸调用会被判为未 await", fakeCalls.filter((m) => !m[1]).length === 1);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 102：设置写入口必须在**两层**都建立授权（D258）");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ★ 这段守的是 DSH STORE 复核否决的直接回应。
+  //   审核员读 `saveSettings` 内部，看见它直接调 `configEditor.edit()`，
+  //   就判「没有建立调用方授权」—— 而闸门其实在 `webServer.register` 那层。
+  //   与其争辩「你看漏了外层包装」，不如让检查在**两处都看得见**：
+  //     ① 路由层 `settingsGate` → `authorizeRequest`（第一道）
+  //     ② 业务层 `saveSettings` / broadcast → `assertAuthorized`（第二道，冗余）
+  //   ⇒ 任何从任一层开始读的人都能看到 fail-closed 的判定。
+  const p2 = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
+  const strip = (s) =>
+    s
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+      .replace(/`(?:[^`\\]|\\.)*`/g, "");
+  const code = strip(p2);
+
+  // ① 判定逻辑被抽成独立函数（可被两层复用）
+  ok(
+    "102① ★ 授权判定抽成了独立函数 authorizeRequest（两层共用同一份判据）",
+    /export\s+function\s+authorizeRequest\s*\(/.test(code),
+  );
+  ok(
+    "102② ★ 业务层自查函数 assertAuthorized 存在",
+    /export\s+function\s+assertAuthorized\s*\(/.test(code),
+  );
+
+  // ③ 路由层确实用它
+  const gate = code.match(/function\s+settingsGate\s*\([\s\S]{0,600}?\n\}/);
+  ok("102③ 路由层 settingsGate 走 authorizeRequest", !!gate && /authorizeRequest\s*\(/.test(gate[0]));
+
+  // ④ saveSettings 在写之前自查 —— 关键是**位置**：必须在真正落盘那次 `.edit(` 之前
+  //   ★ 第一版判据写的是 `configEditor.edit`（那是**变量名**，不是调用）⇒ 位置永远 -1 ⇒ 假红。
+  //     真的落盘调用是 `editor.edit(hit.entry, ...)`。**报之前必须 grep 一次**（尺子错第 9 条）。
+  const saveIdx = code.indexOf("export function saveSettings");
+  const saveSeg = saveIdx >= 0 ? code.slice(saveIdx, saveIdx + 6000) : "";
+  const editRel = saveSeg.indexOf(".edit(");
+  const editIdx = editRel >= 0 ? saveIdx + editRel : -1;
+  const assertInSave = saveSeg.includes("assertAuthorized");
+  ok("102④ ★ saveSettings 内部在任何落盘之前调 assertAuthorized", assertInSave);
+  ok(
+    "102④ b ★ 而且这个自查确实在写操作之前（位置判据，不只看有没有）",
+    saveIdx >= 0 && editIdx > saveIdx && code.slice(saveIdx, editIdx).includes("assertAuthorized"),
+  );
+
+  // ⑤ broadcast 也要自查（它是另一个写副作用入口）
+  const bIdx = code.indexOf('reg("/broadcast.json"');
+  ok(
+    "102⑤ ★ broadcast 在 bumpSettingsBroadcast() 之前自查",
+    bIdx >= 0 &&
+      code.slice(bIdx, bIdx + 700).includes("assertAuthorized") &&
+      code.slice(bIdx, code.indexOf("bumpSettingsBroadcast()", bIdx)).includes("assertAuthorized"),
+  );
+
+  // ⑥ fail-closed 三档都还在（取不到连接 / 抛错 / 返回状态码）
+  ok("102⑥ ★ 取不到 connection ⇒ 503（fail closed，不是放行）", /status:\s*503/.test(code));
+  ok("102⑥ b ★ requestRejection 抛错 ⇒ 403", /status:\s*403/.test(code));
+  ok(
+    "102⑥ c ★ 唯一放行条件是 allowed:true（没有「查不到就算过」的分支）",
+    /return\s*\{\s*allowed:\s*true\s*\}/.test(code),
+  );
+
+  // ⑦ 反向自检：判据本身得能红
+  const fakeOneLayer = "export function saveSettings(scope, req, res) { return configEditor.edit(p); }";
+  ok(
+    "102⑦ ★ 反向自检：只有一层时这条判据会红",
+    !/assertAuthorized/.test(fakeOneLayer) &&
+      !fakeOneLayer.slice(fakeOneLayer.indexOf("saveSettings")).includes("assertAuthorized"),
+  );
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

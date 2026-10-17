@@ -2669,12 +2669,20 @@ section("情形 16：问题记录 ledger_note");
     mod.apply(run.ctx, {});
     const exec = execAt(ws);
     const st = await run.registeredTools.get("ledger_status").execute({}, exec);
-    const DEFAULT_NOTES = "60-对话记录与交接/对话总结";
-    eq("没既有目录时给默认名", st.notesDir, DEFAULT_NOTES);
+    // ★★★★★ 2026-10-17（D229，用户拍板）：**"要新建时"的默认名是通用名 `问题记录`**，
+    //   不再是本机那条 `60-对话记录与交接/对话总结` —— 那是**我们的**格局，不该强加给别人。
+    const DEFAULT_NOTES = "问题记录";
+    eq("没既有目录时给默认名（通用名，不是本机通道）", st.notesDir, DEFAULT_NOTES);
     eq("discoveredBy=default", st.discoveredBy.notesDir, "default");
     ok("单看 status 不建目录", !fs.existsSync(path.join(ws, DEFAULT_NOTES)));
     const w = await run.registeredTools.get("ledger_note").execute({ title: "新主题" }, exec);
     ok("写的时候建了目录", w.ok === true && fs.existsSync(path.join(ws, DEFAULT_NOTES)), JSON.stringify(w));
+    // ★ 反向参照（L12）：确认它**没有**去建那条本机专属通道 —— 否则"通用名"就是空话。
+    ok(
+      "★ 没有顺手建出本机那条通道（不许把我们的格局强加给别人）",
+      !fs.existsSync(path.join(ws, "60-对话记录与交接")),
+      "居然建了 60-对话记录与交接"
+    );
     rmrf(ws);
   }
 
@@ -8460,8 +8468,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //     ★ 又当场变红（这个守卫每次加情形都会响，正是它该有的样子）。
   //   ★★ 2026-10-15（D214/D215）：新增情形 91（过期排队作废 + 失败不许记成已压缩 + 外来压缩抓胶囊）
   //     ⇒ 85 → **86**；带编号 84 → **85**。★ 第七次当场变红。
-  eq("★ 口径：section 总数 = 86（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 86);
-  eq("★ 口径：其中带「情形 N」编号的 = 85", numbered, 85);
+  eq("★ 口径：section 总数 = 87（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 87);
+  eq("★ 口径：其中带「情形 N」编号的 = 86", numbered, 86);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -8701,11 +8709,32 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
       //     ⇒ 上限与 D 范围**两条都匹配不到**（当场红）。判据要"吃到被测文本里
       //     真正承载那些数字的那一段"，不能按段落序号猜。
       const head = ledgerSrc.split("\n").filter((l) => l.startsWith("> ")).slice(0, 8).join("\n");
-      const mCap = head.match(/本项目\s*\*\*(\d+)\*\*/);
+      // ★★★★★ 2026-10-16（D224/D225）：**这条判据原来是一把错尺子。**
+      //   它拿「台账头部」去比**清单里的 350**（`mf.maxActiveLines`），而 D222 之后
+      //   **真正生效的是面板值** ⇒ 它的作用恰好是**把一句错话锁成绿的**
+      //   （头部写 350、清单也 350 ⇒ 全绿，而生效值其实是 400）。
+      //   ★ 修法 = **分两个数、各查各的**（一个事实一个出口，D25）：
+      //     ① 头部**关于清单**的声明（「清单里现为 N」）必须 = `mf.maxActiveLines`；
+      //     ② 头部**必须声明「真正生效」的那个数**，并说明它由「谁说了算」决定。
+      //   ⚠️ **诚实边界**：② 那个生效值**本进程算不出来** —— 它是**用户面板里的值**，
+      //      自检跑在开发机上、拿不到用户的设置。⇒ 这里**只查「有没有如实声明」**，
+      //      **不假装能核出那个数**（假装能核 = 又一个假绿，见 L5/L30）。
+      // ⚠️ 正则写法踩过一次：头部实际是「**清单里现为 350**」（星号**包住整个短语**、在数字前），
+      //   我第一版写成 `清单里现为\s*\*\*(\d+)\*\*`（星号在数字**后**）⇒ 匹配不到 ⇒ 假红。
+      //   改成「直到数字为止，什么都不假设」⇒ 不依赖星号位置。
+      const mMan = head.match(/清单里现为[^\d]*(\d+)/);
       eq(
-        "★★ 口径：台账头部声明的行数上限 = `.dsh-ledger.json` 的 maxActiveLines",
-        mCap === null ? undefined : Number(mCap[1]),
+        "★★ 口径：台账头部声明的**清单值** = `.dsh-ledger.json` 的 maxActiveLines",
+        mMan === null ? undefined : Number(mMan[1]),
         mf.maxActiveLines
+      );
+      const mEff = head.match(/真正生效的行数上限\*\*：本项目\s*\*\*(\d+)\*\*/);
+      ok(
+        "★★★★★ 口径：台账头部**必须声明「真正生效」的那个上限**（D222 后清单值可能已被面板盖过）",
+        mEff !== null && Number(mEff[1]) > 0,
+        mEff === null
+          ? "头部只有清单数、没有「真正生效的行数上限」那句 ⇒ 在「以面板为准」时会**误导**"
+          : `生效值 ${mEff[1]}`
       );
       // ★ D 范围：头部写的最大值应 >= DECISIONS 里最大的 D 编号
       //   ★★★★★ 2026-10-14（D203）：**迁移后最大编号在卡片目录里**（`decisions/D203.md`）——
@@ -13374,6 +13403,12 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
   section("情形 63：D157/D158 逐回合义务（不拦压缩）+ 分流单累积");
   {
     const src = readLibSource();
+    // ★ 2026-10-17（D231）：欠账落盘的两个函数住在 `part1.js`。
+    //   ★ 为什么要**单独按文件名**读它（而不是复用上面拼起来的 `src`）：
+    //     `src` 是**整个 lib 目录拼在一起**的 ⇒ 拿它去断言"某个函数定义在这里"
+    //     会被别的文件里的同名片段污染（本项目第 2/9 条尺子错反复栽过）。
+    //     ⇒ 要断言"它住在哪个文件"，就得**只读那个文件**。
+    const part1Src = fs.readFileSync(path.join(HERE, "..", "lib", "part1.js"), "utf8");
     // ★★★★★ 情形 63（D157/D158）：**逐回合义务** 与 **分流单累积**
     // ═══════════════════════════════════════════════════════════════════════════
     //   两条都是用户当场定的规矩，必须由断言钉住（否则下次改动会静默改掉行为）：
@@ -13396,8 +13431,44 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       "★ 若闸门读了它，就是「没写台账就不许压」⇒ 47% 的回合会卡死（D59 形态）");
     ok("★★★★ 63④ 回合义务提醒**每回合只说一次**（否则每步注入 ⇒ prompt 缓存每步全冷）",
       // ★ 判据要**吃到守卫条件本身**（第一版只测"声明存在" ⇒ 声明留着、条件删掉也照样绿）。
-      /if \(!reminded && \(pend !== undefined \|\| needWrite \|\| needTriage\)\) \{/.test(src) &&
+      // ★★★★★ 2026-10-17（D231b）：条件里**多了 `hasLedger`** —— 用户报的真缺陷
+      //   （选了"只做问题记录"没有台账，却每回合都被催，于是模型陷入自我矛盾）。
+      //   ⇒ 断言**跟着判据走**，并且要求这两件事**同时**成立（顺序即是语义）：
+      //     `hasLedger` 在前（先判有没有台账），`!reminded` 在后（再判本回合说过没）。
+      /if \(hasLedger && !reminded && \(pend !== undefined \|\| needWrite \|\| needTriage\)\) \{/.test(src) &&
       /cur\.reminded = true/.test(src));
+    // ★★★★★ 2026-10-17（D231b）：**没有台账就不许催** —— 这条必须有自己的断言。
+    //
+    //   ★ 为什么要单独一条（而不是靠上面 63④ 顺带守）：上面那条守的是"说几次"，
+    //     这条守的是"**该不该说**"。把 `hasLedger` 删掉，63④ 会红；但把
+    //     `hasLedger` 改成恒真（例如 `const hasLedger = true`），63④ 照样绿 ——
+    //     而那正是用户那个缺陷的**复发形态**。纪律 10：摘一处不红 = 断言太弱。
+    //   ★ 判据：`hasLedger` 必须**由 `info.activeRel` 算出**，不许是字面量 true。
+    ok("★★★★★ 63④b D231b：**没有台账就不催义务**（用户报的自我矛盾 —— 工具会拒绝、闸门也豁免）",
+      /const hasLedger = info\?\.activeRel !== undefined;/.test(src) &&
+      !/const hasLedger = true/.test(src),
+      "★ 没有台账时 `ledger_triage` 直接拒绝（part5.js:121）、闸门也豁免（part3.js:1715）" +
+        " ⇒ 唯独提醒照催 ⇒ 模型只能反复权衡「该不该做」，两边都是错的");
+    // ★★★★★ 2026-10-17（D231）：**欠账必须落盘**（用户拍板的方向②）。
+    //
+    //   ★ 守的是什么：`turn/end` 那一刻要把"欠了什么"写进 `owed.json` ——
+    //     否则进程一死（关窗口/崩溃/重启），`turnObligationPending` 这个内存 Map
+    //     就没了 ⇒ 用户担心的"结束对话时正好落进压缩"那一幕里**连欠账本身都消失**。
+    //   ★ 三条一起守（缺一条就是"写了但没用"）：
+    //     ① `turn/end` 分支里真的调了 `recordOwed`；
+    //     ② 注入侧真的去**读**了盘上那份（否则只写不读 = 白做）；
+    //     ③ 落盘位置在 `plugin-data` 里（**不许碰用户工作区** —— 红线）。
+    ok("★★★★★ 63④c D231：欠账**落盘**（`turn/end` 调 `recordOwed`）",
+      /recordOwed\(key, \{/.test(src));
+    ok("★★★★★ 63④d D231：注入侧**读回**盘上那份（内存优先、磁盘兜底）",
+      /const pendDisk = pendMem === undefined \? owedFor\(okey\) : undefined;/.test(src) &&
+      /const pend = pendMem \?\? pendDisk;/.test(src),
+      "★ 只写不读 = 那份记录永远没有消费者（用户要的正是「结束后回来还能看到」）");
+    ok("★★★★ D231：欠账记在 `plugin-data`（**绝不写进用户工作区**），且落盘走吞错",
+      /export function owedStorePath\(\) \{\s*return path\.join\(path\.dirname\(lockStorePath\(\)\), OWED_STORE_FILE\)/.test(
+        part1Src
+      ) && /export function writeOwedStore\(store\)/.test(part1Src),
+      "★ 红线：落盘只许在 $DSH_HOME\\plugin-data\\<包名>\\，绝不写进用户的工作区");
     // ★★★ D158：keep 桶必须**累积**（原来是 `set(sid, {items: keep})` 单槽覆盖）
     ok("★★★★★ 63⑤ ★ 分流单**累积**而不是覆盖（D158 用户当场指出的缺陷）——" +
       "出现 `[...prev.items]` 合并写法，且**不存在**旧的单槽覆盖写法",
@@ -18312,6 +18383,155 @@ section("情形 88：卡片化 —— 一卡一文件 + 多维索引表（D202�
         /较早历史已被压缩/.test(t), t.slice(0, 300));
       rmrf(root);
     }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★★★★ 情形 92：**用户定的两条发布前硬规矩，必须各有一条机器判据**（D226）
+//
+//   ★ 为什么非要有这一条（而不是把规矩写进台账/原则就完事）：
+//     本项目自己的教训 **L26** —— *"教训只写在文件里 ⇒ 不进任何判据 ⇒ 下次照旧"*。
+//     判据是：**写完一条规矩，问一句「它进了哪条断言？」** —— 答不上来 ⇒ 下次还会发生。
+//   ★ 而 D225 定这两条规矩时，**两条都没有判据**：
+//     规矩①「发布前做过期文案审计」只有 `_probe-d216-docs-audit.mjs`，而它**是假绿**
+//       （D224 撞出的 7 处旧口径它全绿 —— 因为它不看面板文案与注入文案）；
+//     规矩②「设置面板必须与功能对应」**完全没有断言**。
+//   ⇒ 本情形把两条都补上，判据用一个**可证伪**的角度：
+//     ① **静态文案不许断言「作用域」**（作用域随 `settingPrecedence` 变 ⇒ 静态写法迟早变错话）；
+//     ② 面板那些 `project-first` 的警示**必须跟着开关走**（不许无条件显示）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 92：两条发布前硬规矩的机器判据（D226）");
+{
+  const readLib = (f) => fs.readFileSync(path.join(HERE, "..", "lib", f), "utf8");
+  const clientSrc = readLib("client.js");
+  const defsSrc = readLib("defs.js");
+  const part3Src = readLib("part3.js");
+
+  // ── ① 规矩①：**静态文案不许断言作用域** ─────────────────────────────────
+  //   ★ 这 6 句话都**断言了作用域**，而 D222 之后作用域取决于 `settingPrecedence`
+  //     ⇒ 写死在源码里必然在某一档变成错话（D224 撞出的 10 处就是它们/它们的变体）。
+  //   ★ 判据只吃**非注释行**（注释里写"原来写的是…"是解释，不是对用户的文案）。
+  {
+    const stale = [
+      "只影响新项目",
+      "这一项对已有项目无效",
+      "只决定新项目登记成什么",
+      "不会影响已有项目",
+      "那个才管用",
+      "两者不一致时以「项目」为准",
+    ];
+    const offenders = [];
+    for (const [file, src] of [["client.js", clientSrc], ["defs.js", defsSrc], ["part3.js", part3Src]]) {
+      src.split("\n").forEach((line, i) => {
+        const t = line.trim();
+        // 注释行跳过（`*` / `//` / `/*` 开头）—— 注释里的《旧文案》是历史说明，不是现行文案。
+        if (t.startsWith("*") || t.startsWith("//") || t.startsWith("/*")) return;
+        for (const phrase of stale) {
+          if (line.includes(phrase)) offenders.push(`${file}:${i + 1} 「${phrase}」`);
+        }
+      });
+    }
+    ok(
+      "★★★★★ 92① 规矩①：代码里**没有**「断言作用域」的静态文案（它们会随 settingPrecedence 变错话）",
+      offenders.length === 0,
+      offenders.join(" · ")
+    );
+  }
+
+  // ── ② 规矩①：注入脚注**必须跟着「谁说了算」走** ────────────────────────
+  //   ★ 原来它写死 `两者不一致时以「项目」为准` ⇒ 在默认（面板为准）下是**一句错话**，
+  //     而且**每回合推给模型**（比面板上的错话更贵）。
+  //   ★ 判据：`part3.js` 里那段脚注必须**引用动态量**，不许写死一边。
+  //   ⚠️ **第一版判据是错的，记下来**：我写 `/两者不一致时[\s\S]{0,120}?。/` ——
+  //     它**命中了注释里那句"原来写的是「以项目」为准"**（我自己写的解释文字），
+  //     于是报"没动态渲染"⇒ **假红**。★ 这正是本项目纪律 2：
+  //     **判据的输入必须是被测系统自己产生的那部分** —— 不许把注释当代码。
+  //   ⇒ 修法：锚在**模板字符串那一行**（以 `` `> `` 或 `"` 开头且带 `${pf ?`），
+  //     并**排除注释行**。
+  {
+    const lines = part3Src.split("\n");
+    const footnote = lines.filter((l) => {
+      const t = l.trim();
+      if (t.startsWith("*") || t.startsWith("//") || t.startsWith("/*")) return false;
+      return /两者不一致时/.test(l);
+    });
+    const dyn = footnote.length > 0 && footnote.every((l) => /\$\{pf \?/.test(l));
+    ok(
+      "★★★★★ 92② 规矩①：注入脚注的「谁说了算」是**动态渲染**的（不写死一边）",
+      dyn,
+      footnote.length === 0
+        ? "非注释行里没找到那段脚注（判据失效，需复核）"
+        : footnote.map((l) => l.trim().slice(0, 100)).join(" | ")
+    );
+  }
+
+  // ── ③ 规矩②：面板那些「清单优先」警示**必须跟着开关走** ────────────────
+  //   ★ 要求：凡是渲染 `scopeNote === "project-first"` 的警示/徽标，
+  //     条件里**必须同时**带 `projectFirst`（否则在「以面板为准」下会显示一句错话）。
+  {
+    const conds = [...clientSrc.matchAll(/scopeNote === "project-first"[^\n]*/g)].map((m) => m[0]);
+    const bare = conds.filter((c) => !/projectFirst/.test(c));
+    ok(
+      "★★★★★ 92③ 规矩②：面板每处「清单优先」警示都**跟着开关**（不无条件显示）",
+      conds.length > 0 && bare.length === 0,
+      bare.length === 0 ? `共 ${conds.length} 处，全部带 projectFirst` : bare.join(" | ")
+    );
+  }
+  //   ★ 配套：`projectFirst` 必须**从宿主生效值**推出（不许在客户端自己猜）。
+  {
+    const derives = /const projectFirst = data\.settings\?\.settingPrecedence === "project"/.test(clientSrc);
+    ok(
+      "★★★★★ 92③b 规矩②：客户端判断用**宿主回传的生效值**（不在客户端自造默认）",
+      derives,
+      derives ? "" : "没找到从 data.settings 推出 projectFirst 的那一行"
+    );
+  }
+
+  // ── ④ 规矩②：**死代码不许留**（旧出口必须消失，否则会被"顺手用了"）────────
+  //   ★ `pick()` 是 D222 收掉第 5 个判定点后的遗留 —— 它自己写着"清单优先"，
+  //     留着就是一份**看起来还在生效的旧口径**（D220「清单里留旧键」的同型病）。
+  {
+    const hasPick = /const\s+pick\s*=\s*\(key,\s*fmt\)/.test(part3Src);
+    ok(
+      "★★★★★ 92④ 规矩②：`part3.js` 的旧口径死代码 `pick()` 已删除（旧出口必须消失）",
+      !hasPick,
+      hasPick ? "它还在 ⇒ 后人可能顺手用它，把 D222 的修复绕过去" : ""
+    );
+  }
+
+  // ── ⑤ 「谁说了算」只有一个出口（D226 新收的）────────────────────────────
+  //   ★ 我改文案时**连踩两次同一个坑**：① 跨函数用局部变量 `pf` ⇒ ReferenceError（D222 同型）；
+  //     ② 之后又在各函数里各写一遍表达式 ⇒ D25「一个事实两个出口」。
+  //   ⇒ 判据：那个表达式**只准出现在 `precedenceIsProject` 一处**。
+  //   ⚠️ **两条边界（第一版判据没分清，差点误判）**：
+  //     ① **注释行不算** —— 注释里引用该表达式是做说明（纪律 2：输入只能是被测对象自己那部分）；
+  //     ② **客户端 `client.js` 不算** —— 那是**浏览器侧经典脚本**，**不能 import 宿主**，
+  //        只能拿宿主回传的 `data.settings` 比字符串。要求它"走唯一出口"是**做不到的要求**。
+  //        ⇒ 它那两处由 92③b 单独守（必须来自宿主回传值）。
+  //   ⚠️ **第三版修的是一个真缺口（反向验证抓出来的）**：第一版只数
+  //     `=== PRECEDENCE_PROJECT`（**常量**写法），漏了 `=== "project"`（**字面量**写法）——
+  //     而退化版正好写的是字面量 ⇒ **摘了不红**。★ 这正是本项目 L2/L13 记过的同型病：
+  //     **判据的匹配面只认一种写法 ⇒ 另一种写法的坏法天生不可见。** ⇒ 现在**两种都数**。
+  {
+    const countIn = (src) =>
+      src
+        .split("\n")
+        .filter((l) => {
+          const t = l.trim();
+          return !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*");
+        })
+        .filter((l) => /settingPrecedence\s*===\s*(?:PRECEDENCE_PROJECT|"project"|'project')/.test(l)).length;
+    const hostFiles = ["part1.js", "part2.js", "part3.js", "part4.js", "part5.js", "index.js"];
+    const perFile = hostFiles.map((f) => [
+      f,
+      countIn(fs.readFileSync(path.join(HERE, "..", "lib", f), "utf8")),
+    ]);
+    const total = perFile.reduce((n, [, c]) => n + c, 0);
+    ok(
+      "★★★★★ 92⑤ 「谁说了算」的判据只有一个出口（宿主侧只有 part1 的 precedenceIsProject）",
+      total === 1,
+      `宿主侧共 ${total} 处：${perFile.filter(([, c]) => c > 0).map(([f, c]) => `${f}×${c}`).join(" ")} —— 应当只有 part1.js 那一处`
+    );
   }
 }
 

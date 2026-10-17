@@ -5462,15 +5462,15 @@ section("情形 27：官方设置面板");
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
     // ★★★★ 2026-10-13（D157/D158）：36 → **37**（新增 `triageKeepTotalMax`）。
     // ★★★★★ 2026-10-13（D179）：37 → **38**（新增 `hardMaintenanceGate`，收尾维护硬门）。
-    eq("★ 回报了三十九项元数据（D222 新增 settingPrecedence）", r.body.specs?.length, 39);
+    eq("★ 回报了四十项元数据（D222 settingPrecedence · D234 fileAnchor）", r.body.specs?.length, 40);
     ok(
-      "★★ 三十九项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
+      "★★ 四十项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
       JSON.stringify([...r.body.specs.map((s) => s.key)].sort()) ===
         JSON.stringify([
           "autoCompact", "blockHistoryMax", "blockInjection", "capsuleArtifactMax",
           "capsuleErrorChars", "capsuleErrorMax", "capsuleMaxChars", "capsuleStoreSessions",
           "capsuleUserMsgChars", "capsuleUserMsgMax", "changeRegisterMax", "deltaRemovePoints",
-          "deltaTriggerPoints", "hardMaintenanceGate", "highFidelityCompact", "highFidelityCompactRatio",
+          "deltaTriggerPoints", "fileAnchor", "hardMaintenanceGate", "highFidelityCompact", "highFidelityCompactRatio",
           "incrementalCompact", "logBriefChars", "logDefaultLimit", "logLevels",
           "maxActiveLines", "maxArchiveList", "maxReadChars", "minCompressPoints", "mode", "nudgeMinRatio",
           "pressureTiers", "recallMaxChars", "requireFlushBeforeCompact", "settingPrecedence", "shadowedIndexMax",
@@ -8418,7 +8418,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 39（D222 新增 settingPrecedence）", settingKeys.length, 39);
+  eq("★ 口径：设置项数 = 40（D222 settingPrecedence · D234 fileAnchor）", settingKeys.length, 40);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
   //   ★★ 2026-10-13（D180）：加入 `principles`；★ 并**实测**到 `triage` 在源码里

@@ -1797,7 +1797,28 @@ section("情形 13：回合末四选一（默认关，开关仍可用）");
     await fire(run, "agent/turn-stopping", { agent, turn: 2 });
     await settle();
     eq("★ 默认不弹选择题", run.asked.length, 0);
-    eq("★ 也不 steer（没有下一步要干）", steered.length, 0);
+    // ★★★★★ 2026-10-17（D241，用户拍板）：**这一条从"不 steer"反转为"要 steer"**。
+    //
+    //   用户原话（逐字）：*"就算你再怎么提示，再怎么强调模型也会不去做这件事。"*
+    //   裁决：*"默认为一次，由用户自行定义…在设置面板中体现。"*
+    //
+    //   ★ 旧断言守的是 D157 的行为「默认关卡片 ⇒ 什么都不做」。现在**回合末实检**是
+    //     另一条独立的路（它不看 `turnEndOffer`）：即使卡片关着，只要台账/分流没做，
+    //     插件仍会 steer 一次把它唤醒 —— 因为"漏做"正是要治的病。
+    //   ⇒ 所以断言改成：「**认出来了、并且真的抽了**」。
+    //   ★ 反向验证：把 `turnEndPull` 设 0 ⇒ 这里必须回到 0 条（下面 13-0b 守这一条）。
+    eq("★ 默认回合末实检：缺义务 ⇒ steer 抽一次（D241 反转了旧的「也不 steer」）", steered.length, 1);
+    ok(
+      "★★ 抽起消息带自己的前缀（不与「回合末选择」回执混用）",
+      typeof steered[0]?.content?.[0]?.text === "string" &&
+        steered[0].content[0].text.startsWith("[项目台账·回合末实检]"),
+      String(steered[0]?.content?.[0]?.text).slice(0, 60)
+    );
+    ok(
+      "★★★ 抽起消息的 source.kind 不是 `user`（冒充人类会重置别人的自唤醒预算）",
+      steered[0]?.source?.kind !== "user",
+      JSON.stringify(steered[0]?.source)
+    );
 
     // 但日志该落还得落（证明这个开关只关了卡片，没关别的）
     const l4 = findLogFile(root, LOGDIR_TE, "L4");
@@ -5462,9 +5483,9 @@ section("情形 27：官方设置面板");
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
     // ★★★★ 2026-10-13（D157/D158）：36 → **37**（新增 `triageKeepTotalMax`）。
     // ★★★★★ 2026-10-13（D179）：37 → **38**（新增 `hardMaintenanceGate`，收尾维护硬门）。
-    eq("★ 回报了四十项元数据（D222 settingPrecedence · D234 fileAnchor）", r.body.specs?.length, 40);
+    eq("★ 回报了四十二项元数据（…D241 turnEndPull · D244 midTurnCompact）", r.body.specs?.length, 42);
     ok(
-      "★★ 四十项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
+      "★★ 四十二项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
       JSON.stringify([...r.body.specs.map((s) => s.key)].sort()) ===
         JSON.stringify([
           "autoCompact", "blockHistoryMax", "blockInjection", "capsuleArtifactMax",
@@ -5472,9 +5493,9 @@ section("情形 27：官方设置面板");
           "capsuleUserMsgChars", "capsuleUserMsgMax", "changeRegisterMax", "deltaRemovePoints",
           "deltaTriggerPoints", "fileAnchor", "hardMaintenanceGate", "highFidelityCompact", "highFidelityCompactRatio",
           "incrementalCompact", "logBriefChars", "logDefaultLimit", "logLevels",
-          "maxActiveLines", "maxArchiveList", "maxReadChars", "minCompressPoints", "mode", "nudgeMinRatio",
+          "maxActiveLines", "maxArchiveList", "maxReadChars", "midTurnCompact", "minCompressPoints", "mode", "nudgeMinRatio",
           "pressureTiers", "recallMaxChars", "requireFlushBeforeCompact", "settingPrecedence", "shadowedIndexMax",
-          "triageKeepMax", "triageKeepTotalMax", "triageOwedMaxAgeMs", "turnEndOffer", "userMsgMaxChars",
+          "triageKeepMax", "triageKeepTotalMax", "triageOwedMaxAgeMs", "turnEndOffer", "turnEndPull", "userMsgMaxChars",
           "weightDoneCap", "weightMustInject", "weightPrincipleScore",
         ]),
       JSON.stringify(r.body.specs.map((s) => s.key))
@@ -6386,7 +6407,7 @@ section("情形 27：官方设置面板");
       //   （`runManualLightCompactNow`）⇒ 3 → 4 → 5 处。
       //   这条断言的价值在于"**没有一处漏掉 resolver**"，所以数量变了要跟着改，
       //   但更该守住的是下面那条形状断言（正路还在）。
-      ok("★★★ 五处压缩取值都走 `compactionServiceFor`", calls.length === 5, `实际 ${calls.length} 处`);
+      ok("★★★ 六处压缩取值都走 `compactionServiceFor`", calls.length === 6, `实际 ${calls.length} 处`);
       ok(
         "★★ 没有残留的裸 `ctx.get(\"compaction\")` 取值（注释里提到的不算）",
         !/^\s*const compaction = ctx\.get\("compaction"\);/m.test(src),
@@ -8153,7 +8174,11 @@ section("情形 27：官方设置面板");
   //       以后加/改注释时若提到 `lib/index.js`，它会漂，而且**报出来的名字看着毫不相干**
   //       （"我明明没碰探针，怎么数变了"）。**先看名单，别急着改数字**
   //       （我自己第一次就凭"我加了一个探针"的印象拍了个 61）。
-  const DANGEROUS_EXPECTED = 62;
+  //   ★★ 2026-10-18（D252）：+1 → **63**。新增的是 `_probe-d252-attribution.mjs`，
+  //     它用 `statSync` **只读** `lib/index.js` / `lib/part3.js` / `lib/defs.js` / `lib/part5.js`
+  //     取 mtime（判断"活内核加载的是哪一版"）—— **完全只读**，
+  //     但路径是字面量 ⇒ 被第三条宽模式算进来。**已知假阳性**，照先例改数字、不改注释绕开。
+  const DANGEROUS_EXPECTED = 63;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
@@ -8418,7 +8443,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 40（D222 settingPrecedence · D234 fileAnchor）", settingKeys.length, 40);
+  eq("★ 口径：设置项数 = 42（…D241 turnEndPull · D244 midTurnCompact）", settingKeys.length, 42);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
   //   ★★ 2026-10-13（D180）：加入 `principles`；★ 并**实测**到 `triage` 在源码里
@@ -8468,8 +8493,14 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //     ★ 又当场变红（这个守卫每次加情形都会响，正是它该有的样子）。
   //   ★★ 2026-10-15（D214/D215）：新增情形 91（过期排队作废 + 失败不许记成已压缩 + 外来压缩抓胶囊）
   //     ⇒ 85 → **86**；带编号 84 → **85**。★ 第七次当场变红。
-  eq("★ 口径：section 总数 = 87（含「模块契约」，新增情形时须同步改这里）", sectionCalls, 87);
-  eq("★ 口径：其中带「情形 N」编号的 = 86", numbered, 86);
+  //   ★★ 2026-10-18（D252）：新增情形 98（回合内压缩必须**真能选到范围**）
+  //     ⇒ 91 → **92**；带编号 90 → **91**。★ 第八次当场变红。
+  //   ★★ 2026-10-18（D255）：新增情形 99（日志按大小滚动拆片）⇒ 93 → **94**；带编号 92 → **93**。★ 第九次当场变红。
+  //   ★★ 2026-10-18（D256）：新增情形 100（设置面板重构）⇒ 94 → **95**；带编号 93 → **94**。★ 第十次。
+  //   ★★ 2026-10-18（D257）：新增情形 101（回合内压缩必须真 await —— 真机 4 连败）
+  //     ⇒ 95 → **96**；带编号 94 → **95**。★ 第十一次当场变红（同一天内）。
+  eq("★ 口径：section 总数 = 96（情形 93~101）", sectionCalls, 96);
+  eq("★ 口径：其中带「情形 N」编号的 = 95", numbered, 95);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -11564,7 +11595,7 @@ section("情形 49：手搓消息必须带 producer-owned source（真机事故 
     }
   }
   // ★ 期望数写上：**调用点变少也是变化**，不能静默通过（否则有人删掉一处判据就失效了）。
-  eq("★ 静态扫到 `agent.steer(` 调用点 = 6（已剥离注释与字符串）", steerSites.length, 6);
+  eq("★ 静态扫到 `agent.steer(` 调用点 = 7（已剥离注释与字符串；D241 加回合末抽起）", steerSites.length, 7);
 
   const noSource = steerSites.filter((s) => s.obj === null || !/\bsource\s*:/.test(s.obj));
   ok(
@@ -11776,11 +11807,18 @@ section("情形 50：设置面板的文案与分组契约（D124）");
   //      D124 已把那句改成不点名，所以现在应当是 0 命中。
   {
     const clientSrc = fs.readFileSync(path.join(HERE, "..", "lib", "client.js"), "utf8");
+    // ★ 2026-10-18（D256）：**判据只吃代码，不连注释一起数**。
+    //   第一版直接 grep 整份源码 ⇒ 把注释里的 `models`（含 "mode" 子串）
+    //   与一句解释渲染顺序的 `mode → ledger → how` 全算成"客户端认了 key"。
+    //   那不是真缺陷 —— 是**判据污染了被测对象**（本项目第 4 条尺子错的同型）。
+    //   ⇒ 先剥注释与模板字符串，再判。
+    const clientCode = clientSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+      .replace(/`(?:[^`\\]|\\.)*`/g, "");
     const specsSeg = segOf("SETTING_SPECS");
     const keys = [...specsSeg.matchAll(/\n    key: "([a-zA-Z]+)"/g)].map((m) => m[1]);
-    const hit = keys.filter((k) =>
-      new RegExp('["\'\\s]' + k + '["\'\\s,;)]').test(clientSrc)
-    );
+    const hit = keys.filter((k) => new RegExp('["\'\\s]' + k + '["\'\\s,;)]').test(clientCode));
     ok(
       "★★ 客户端**不认任何设置项 key**（分组与渲染完全由宿主数据驱动）",
       hit.length === 0,
@@ -18533,6 +18571,850 @@ section("情形 92：两条发布前硬规矩的机器判据（D226）");
       `宿主侧共 ${total} 处：${perFile.filter(([, c]) => c > 0).map(([f, c]) => `${f}×${c}`).join(" ")} —— 应当只有 part1.js 那一处`
     );
   }
+}
+
+// ★★★★★ 情形 93（D240，用户拍板）：**70% 是插件强制档，不随用户设置转移**
+//
+//   用户原话（逐字）：*"自定义也不应该只保留三档，可以是两档，可以是一档
+//   甚至一档水位都不设定，但是不管用户怎么设定，插件里面强制设定一个 70% 的水位提醒。"*
+//
+//   ★ 这条断言要守的**不是文案**，是**结构**：用户把档位清空之后，
+//     实际生效的档位里**必须仍然有 70%**。否则「清空档位」= 「把安全网也清空」。
+//   ★★ 反向验证（D240 当场做过）：把 `effectivePressureTiers` 改回直接返回入参 ⇒ 93① 立刻红。
+section("情形 93：70% 水位档是插件强制项（用户清空档位也删不掉）");
+{
+  const { effectivePressureTiers, FORCED_PRESSURE_TIER, PRESSURE_STOP_RATIO } = await import("../lib/defs.js");
+
+  // ① 空数组（"一档都不设"）⇒ 仍必须含 70%
+  const empty = effectivePressureTiers([]);
+  eq("93① 用户「一档都不设」⇒ 实际生效仍含 70%", JSON.stringify(empty), JSON.stringify([0.7]));
+
+  // ② 自定义两档，且**刻意不含 0.7** ⇒ 70% 必须被并入
+  const two = effectivePressureTiers([0.4, 0.6]);
+  eq("93② 自定义 [0.4,0.6] ⇒ 自动补上 0.7", JSON.stringify(two), JSON.stringify([0.4, 0.6, 0.7]));
+
+  // ③ 用户自己写了 0.7 ⇒ 不许重复
+  const dup = effectivePressureTiers([0.5, 0.7]);
+  eq("93③ 用户已含 0.7 ⇒ 不重复", JSON.stringify(dup), JSON.stringify([0.5, 0.7]));
+
+  // ④ 乱序输入 ⇒ 必须升序（提醒按"最高未发档"取，顺序错了会发错档）
+  const unsorted = effectivePressureTiers([0.9, 0.2]);
+  ok(
+    "93④ 输出始终升序（顺序错了会发错档）",
+    unsorted.every((v, i) => i === 0 || unsorted[i - 1] <= v),
+    JSON.stringify(unsorted)
+  );
+
+  // ⑤ 非法输入不许把强制档弄丢
+  const junk = effectivePressureTiers(undefined);
+  eq("93⑤ 传 undefined ⇒ 仍含 70%（不许因入参异常而失去安全网）", JSON.stringify(junk), JSON.stringify([0.7]));
+
+  // ⑥ ★ 单一出处：强制档必须**就是** `PRESSURE_STOP_RATIO`，不许另写一个 0.7
+  eq("93⑥ 强制档 === PRESSURE_STOP_RATIO（同一个数不许两个出处）", FORCED_PRESSURE_TIER, PRESSURE_STOP_RATIO);
+
+  // ⑦ ★ 接线：index.js 不许再直接吃 `currentSettings().pressureTiers`
+  //   （那正是"用户清空 = 清空安全网"的写法）。
+  const idxSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const evaluated = idxSrc
+    .split(/\r?\n/)
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join("\n");
+  ok(
+    "93⑦ index.js 走唯一出口 effectivePressureTiers（不再直接吃设置值）",
+    /effectivePressureTiers\(currentSettings\(\)\.pressureTiers\)/.test(evaluated),
+    "直接吃设置值 ⇒ 用户清空档位就把安全网也清空了"
+  );
+  ok(
+    "93⑦b 且**不再**有 `const tiers = currentSettings().pressureTiers` 这种旧写法",
+    !/const tiers = currentSettings\(\)\.pressureTiers\s*;/.test(evaluated)
+  );
+
+  // ⑧ ★ 70% 档文案必须是「先停下」（D240 反转 D129 的那句"不要停"）
+  const p3 = fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8");
+  const p3Eval = p3
+    .split(/\r?\n/)
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join("\n");
+  ok(
+    "93⑧ 70% 档要求「先停下」—— 旧句「不要停」必须已从可执行文案中消失",
+    !p3Eval.includes("做完就继续手上的工作，不要停"),
+    "D240 已把这句反转"
+  );
+  ok(
+    "93⑧b 且新句真的写着「先停下」",
+    p3Eval.includes("先停下"),
+    "文案不能只删不加"
+  );
+}
+
+section("情形 94：义务「过期」判定 —— 序号比先后，不靠工具白名单（D242）");
+{
+  const { obligationGaps } = await import("../lib/part3.js");
+
+  // ★ 这一组的**核心**：用户 2026-10-18 当场问的那个场景 ——
+  //   「到了转折点先做了一次义务，然后又干了一批工作，回合末怎么判？」
+  //   旧判据（两个布尔）在那里报"已兑现" ⇒ 不抽 ⇒ 后半批活从没进台账。
+
+  // ① 什么都没做
+  const none = obligationGaps({ wrote: false, triaged: false });
+  eq("94① 都没做 ⇒ missingWrite/missingTriage 都为真", `${none.missingWrite},${none.missingTriage}`, "true,true");
+  eq("94① b 且整体判为未兑现", none.ok, false);
+
+  // ② 正常完工（最后一件事就是写台账 + 分流）⇒ 不许抽
+  const clean = obligationGaps({
+    wrote: true, writeSeq: 200,
+    triaged: true, triageSeq: 202,
+    lastNonLedgerSeq: 190,
+  });
+  eq("94② 义务在最后、之后没干活 ⇒ ok=true（不许打扰）", clean.ok, true);
+  eq("94② b 且两条过期都是 false", `${clean.wroteStale},${clean.triagedStale}`, "false,false");
+
+  // ③ ★★★ **用户问的那个场景**：写台账(200) → 又干活(250) → 回合末
+  const stale = obligationGaps({
+    wrote: true, writeSeq: 200,
+    triaged: true, triageSeq: 202,
+    lastNonLedgerSeq: 250,
+  });
+  eq("94③ ★ 写完台账之后又干活 ⇒ **台账过期**（这正是用户指出的漏洞）", stale.wroteStale, true);
+  eq("94③ b 且分流也过期", stale.triagedStale, true);
+  eq("94③ c ⇒ 整体 ok=false ⇒ 仍然要抽", stale.ok, false);
+  eq("94③ d 但 missingWrite 是 false（做过了，只是过期）", stale.missingWrite, false);
+
+  // ④ 写完之后又干活，但**最后又补了一次**分流 ⇒ 台账仍过期、分流不过期
+  const half = obligationGaps({
+    wrote: true, writeSeq: 200,
+    triaged: true, triageSeq: 260,
+    lastNonLedgerSeq: 250,
+  });
+  eq("94④ 补过分流(260) 晚于干活(250) ⇒ 分流不过期", half.triagedStale, false);
+  eq("94④ b 但台账(200) 仍早于干活(250) ⇒ 台账过期", half.wroteStale, true);
+  eq("94④ c ⇒ 整体仍判未兑现", half.ok, false);
+
+  // ⑤ ★ 只调了 `ledger_*` 不算"又干活"（写台账顺手 ledger_status 查一下是正常的）
+  //   ★ 这一条守的是"为什么用 lastNonLedgerSeq 而不是'任何调用'"。
+  const onlyLedger = obligationGaps({
+    wrote: true, writeSeq: 300,
+    triaged: true, triageSeq: 301,
+    lastNonLedgerSeq: 280, // 干活发生在义务**之前** ⇒ 不算过期
+  });
+  eq("94⑤ 干活在义务之前 ⇒ 不算过期（写台账前干的活已含在那次写入里）", onlyLedger.ok, true);
+
+  // ⑥ 取不到序号 ⇒ **不判过期**（宁可漏抽，不可误抽）
+  const noSeq = obligationGaps({ wrote: true, triaged: true });
+  eq("94⑥ 没有 seq ⇒ 不判过期（宁漏勿误）", `${noSeq.wroteStale},${noSeq.triagedStale}`, "false,false");
+  eq("94⑥ b ⇒ 视为已兑现", noSeq.ok, true);
+
+  // ⑦ 写了台账、但**从没分流**
+  const noTriage = obligationGaps({
+    wrote: true, writeSeq: 100,
+    triaged: false,
+    lastNonLedgerSeq: 100,
+  });
+  eq("94⑦ 缺分流 ⇒ missingTriage=true", noTriage.missingTriage, true);
+  eq("94⑦ b ⇒ 未兑现", noTriage.ok, false);
+
+  // ⑧ ★ 接线：index.js 必须真的在记序号（否则上面全是对着一个没人喂的函数测）
+  const idxSrc94 = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const idxEval94 = idxSrc94
+    .split(/\r?\n/)
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join("\n");
+  ok(
+    "94⑧ index.js 真的记了 writeSeq（否则判据拿不到时间轴）",
+    /rec\.writeSeq\s*=\s*seq/.test(idxEval94),
+    "判据存在但没人喂 ⇒ 假绿"
+  );
+  ok(
+    "94⑧ b 真的记了 lastNonLedgerSeq，且**排除了 `ledger_` 前缀**",
+    /!nm\.startsWith\("ledger_"\)/.test(idxEval94) && /rec\.lastNonLedgerSeq\s*=\s*seq/.test(idxEval94),
+    "用前缀排除是零维护的关键（不用维护'哪些工具算改工作区'的名单）"
+  );
+  ok(
+    "94⑧ c turn/end 用的是 obligationGaps 而不是两个布尔",
+    /obligationGaps\(rec\)/.test(idxEval94),
+    "旧写法 rec.wrote === true && rec.triaged === true 抓不到过期"
+  );
+  ok(
+    "94⑧ d 且 turn/end 重置时真的清掉了旧记录（含序号）",
+    /state\.turnObligation\.set\(key, \{ wrote: false, triaged: false \}\)/.test(idxEval94),
+    "留着旧序号会让下一回合判出假过期"
+  );
+
+  // ⑨ ★ 抽起函数必须走 obligationGaps（不许自己再写一份判据 —— 两个出口必然分叉）
+  const p3Src94 = fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8");
+  const p3Eval94 = p3Src94
+    .split(/\r?\n/)
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join("\n");
+  ok(
+    "94⑨ pullTurnEndObligation 走 obligationGaps（唯一出口）",
+    /const gaps = obligationGaps\(rec\)/.test(p3Eval94)
+  );
+  // ★ 这一条我第一版写错了：`const wrote = rec?.wrote === true` 在 `obligationGaps`
+  //   **自己的函数体里**是正常的（它就是那个唯一出口）⇒ 全文件搜会**误报**。
+  //   ⇒ 判据必须只看 `pullTurnEndObligation` 那一段（纪律："判据的输入必须是被测对象自己那部分"）。
+  {
+    const fnStart = p3Eval94.indexOf("export function pullTurnEndObligation");
+    const fnEnd = fnStart === -1 ? -1 : p3Eval94.indexOf("\nexport function ", fnStart + 10);
+    const fnBody = fnStart === -1 ? "" : p3Eval94.slice(fnStart, fnEnd === -1 ? undefined : fnEnd);
+    ok(
+      "94⑨ b 抽起函数体内**不再自己判布尔**（否则就是两个出口，必然分叉）",
+      fnBody !== "" && !/rec\?\.wrote === true/.test(fnBody) && !/rec\?\.triaged === true/.test(fnBody),
+      fnBody === "" ? "定位不到 pullTurnEndObligation（夹具故障）" : "函数体内仍有旧判据"
+    );
+  }
+}
+
+section("情形 95：长回合中途「先补义务 → 全量压缩 → 继续」（D244）");
+{
+  const { midTurnCompactGate } = await import("../lib/part3.js");
+  const g = midTurnCompactGate;
+
+  // ① 开关关着 ⇒ 什么都不做（默认关，所以今天的行为不变）
+  eq("95① 开关关 ⇒ act=none（默认关，今天行为不变）", g({ enabled: false, ratio: 0.9, line: 0.7, gapsOk: true }).act, "none");
+
+  // ② 水位没到线 ⇒ 不打扰（长回合的大部分时间都走这一支）
+  eq("95② 水位没到线 ⇒ none", g({ enabled: true, ratio: 0.5, line: 0.7, gapsOk: false }).act, "none");
+
+  // ③ ★ 到线了、义务还没做 ⇒ **先抽起做义务**（不是直接压）
+  //   ★ 这一条是"先做义务再压"的**唯一保证** —— 顺序反了就等于没落盘就压。
+  eq("95③ ★ 到线+义务没做 ⇒ 先 pull（顺序不能反）", g({ enabled: true, ratio: 0.75, line: 0.7, gapsOk: false }).act, "pull");
+
+  // ④ 到线了、义务已做 ⇒ 才压
+  eq("95④ 到线+义务已做 ⇒ compact", g({ enabled: true, ratio: 0.75, line: 0.7, gapsOk: true }).act, "compact");
+
+  // ⑤ ★★★ 防重入：正在压 ⇒ 等（否则并发压会撞内核 assertNoActiveCompaction）
+  eq("95⑤ ★ 正在压 ⇒ wait（防并发压两次）", g({ enabled: true, ratio: 0.75, line: 0.7, gapsOk: true, phase: "pressing" }).act, "wait");
+
+  // ⑥ ★★★ 防连环：本回合已压过、水位还没掉回线下 ⇒ 等（不许反复压）
+  eq("95⑥ ★ 本回合已压过 ⇒ wait（防连环重压）", g({ enabled: true, ratio: 0.75, line: 0.7, gapsOk: true, phase: "done" }).act, "wait");
+
+  // ⑦ 已抽起等义务 ⇒ 等模型那一步做完
+  eq("95⑦ 已抽起等义务 ⇒ wait", g({ enabled: true, ratio: 0.75, line: 0.7, gapsOk: false, phase: "owed" }).act, "wait");
+
+  // ⑧ 量不到水位 / 没配线 ⇒ 不猜（宁晚勿错）
+  eq("95⑧ 量不到水位 ⇒ none", g({ enabled: true, ratio: undefined, line: 0.7, gapsOk: true }).act, "none");
+  eq("95⑧ b 没有线 ⇒ none", g({ enabled: true, ratio: 0.9, line: undefined, gapsOk: true }).act, "none");
+
+  // ⑨ ★ 接线：index.js 的 pre-step 必须真的调用它，且**在 next() 之后**（否则与内核抢压缩）
+  const idx95 = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const ev95 = idx95.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  ok("95⑨ index.js 真的调了 runMidTurnCompact", /runMidTurnCompact\(ctx, state, agent/.test(ev95));
+  {
+    // 位置判据：调用点必须晚于 pre-step 里的 `await next()`
+    const a = ev95.indexOf("const decision = await next();");
+    const b = ev95.indexOf("runMidTurnCompact(ctx, state, agent");
+    ok(
+      "95⑨ b 且**在 await next() 之后**（内核的 pre-step 压缩跑完才轮到我们，否则抢 surface）",
+      a !== -1 && b !== -1 && b > a,
+      a === -1 ? "定位不到 await next()（夹具故障）" : `a=${a} b=${b}`
+    );
+  }
+
+  // ⑩ ★ 压缩入口必须是 compactRegion（回合内），不许误用 compactNow（要求 idle）
+  const p5 = fs.readFileSync(path.join(HERE, "..", "lib", "part5.js"), "utf8");
+  const ev5 = p5.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  {
+    const s = ev5.indexOf("export async function runTurnCompact");
+    const e = s === -1 ? -1 : ev5.indexOf("\nexport ", s + 10);
+    const body = s === -1 ? "" : ev5.slice(s, e === -1 ? undefined : e);
+    ok(
+      "95⑩ runTurnCompact 用 compactRegion（回合内），**不是** compactNow（那是 idle 专用）",
+      body.includes("compaction.compactRegion(") && !body.includes("compaction.compactNow("),
+      body === "" ? "定位不到 runTurnCompact（夹具故障）" : "用错了内核入口"
+    );
+    ok(
+      "95⑩ b 且保留「退回回合末」的降级路径（no open turn ⇒ 排队等 idle）",
+      /no open turn\|current-turn/.test(body) && body.includes("hfCompactAfterTurn.set("),
+      "压不成时必须如实降级，不能白过"
+    );
+  }
+
+  // ⑪ 设置项真的接了消费者（否则面板上开了等于没开）
+  ok("95⑪ midTurnCompact 在 behavior 侧真的被读", /midTurnCompact !== true/.test(fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8")));
+}
+
+section("情形 96：中途压缩的相位必须在换回合时重置（D246 真机撞出的 bug）");
+{
+  // ★ 病：`state.turnCompact` 原来**只在 `ratio < line` 时才清**。
+  //   连续长工作让水位从没掉回 70% 以下 ⇒ `done` 永久卡住 ⇒ 中途压缩一次都不会发生。
+  //   实测：turn 87 走了 46 步、水位 70%→78.5%，`compaction/start` 出现 **0 次**。
+  const { midTurnCompactGate } = await import("../lib/part3.js");
+  const g = midTurnCompactGate;
+
+  // ① 复现：相位停在 done 且水位在线上 ⇒ 永远 wait（这正是卡死的形态）
+  eq(
+    "96① 复现卡死：phase=done + 水位在线上 ⇒ wait(already-done)",
+    g({ enabled: true, ratio: 0.785, line: 0.7, gapsOk: true, phase: "done" }).why,
+    "already-done"
+  );
+
+  // ② 一旦清掉相位 ⇒ 同水位下立刻能压（证明"清"是唯一出路）
+  eq(
+    "96② 清掉相位后同水位 ⇒ compact（证明清相位就能解除卡死）",
+    g({ enabled: true, ratio: 0.785, line: 0.7, gapsOk: true, phase: undefined }).act,
+    "compact"
+  );
+
+  // ③ ★ 接线：`turn/end` 必须真的清它（否则上面那个卡死会复发）
+  const idx96 = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const ev96 = idx96.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  ok(
+    "96③ ★ turn/end 真的清 turnCompact（否则 done 会跨回合永久卡住）",
+    /state\.turnCompact\?\.delete\(key\)/.test(ev96),
+    "**这条正是 D246 的修复本体**"
+  );
+  {
+    // 位置断言：清理必须与 turnObligation 的重置在**同一段**（同一生命周期）
+    const a = ev96.indexOf("state.turnObligation.set(key, { wrote: false, triaged: false })");
+    const b = ev96.indexOf("state.turnCompact?.delete(key)");
+    ok(
+      "96③ b 且与 turnObligation 的重置相邻（同一生命周期）",
+      a !== -1 && b !== -1 && Math.abs(b - a) < 900,
+      a === -1 ? "定位不到 turnObligation 重置（夹具故障）" : `a=${a} b=${b}`
+    );
+  }
+
+  // ④ ★ 快照必须印出 midTurnCompact（否则永远无法从注入确认它生没生效）
+  //   ★ 这一条是我自己的实现缺口：我加了 turnEndPull 却漏了它。
+  const p3_96 = fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8");
+  const ev3_96 = p3_96.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  ok(
+    "96④ ★ 设置快照真的印出「长回合中途压缩」（否则无法区分「没开」与「开了但没跑」）",
+    ev3_96.includes("长回合中途压缩"),
+    "这一项改的是压缩发生的时刻 —— 不生效时看起来跟生效一样"
+  );
+  ok(
+    "96④ b 且同一行里带水位线（否则「开了」与「到线了没」还是两回事）",
+    /长回合中途压缩[\s\S]{0,300}highFidelityCompactRatio/.test(ev3_96)
+  );
+}
+
+section("情形 97：压缩失败必须有人知道（D248）");
+{
+  // ★ 真机：00:43:50 那次 compaction/end 带 "502: …transport error: fetch failed"
+  //   ⇒ 水位一点没降、一路涨到 78.5%，而模型与用户都收不到任何提示。
+  const idx97 = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const ev97 = idx97.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+
+  ok(
+    "97① 失败分支真的会记下 compactFailures（不是只判成功就完事）",
+    /state\.compactFailures\?\.set\(/.test(ev97),
+    "**没有这一行 ⇒ 失败永远静默**"
+  );
+  ok(
+    "97② 判据走唯一出口（else if 判 compaction/end，不自己拼 data.error）",
+    /else if \(event\?\.type === "compaction\/end"\)/.test(ev97),
+    "与 compactionEndSucceeded 同一处判，不分叉"
+  );
+  ok(
+    "97③ 注入里真的会告知失败（模型看得见，否则它会以为已经压过了）",
+    ev97.includes("上一次压缩没成功"),
+    "用户看不到日志，模型看不到就得靠这条注入"
+  );
+  ok(
+    "97④ 只报一次（told 标记，不然失败连续发生会每步刷屏打烂缓存）",
+    /fail\.told = true/.test(ev97) && /fail\.told !== true/.test(ev97)
+  );
+  ok(
+    "97⑤ 能把「瞬时故障」与「真问题」分开说（502/fetch failed 归类为可重试）",
+    /fetch failed\|502\|503\|504\|ECONN\|timeout/.test(ev97),
+    "否则用户会以为要改配置"
+  );
+
+  // ⑥ 判据本身：compactionEndSucceeded 对带 error 的 end 必须为 false
+  const { compactionEndSucceeded } = await import("../lib/part1.js");
+  ok(
+    "97⑥ 带 error 的 compaction/end 判为失败（D167 既有口径不许被改坏）",
+    compactionEndSucceeded({ type: "compaction/end", data: { error: "502 fetch failed" } }) === false
+  );
+  ok(
+    "97⑥ b 不带 error 的 compaction/end 判为成功",
+    compactionEndSucceeded({ type: "compaction/end", data: {} }) === true
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 98：回合内压缩必须**真能选到范围**（D252 真 bug）");
+{
+  // ★★★ 这个 bug 的形态（真机实测，不是设想）：
+  //   `runTurnCompact` 里写 `const measurement = { nodes: pressure.nodes }`，
+  //   而 `measurePressure` 只返回 `{total, window, ratio}` —— **没有 nodes**
+  //   ⇒ `selectIncrementalRange` 的 `priced` 是 undefined ⇒ 直接 return null
+  //   ⇒ 自 D244 落地至今**一次都没真正压过**（日志里 `turn≠null` 那次是内核 80% 硬压）。
+  //   证据：`tools/_probe-d252-range-bug.mjs` 真调两函数，一个得 null、一个得 {start,end}。
+  const { selectIncrementalRange } = await import("../lib/part1.js");
+  const { measurePressure: mpFromPart3 } = await import("../lib/part3.js");
+
+  // ── ① 先钉住"尺子本身"：measurePressure 确实没有 nodes ─────────────────
+  //   ★ 这一条不能省：若哪天它加了 nodes，下面②③就不再是"证明修复必要"，而是空转。
+  {
+    const fakeSession = {
+      header: { id: "x" },
+      surface: { nodes: [1, 2] },
+      requestContext: () => ({ contextWindow: 1000 }),
+      eventAt: () => ({ type: "assistant/message" }),
+    };
+    const fakeCtx = {
+      get: (n) =>
+        n === "tokenMeter"
+          ? { measure: () => ({ totalTokens: 700, nodes: [{ seq: 1, tokens: 300 }, { seq: 2, tokens: 300 }] }) }
+          : undefined,
+    };
+    const p = mpFromPart3(fakeCtx, { session: fakeSession });
+    ok(
+      "98① measurePressure **只返回 total/window/ratio，没有 nodes**（这是 bug 的起点）",
+      p !== undefined && p.nodes === undefined && p.total === 700 && p.ratio === 0.7,
+      `实际返回 ${JSON.stringify(p)}`
+    );
+  }
+
+  // ── ② 复现旧写法必然 null ────────────────────────────────────────────
+  {
+    const session = {
+      surface: { nodes: [1, 2, 3, 4] },
+      eventAt: (s) => ({ type: s === 1 ? "system/message" : "assistant/message", seq: s }),
+    };
+    const priced = [{ seq: 1, tokens: 100 }, { seq: 2, tokens: 100 }, { seq: 3, tokens: 100 }, { seq: 4, tokens: 100 }];
+    // 旧写法：把 `{nodes: pressure.nodes}`（= {nodes: undefined}）交进去
+    eq(
+      "98② 旧写法 `{nodes: pressure.nodes}` ⇒ **selectIncrementalRange 返回 null**（复现 bug）",
+      selectIncrementalRange(session, { nodes: undefined }, 100),
+      null
+    );
+    // 新写法：交**原始 measurement**
+    const r = selectIncrementalRange(session, { nodes: priced }, 100);
+    ok(
+      "98② b 传**原始** measurement ⇒ 真选到范围（这就是修复）",
+      r !== null && typeof r?.start === "number" && typeof r?.end === "number",
+      `实际 ${JSON.stringify(r)}`
+    );
+  }
+
+  // ── ③ 静态：runTurnCompact 体内**不许**再出现 `pressure.nodes` ──────────
+  //   ★ 这是"改没改"的硬判据 —— 语义断言抓不到"又写回去了"。
+  {
+    const src98 = fs.readFileSync(path.join(HERE, "..", "lib", "part5.js"), "utf8");
+    const ev98 = src98.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+    const s = ev98.indexOf("export async function runTurnCompact");
+    const e = s === -1 ? -1 : ev98.indexOf("\nexport ", s + 10);
+    const body = s === -1 ? "" : ev98.slice(s, e === -1 ? undefined : e);
+    ok(
+      "98③ runTurnCompact 体内**不再出现 `pressure.nodes`**（旧 bug 的原话）",
+      body !== "" && !/pressure\.nodes/.test(body),
+      body === "" ? "定位不到 runTurnCompact（夹具故障）" : "又写回去了"
+    );
+    ok(
+      "98③ b 且它真的调了 `meter.measure(...)`（与增量那条同一把尺子）",
+      /meter\.measure\(/.test(body) && /ctx\.get\("tokenMeter"\)/.test(body),
+      "两处各写一份是本项目反复栽的坑（D59 家族）"
+    );
+    ok(
+      "98③ c 拿不到 meter 时**如实回报**，不拿猜的范围去压",
+      /noMeasure: true/.test(body),
+      "D244 边界④：算不出来就不压"
+    );
+  }
+
+  // ── ④ 保留量按**目标水位**反推，而不是「保窗口固定比例」───────────────
+  {
+    const src98b = fs.readFileSync(path.join(HERE, "..", "lib", "part5.js"), "utf8");
+    const ev98b = src98b.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+    const s = ev98b.indexOf("export async function runTurnCompact");
+    const e = s === -1 ? -1 : ev98b.indexOf("\nexport ", s + 10);
+    const body = s === -1 ? "" : ev98b.slice(s, e === -1 ? undefined : e);
+    ok(
+      "98④ 保留量由「压到目标水位」反推（total − target×window），不是 keepRatio×window",
+      /removeNeeded/.test(body) && /pressure\.total - target \* pressure\.window/.test(body),
+      "旧口径保 10% 窗口 ⇒ 工具头也被算成保留 ⇒ 压后停在 45%（真机实测）"
+    );
+    ok(
+      "98④ b 水位已不高于目标 ⇒ 直接返回，不做无意义的压",
+      /belowTarget: true/.test(body),
+      "D244 边界④：宁可晚一次"
+    );
+  }
+
+  // ── ⑤ 真算一遍：给定 total/nodeSum/target，反推的 retainTokens 必须合理 ──
+  {
+    // 场景取真机那次：total=815006, target=0.10, window=1e6
+    //   工具头 = total − Σnodes。假设 Σnodes = 500000 ⇒ 工具头 315006
+    //   要压到 100000 ⇒ 必须压掉 715006，但 surface 只有 500000
+    //   ⇒ removeNeeded = 815006 − 100000 = 715006 ⇒ retainTokens = max(1, min(500000, 500000−715006)) = 1
+    //   ⇒ 尽量压（受 surface 上限约束）—— 这正是我们要的行为
+    const total = 815006;
+    const nodeSum = 500000;
+    const target = 0.1;
+    const window = 1_000_000;
+    const removeNeeded = total - target * window;
+    const retain = Math.max(1, Math.min(nodeSum, Math.floor(nodeSum - removeNeeded)));
+    eq("98⑤ 拿真机数字反推：保留量被压到下限 1（尽量压，受 surface 上限约束）", retain, 1);
+
+    // 对照组：工具头很小（surface 很大）时应保留得比较精确
+    //   total=800000, Σnodes=780000, target=0.1 ⇒ removeNeeded=700000
+    //   ⇒ retain = 780000 − 700000 = 80000 ⇒ 压后 ≈ 工具头20000 + 80000 = 100000 = 10% ✓
+    const total2 = 800000;
+    const nodeSum2 = 780000;
+    const removeNeeded2 = total2 - target * window;
+    const retain2 = Math.max(1, Math.min(nodeSum2, Math.floor(nodeSum2 - removeNeeded2)));
+    eq("98⑤ b 反推的口径自洽：压后 ≈ 工具头 + 保留 = 目标水位", 20000 + retain2, 100000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 99：日志按大小滚动拆片（D255 · 用户拍板）");
+{
+  // ★ 病（实测，不是担心）：`_ledger-log` 按周分桶已越「能整篇读」的边界 ——
+  //   week2/L2 567 KB、week2/L1 283 KB、week3/L2 154 KB；而当天 L2 是 +16 KB/天
+  //   ⇒ 一周 +112 KB ⇒ **新的一周必然也越界**。
+  //   ⇒ 后果不是"不好看"，是**「有事才查」这个设计前提失效**（查不动 = 没有）。
+  // 用户原话（逐字）：*"或者确实可以把比较大的文件拆分成多个按时间拆分的文件。"*
+  const { shardName, logicalLogName, LOG_SHARD_MAX_BYTES, LOG_SHARD_MAX_COUNT } = await import("../lib/defs.js");
+
+  // ① 命名：第 1 片保持原名 ⇒ **历史文件零迁移**
+  eq("99① 第 1 片**保持原名**（不是 -001）⇒ 现存历史文件一个都不用搬", shardName("L2-files.md", 1), "L2-files.md");
+  eq("99① b 第 2 片 = L2-files-002.md（三位补零）", shardName("L2-files.md", 2), "L2-files-002.md");
+  eq("99① c 第 10 片 = L2-files-010.md", shardName("L2-files.md", 10), "L2-files-010.md");
+
+  // ② 剥序号：那两处硬匹配靠它
+  eq("99② `logicalLogName` 把 L2-files-003.md 剥回 L2-files.md", logicalLogName("L2-files-003.md"), "L2-files.md");
+  eq("99② b 原名保持不变", logicalLogName("L2-files.md"), "L2-files.md");
+  eq("99② c L0-ledger-changes-010.md → L0-ledger-changes.md", logicalLogName("L0-ledger-changes-010.md"), "L0-ledger-changes.md");
+
+  // ③ 阈值常量
+  ok(
+    "99③ 阈值 = 128 KB：比「能整篇读」的 ~100 KB 留了余量",
+    LOG_SHARD_MAX_BYTES === 128 * 1024,
+    String(LOG_SHARD_MAX_BYTES),
+  );
+  ok("99③ b 片数上限存在且合理", Number.isInteger(LOG_SHARD_MAX_COUNT) && LOG_SHARD_MAX_COUNT > 1);
+
+  // ④ ★★★ 真行为：超阈值 ⇒ 滚到新片；**且不丢一行**（真写临时目录、真读回）
+  const os = await import("node:os");
+  const { logFileRel } = await import("../lib/part2.js");
+  const { logFileList } = await import("../lib/part4.js");
+  const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "d255-st-"));
+  try {
+    const info = { projectRoot: TMP, manifest: { logDir: "_ledger-log" }, logAbs: path.join(TMP, "_ledger-log") };
+    const now = new Date("2026-10-18T03:00:00+08:00");
+
+    eq("99④ 未超阈值 ⇒ 第 1 片（原名）", path.basename(logFileRel(info, "L2", now)), "L2-files.md");
+
+    const p1 = path.resolve(TMP, logFileRel(info, "L2", now));
+    fs.mkdirSync(path.dirname(p1), { recursive: true });
+    fs.writeFileSync(p1, "- " + "x".repeat(LOG_SHARD_MAX_BYTES) + "\n", "utf8");
+    eq("99④ b 超阈值 ⇒ **自动滚到第 2 片**", path.basename(logFileRel(info, "L2", now)), "L2-files-002.md");
+
+    // ⑤ 写入 N 行跨多片，再全读回来 ⇒ **一行都不丢**
+    const N = 60;
+    const BIG = 6000;
+    for (let i = 0; i < N; i += 1) {
+      const abs = path.resolve(TMP, logFileRel(info, "L1", now));
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.appendFileSync(abs, `- 2026-10-18 03:00:00 (L1) item-${String(i).padStart(3, "0")} ${"y".repeat(BIG)}\n`, "utf8");
+    }
+    const l1 = logFileList(info).filter((f) => logicalLogName(path.basename(f.rel)) === "L1-turns.md");
+    ok("99⑤ 确实滚出了多个片（不是全挤一个）", l1.length >= 2, `${l1.length} 片`);
+
+    let got = 0;
+    const seen = new Set();
+    for (const f of l1) {
+      for (const line of fs.readFileSync(f.abs, "utf8").split("\n")) {
+        const m = /item-(\d{3})/.exec(line);
+        if (m !== null) {
+          got += 1;
+          seen.add(m[1]);
+        }
+      }
+    }
+    eq("99⑤ b ★★ **一行都不丢**：写入 60 行 ⇒ 读回 60 行", got, N);
+    eq("99⑤ c 且 60 个编号**全部齐全**（没有中途覆盖）", seen.size, N);
+
+    // ⑥ ★★★ 排序：`-`(0x2D) < `.`(0x2E) ⇒ 纯字典序会把第 1 片排到**最后**
+    //    这是拆片才暴露的真缺陷（没拆时只有一个文件，看不出来）。
+    eq("99⑥ ★ 纯字典序确实会把第 1 片排到最后（缺陷根源）", [...l1.map((f) => path.basename(f.rel))].sort()[0] !== "L1-turns.md", true);
+    eq("99⑥ b ★ `logFileList` 把第 1 片排在**最前**（按片号排，不靠字典序）", path.basename(l1[0].rel), "L1-turns.md");
+    const nos = l1.map((f) => {
+      const m = /-(\d{3})\.md$/.exec(path.basename(f.rel));
+      return m === null ? 1 : Number(m[1]);
+    });
+    ok("99⑥ c 片号序列**严格递增**", nos.every((v, i) => i === 0 || v > nos[i - 1]), nos.join(","));
+
+    // ⑦ 向后兼容：老文件（无序号）仍被收进来
+    const legacy = path.join(TMP, "_ledger-log", "2026-10", "week3", "L4-user-messages.md");
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, "- 2026-10-18 03:00:00 (L4) legacy\n", "utf8");
+    ok("99⑦ 老文件（无序号）照样被读到", logFileList(info).some((f) => path.basename(f.rel) === "L4-user-messages.md"));
+  } finally {
+    try {
+      fs.rmSync(TMP, { recursive: true, force: true });
+    } catch {
+      /* 清不掉也不影响断言 */
+    }
+  }
+
+  // ⑧ 静态：那两处「按文件名硬匹配」必须已经改用 logicalLogName
+  const p3s = fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8");
+  ok(
+    "99⑧ `recentLedgerChanges` 已改用 logicalLogName（不再 `$` 锚定硬匹配）",
+    /logicalLogName\(path\.basename\(f\.rel\)\)/.test(p3s),
+    "否则 ledger status 读不到新片",
+  );
+  const p4s = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
+  ok("99⑧ b `L0-ledger-changes` 的生成处会**跟同序号**（不永远写第 1 片）", /l0Num === undefined \? "L0-ledger-changes\.md"/.test(p4s));
+  const p2s = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
+  ok("99⑧ c `logFileRel` 是**唯一**落点出口（所有写入都过它）", /export function logFileRel/.test(p2s) && /LOG_SHARD_MAX_BYTES/.test(p2s));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 100：设置面板（分页 / 三键 / 纯文本 / 说明折叠）· D256");
+{
+  // ★ 用户原话（逐字）：*"因为它现在实在太长了…我们把这三个按键永远放在界面最底部，
+  //   然后把整个设置面板拆成多个页面，同时精简里面的设置和说明。此后还有就是
+  //   里面所有的文本全部改成纯文本，而不是markdown。"*
+  //
+  // ★ 本情形守的是**四条结构性承诺**，不是"界面好不好看"：
+  //   ① 分页不漏项（42 项必须全在某一页里，且不重复）
+  //   ② 三键 + 推送都在**底栏**（不许再散落在内容流里）
+  //   ③ 文案 100% 纯文本（不许出现 markdown 标记）
+  //   ④ 长说明可折叠，且折叠**必须真的变短**
+  const clientSrc = fs.readFileSync(path.join(HERE, "..", "lib", "client.js"), "utf8");
+  const { SETTING_GROUPS: G, SETTING_SPECS: SP } = await import("../lib/defs.js");
+  const { settingDefaults: SD } = await import("../lib/part1.js");
+
+  // ── 从真源码里抽纯函数（不引 React，也不重抄第二份实现） ──────────────
+  const extractFn = (name) => {
+    const mark = clientSrc.indexOf(`function ${name}(`);
+    if (mark < 0) throw new Error(`找不到 ${name}`);
+    let d = 0;
+    for (let i = clientSrc.indexOf("{", mark); i < clientSrc.length; i += 1) {
+      if (clientSrc[i] === "{") d += 1;
+      else if (clientSrc[i] === "}") {
+        d -= 1;
+        if (d === 0) return clientSrc.slice(mark, i + 1);
+      }
+    }
+    throw new Error(`${name} 大括号不配对`);
+  };
+  const foldConstM = /const HINT_FOLD_CHARS\s*=\s*([0-9]+)\s*;/.exec(clientSrc);
+  ok("100⓪ 源码里能找到 HINT_FOLD_CHARS 常量", foldConstM !== null);
+  const FOLD = foldConstM === null ? 60 : Number(foldConstM[1]);
+
+  const vmMod = await import("node:vm");
+  const sandbox = {};
+  vmMod.createContext(sandbox);
+  vmMod.runInContext(
+    `const HINT_FOLD_CHARS = ${FOLD};
+     ${extractFn("firstSentence")}
+     ${extractFn("buildPages")}
+     this.firstSentence = firstSentence;
+     this.buildPages = buildPages;`,
+    sandbox,
+  );
+  const { firstSentence, buildPages } = sandbox;
+  ok("100⓪ b 两个纯函数都抽出来了（测的是真源码，不是重抄）", typeof firstSentence === "function" && typeof buildPages === "function");
+
+  // ── ① 分页：一项都不能漏 ──────────────────────────────────────────────
+  const data = {
+    specs: SP.map((s) => ({ ...s, ...(typeof s.options === "function" ? { options: s.options() } : {}) })),
+    groups: G.map((g) => ({ ...g })),
+    defaults: SD(),
+  };
+  const pages = buildPages(data);
+  const pageSum = pages.reduce((n, p) => n + p.specs.length, 0);
+  const keys = new Set();
+  for (const p of pages) for (const s of p.specs) keys.add(s.key);
+  eq("100① 分页页数 = 有声明的组数（6）", pages.length, G.filter((g) => pages.some((p) => p.key === g.key)).length);
+  eq("100① b ★ 每页项数之和 = 全部设置项（一项不漏）", pageSum, SP.length);
+  eq("100① c ★ 全部 key 都出现在某一页里", keys.size, SP.length);
+  eq("100① d ★ 没有 key 被渲染两次", pageSum, keys.size);
+  eq(
+    "100① e 页顺序 = SETTING_GROUPS 声明顺序（设计意图）",
+    JSON.stringify(pages.map((p) => p.key)),
+    JSON.stringify(G.filter((g) => pages.some((p) => p.key === g.key)).map((g) => g.key)),
+  );
+  ok("100① f 每页都有非空标题（否则标签是空的）", pages.every((p) => typeof p.title === "string" && p.title !== ""));
+
+  // ── ① g 宿主缺 group / 缺 groups 时不许丢项（D124 的老承诺，别在重构里弄丢）─
+  const ragged = {
+    specs: [
+      { key: "a", kind: "boolean", group: "how", label: "A" },
+      { key: "b", kind: "boolean", label: "B" }, // ★ 故意没有 group
+    ],
+    groups: [], // ★ 故意没有声明
+  };
+  const rp = buildPages(ragged);
+  const rsum = rp.reduce((n, p) => n + p.specs.length, 0);
+  eq("100① g ★ 宿主没给 group / groups 时也不丢项", rsum, 2);
+
+  // ── ② 三键 + 推送必须在同一条底栏里 ───────────────────────────────────
+  const barMark = clientSrc.indexOf('className: "pl-settings__bar"');
+  ok("100② 源码里有底栏（pl-settings__bar）", barMark > 0);
+  const barSlice = barMark < 0 ? "" : clientSrc.slice(barMark, barMark + 3000);
+  for (const label of ["确定", "取消", "恢复默认", "推送到所有对话"]) {
+    ok(`100② ★ 底栏里有「${label}」`, barSlice.includes(`"${label}"`) || barSlice.includes(label));
+  }
+  ok("100② b 底栏不再用 sticky（改成 flex 固定段）", !/pl-settings__bar\s*\{[^}]*position:\s*sticky/.test(clientSrc));
+  ok("100② c 有独立的滚动区（分页内容才能滚，而底栏不动）", /pl-settings__scroll/.test(clientSrc) && /overflow-y:\s*auto/.test(clientSrc));
+  ok("100② d 推送按钮靠右（与三键分开，不再像浮窗）", /pl-settings__btn--push\s*\{\s*margin-left:\s*auto/.test(clientSrc));
+  // ★ 三键必须在**同一个** bar 里 —— 用"从 bar 起点到 SettingsPage 结束"这窗口判定
+  const settingsEnd = clientSrc.indexOf("由服务端视图造一份可编辑草稿");
+  const barWindow = barMark < 0 ? "" : clientSrc.slice(barMark, settingsEnd > barMark ? settingsEnd : barMark + 4000);
+  ok("100② e 三个键与推送都在同一个底栏窗口里", ["确定", "取消", "恢复默认", "推送到所有对话"].every((x) => barWindow.includes(x)));
+
+  // ── ③ 文案 100% 纯文本 ────────────────────────────────────────────────
+  //   ★ 判据只吃**会被用户看到的字段值**（纪律 2：不 grep 注释）。
+  const MD = /(\*\*|__|`|^\s*#|^\s*[-*+]\s|^\s*\||\[[^\]]*\]\([^)]*\))/;
+  const dirty = [];
+  const scan = (where, t) => {
+    if (typeof t === "string" && MD.test(t)) dirty.push(`${where}: ${t.slice(0, 50)}`);
+  };
+  for (const g of G) {
+    scan(`group:${g.key}.label`, g.label);
+    scan(`group:${g.key}.hint`, g.hint);
+  }
+  for (const s of data.specs) {
+    scan(`spec:${s.key}.label`, s.label);
+    scan(`spec:${s.key}.hint`, s.hint);
+    scan(`spec:${s.key}.unit`, s.unit);
+    for (const o of Array.isArray(s.options) ? s.options : []) {
+      scan(`spec:${s.key}.option.label`, o.label);
+      scan(`spec:${s.key}.option.hint`, o.hint);
+    }
+  }
+  ok("100③ ★ 面板文案 100% 纯文本（无 markdown 标记）", dirty.length === 0, dirty.slice(0, 3).join(" | "));
+  ok("100③ b 客户端没有引入 markdown 渲染器", !/ReactMarkdown|dangerouslySetInnerHTML|marked\(/.test(clientSrc));
+
+  // ── ④ 长说明折叠：短的别折、长的必须真变短 ────────────────────────────
+  const hs = data.specs.filter((s) => typeof s.hint === "string" && s.hint !== "");
+  let shortBroken = 0;
+  let longBroken = 0;
+  let savedChars = 0;
+  for (const s of hs) {
+    const f = firstSentence(s.hint);
+    if (s.hint.length <= FOLD) {
+      if (f !== s.hint) shortBroken += 1;
+    } else {
+      if (!(f.length < s.hint.length)) longBroken += 1;
+      savedChars += s.hint.length - f.length;
+    }
+  }
+  eq("100④ ★ 短文案一条都没被误折", shortBroken, 0);
+  eq("100④ b ★ 长文案全部真的变短了（折叠不是装饰）", longBroken, 0);
+  ok("100④ c 折叠确实省下可观字符（≥ 300 字）", savedChars >= 300, `实际省 ${savedChars} 字`);
+  //   ★ 这条断言是**探针连抓两次真缺陷**之后立起来的（两个都记在 D256 卡里）：
+  //     缺陷一：只找句号 ⇒ 60 字后无句号的 11 条长句**折叠完全没生效**；
+  //     缺陷二：兜底截到 60 再补省略号 ⇒ 长度 61，遇上恰好 61 字的原文**没变短**。
+  //   ⇒ 判据必须是「严格变短」，不能是「长度等于某个数」。
+  const tiny = "甲".repeat(FOLD + 3);
+  ok("100④ d ★ 兜底路径也严格短于原文（缺陷二的回归断言）", firstSentence(tiny).length < tiny.length, `${firstSentence(tiny).length} vs ${tiny.length}`);
+  const noPunctLong = "乙".repeat(FOLD + 40);
+  ok("100④ e 无标点长句会加省略号", firstSentence(noPunctLong).endsWith("…"));
+
+  // ── ⑤ 「恢复默认」必须走 data.defaults，不能用不存在的 spec.def ────────
+  //
+  //   ★ 我第一版写的是 `spec.def` —— **那个字段根本不存在**（探针当场 FAILED）。
+  //     若留着，按钮会**静默什么都不做**却提示"已填入默认值"（= D167 谎报成功）。
+  //   ★ 判据只吃**代码**，不连注释一起数 —— 注释里为了记录这次踩坑而写了
+  //     `spec.def` 这几个字（那是文档，不是逻辑）。第一版断言连注释一起 grep，
+  //     于是它**永远红**，逼得人只能删注释 ⇒ 那正是「判据污染了被测对象」。
+  //   ⇒ 先把注释剥掉，再判。（本项目第 4 条尺子错的同型：剥离用的标记不能污染内容。）
+  const stripComments = (s) =>
+    s
+      .replace(/\/\*[\s\S]*?\*\//g, "") // 块注释
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1") // 行注释（避开 http://）
+      .replace(/`(?:[^`\\]|\\.)*`/g, ""); // 模板字符串（CSS 块与文案里也会提到这些字样）
+  const clientCode = stripComments(clientSrc);
+  ok("100⑤ ★ 代码里不再依赖不存在的 spec.def（注释不计）", !/spec\.def/.test(clientCode));
+  ok("100⑤ b 「恢复默认」读的是视图里的 defaults", /view\.data\.defaults/.test(clientSrc));
+  const defs = data.defaults;
+  const missingDef = SP.filter((s) => !Object.prototype.hasOwnProperty.call(defs, s.key));
+  eq("100⑤ c ★ 服务端 defaults 覆盖全部设置项（否则恢复默认不完整）", missingDef.length, 0);
+  ok("100⑤ d 拿不到 defaults 时如实报错，不谎报成功", /没提供默认值/.test(clientSrc));
+
+  // ── ⑥ 分页不是"只画第一页就完事"：必须能切页 ──────────────────────────
+  ok("100⑥ ★ 有当前页状态（pageIndex）", /useState\(0\)/.test(clientSrc) && /pageIndex/.test(clientSrc));
+  ok("100⑥ b 页签可点击切页（setPageIndex）", /setPageIndex\(i\)/.test(clientSrc));
+  ok("100⑥ c 只渲染当前页（renderPage(current…）", /renderPage\(current/.test(clientSrc));
+  ok("100⑥ d 越界保护：pageIndex 被夹在有效范围内", /Math\.min\(Math\.max\(pageIndex, 0\)/.test(clientSrc));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 101：回合内压缩必须真 await（D257 · 真机 4 连败）");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ★ 这一段守的是一个**非常贵**的缺陷：功能装了、开关开了、日志也贴着
+  //   「auto:midturn」，但**一次都没成功过** —— 实测 02:32:09 / 02:34:14 /
+  //   02:34:39 / 02:35:07 **连续 4 次**倒在
+  //   `compaction: session surface changed during summarization`，
+  //   水位从 70% 一路涨到 76% 才赶巧成功一次。
+  //
+  //   🔴 根因（我 D244 写错的地方）：
+  //     内核 `compactRegion` 的方法体是**硬编**的：
+  //         async compactRegion(start, end, agent, signal) {
+  //           return compactSurfaceRegion(..., {
+  //             owner: "current-turn",
+  //             stability: "whole-surface"          ← 全表面判据
+  //           }, signal);
+  //         }
+  //     而 `assertWholeSurfaceUnchanged` 比的是**整个 surface 的 nodes 快照**：
+  //         isDeepStrictEqual(meter.measure(session).nodes, prepared.measurement.nodes)
+  //     ⇒ 摘要那几十秒里 surface 只要动一个节点，整次压缩作废。
+  //     我却用 `void (async()=>{...})()` **不 await** 让它并行跑 ——
+  //     而 agent 正在一步步推进 surface ⇒ **撞车是确定性的，不是偶发**。
+  //     "唯一成功的那次"是赶巧碰上 surface 静止的窗口（用户发问、模型没动 surface）。
+  //
+  //   ★ 正确做法 = 内核自己的做法（`compactIfNeeded` 里 `await this.compactRegion(...)`）：
+  //     **同步等**，让这一拍停住。代价是这一步慢几十秒，换来它真的会成功。
+  const idxSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const p3Src = fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8");
+  const strip = (s) =>
+    s
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+      .replace(/`(?:[^`\\]|\\.)*`/g, "");
+  const idxCode = strip(idxSrc);
+  const p3Code = strip(p3Src);
+
+  // ① 不许再有 `void` 掉压缩的写法（这就是那个缺陷本体）
+  ok(
+    "101① ★ 不再用 void 把压缩甩到后台（否则必撞全表面判据）",
+    !/void\s*\(\s*async\s*\(/.test(idxCode),
+    "index.js 里还有 `void (async () =>`",
+  );
+
+  // ② 调用 `runMidTurnCompact` 必须 await
+  ok(
+    "101② ★ 调用 runMidTurnCompact 时带 await",
+    /await\s+runMidTurnCompact\s*\(/.test(idxCode),
+    "index.js 里没 await runMidTurnCompact",
+  );
+
+  // ③ `runMidTurnCompact` 本身必须是 async（否则 await 无从谈起）
+  ok(
+    "101③ runMidTurnCompact 声明为 async",
+    /export\s+async\s+function\s+runMidTurnCompact\s*\(/.test(p3Code),
+  );
+
+  // ④ 它内部两处 `deps.runTurnCompact()` 都必须 await
+  const calls = [...p3Code.matchAll(/(await\s+)?deps\.runTurnCompact\s*\(/g)];
+  ok("101④ ★ deps.runTurnCompact 的每一处都 await 了（找到 ≥1 处）", calls.length >= 1, `实际 ${calls.length} 处`);
+  const unawaited = calls.filter((m) => !m[1]).length;
+  eq("101④ b ★ 没有一处是裸调用（裸调用 = 必然失败）", unawaited, 0);
+
+  // ⑤ 文档层对齐：源码注释里必须写明"为什么必须 await"（免得后人"优化"回去）
+  ok(
+    "101⑤ ★ 源码里留有『必须 await』的证据说明（含全表面判据）",
+    /whole-surface/.test(idxSrc) || /whole-surface/.test(p3Src),
+  );
+
+  // ⑥ 反向判据：这几条断言必须**能红**。
+  //   做法：拿真实代码做一次"伪装成旧写法"的替换，确认我们的正则确实能抓到。
+  const fakeVoid = "const x = void (async () => { await y(); })();";
+  ok("101⑥ ★ 反向自检：void 正则能抓到旧写法", /void\s*\(\s*async\s*\(/.test(fakeVoid));
+  const fakeBare = "const out = deps.runTurnCompact();";
+  const fakeCalls = [...fakeBare.matchAll(/(await\s+)?deps\.runTurnCompact\s*\(/g)];
+  ok("101⑥ b ★ 反向自检：裸调用会被判为未 await", fakeCalls.filter((m) => !m[1]).length === 1);
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

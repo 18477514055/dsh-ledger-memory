@@ -105,7 +105,12 @@ ok(
 
 console.log("\n=== 四、本版兼容声明（插件市场查不到的那一条）===");
 const pkg = JSON.parse(textOf("package.json"));
-ok("版本号 = 1.2.4", pkg.version === "1.2.4", `实测 ${pkg.version}`);
+// ★★★ 2026-10-17（D234 发布时第 2 次撞同一个病）：这里原来**硬编码 `pkg.version === "1.2.4"`**。
+//   结果 1.2.5 一升版，它立刻报红 —— 而**代码一个字没改坏**。
+//   读回探针那次是"硬编码回读的版本"，这次是"硬编码本版版本"，**同一个病的两个位置**。
+//   ⇒ 判据：**版本号只有一个出处（package.json）**；断言要问的是"它是不是**与 npm 一致**"，
+//     不是"它是不是等于某个我抄下来的字面量"。
+ok("版本号是合法的三段式 semver", /^\d+\.\d+\.\d+$/.test(pkg.version), `实测 ${pkg.version}`);
 const rel = pkg.dsh?.compatibility?.dshReleases ?? {};
 ok(
   "★ 兼容表里有当前客户端 `0.2.1-rc.2` 且标 compatible（这正是市场查不到的根因）",

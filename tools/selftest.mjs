@@ -863,20 +863,56 @@ let initedRoot;
     fs.readFileSync(path.join(root, "LEDGER.md"), "utf8")
   );
 
-  // 非法参数：绝对路径 / 逃逸 / 同名
-  for (const [label, args] of [
-    ["拒绝绝对路径", { active: "C:\\evil.md", decisions: "D.md", archiveDir: "_a" }],
-    ["拒绝路径穿越", { active: "../evil.md", decisions: "D.md", archiveDir: "_a" }],
-    ["拒绝活跃台账与决策同名", { active: "X.md", decisions: "X.md", archiveDir: "_a" }],
-    ["拒绝文件放进归档目录", { active: "_ledger-archive/x.md", decisions: "D.md", archiveDir: "_ledger-archive" }],
-  ]) {
-    let threw = false;
-    try {
-      await run.registeredTools.get("ledger_init").execute(args, exec);
-    } catch {
-      threw = true;
+  // ── 非法参数：绝对路径 / 逃逸 / 同名 ─────────────────────────────────────
+  //
+  // ★★★★★ 2026-10-18（D270 · 修 review v1.2.7 的 F10）：**夹具必须用「本平台真的算绝对
+  //   路径」的写法，而且每条用例独用一个项目。**
+  //
+  //   🔴 病（review 在 Linux 实测）：这里原来写 `active: "C:\\evil.md"`。
+  //      在 **POSIX 上 `C:\evil.md` 是一个合法的相对文件名**（冒号与反斜杠都是合法字符）
+  //      ⇒ 被测代码**不拒绝**，夹具却以为"它该被拒" ⇒ 那条断言**假红**；
+  //      更糟的是它**真的把共享项目 `initedRoot` 改掉了** ——
+  //      后续"注入 / 写入 / 归档"全部连锁失败，最后异常退出。
+  //      review 给这现象起了名字：**夹具假红**（与本项目反复栽的"夹具假绿"正相反）。
+  //
+  //   ★ 修法三条，缺一条都会复发：
+  //     ① **绝对路径的写法由平台决定** —— `path.resolve("/x")` 在 win32 上是 `D:\x`、
+  //        在 POSIX 上是 `/x`，两者都是**该平台真正的绝对路径**；
+  //        绝不写死盘符（写死了就只在 Windows 上成立）。
+  //     ② **每条用例一个独立项目** —— 前一条万一意外成功，污染不到后一条。
+  //     ③ **仍然断言 `threw`**，但额外断言"项目目录里一个文件都没多出来"
+  //        （review 的建议原话：「拒绝时是否零副作用」）。
+  //        ★ 万一将来某条又意外放行，② 让它的破坏止步于自己那个临时目录。
+  {
+    const absProbe = path.resolve("/evil-abs");
+    ok(
+      "★ 夹具自检：构造出的「绝对路径」在本平台真的是绝对路径",
+      path.isAbsolute(absProbe) === true,
+      `absProbe=${absProbe} isAbsolute=${path.isAbsolute(absProbe)}`
+    );
+    const CASES_ILLEGAL = [
+      ["拒绝绝对路径", { active: absProbe, decisions: "D.md", archiveDir: "_a" }],
+      ["拒绝路径穿越", { active: "../evil.md", decisions: "D.md", archiveDir: "_a" }],
+      ["拒绝活跃台账与决策同名", { active: "X.md", decisions: "X.md", archiveDir: "_a" }],
+      ["拒绝文件放进归档目录", { active: "_ledger-archive/x.md", decisions: "D.md", archiveDir: "_ledger-archive" }],
+    ];
+    for (const [idx, [label, args]] of CASES_ILLEGAL.entries()) {
+      // ★ 独立项目：这条用例无论怎么炸，都炸在自己那间屋里。
+      const isolated = tmpProject(`init-illegal-${idx}`);
+      const isolatedExec = execFor(isolated, `s-init-illegal-${idx}`);
+      // ★ 记下"动手之前有没有文件" —— 用来断言"拒绝时零副作用"。
+      const before = fs.readdirSync(isolated).sort().join("|");
+      let threw = false;
+      try {
+        await run.registeredTools.get("ledger_init").execute(args, isolatedExec);
+      } catch {
+        threw = true;
+      }
+      const after = fs.readdirSync(isolated).sort().join("|");
+      ok(`${label}`, threw);
+      ok(`${label} ⇒ 拒绝时**零副作用**（项目里一个文件都没多）`, after === before, `前=${before} 后=${after}`);
+      rmrf(isolated);
     }
-    ok(label, threw);
   }
 }
 
@@ -1012,8 +1048,16 @@ section("情形 5：ledger_archive");
 
   // 第二次归档到同一周期 ⇒ 必须**追加**且保住第一次的内容。
   // ★ 这一次移走 `- [ ] 起步`（第一次的 newActive 里刚写进去的那条）。
+  //
+  // ★★★★★ 2026-10-18（D267，**F05 的新判据当场把这处夹具照出来了**）：
+  //   原夹具的 `newActive` 是 `# 项目台账\n\n## 目标\n**再继续。**\n` ——
+  //   而第一次归档写进去的正文是 `## 目标\n**继续做。**`。⇒ 这次归档把 `继续做。`
+  //   **换成了** `再继续。`，那一行**既不在新台账、也没进 entries** ⇒ **凭空消失**。
+  //   🔴 **旧判据（只查列表行）放过了它** —— 这正是 review F05 说的那个洞：
+  //      "普通段落不进检查"。★ 所以这次变红**不是判据太严，是夹具本来就在丢内容**。
+  //   ⇒ 修夹具（不是放松判据）：让 `newActive` **保住**上一次写进去的正文。
   const r2 = await T.get("ledger_archive").execute(
-    { entries: "## 已完成\n- [ ] 起步\n", newActive: "# 项目台账\n\n## 目标\n再继续。\n" },
+    { entries: "## 已完成\n- [ ] 起步\n", newActive: "# 项目台账\n\n## 目标\n继续做。\n" },
     exec
   );
   eq("二次归档 ok", r2.ok, true);
@@ -8501,8 +8545,20 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //     ⇒ 95 → **96**；带编号 94 → **95**。★ 第十一次当场变红（同一天内）。
   //   ★★ 2026-10-18（D258）：新增情形 102（设置写入口两层授权）
   //     ⇒ 96 → **97**；带编号 95 → **96**。★ 第十二次。
-  eq("★ 口径：section 总数 = 97（情形 93~102）", sectionCalls, 97);
-  eq("★ 口径：其中带「情形 N」编号的 = 96", numbered, 96);
+  //   ★★ 2026-10-18（D260/D261）：新增情形 103（无区分力维度不许记分）+ 104（全列可见）
+  //     ⇒ 97 → **99**；带编号 96 → **98**。
+  //   ★★ 2026-10-18（D265）：新增情形 105（回合内压缩失败后节流 —— 报告 007 §8.1 方案 A）
+  //     ⇒ 99 → **100**；带编号 98 → **99**。★ 第十三次当场变红（这个守卫每次加情形都会响）。
+  //   ★★ 2026-10-18（D266）：新增情形 106（第三方审查 v1.2.7 的 P1 六项）
+  //     ⇒ 100 → **101**；带编号 99 → **100**。★ 第十四次。
+  //   ★★ 2026-10-18（D268）：新增情形 107（P2 的 F09 journal 只能追加 + F11 README 边界）
+  //     ⇒ 101 → **102**；带编号 100 → **101**。★ 第十五次当场变红。
+  //   ★★ 2026-10-18（D269）：新增情形 108（P2 的 F07 init 先预检后执行 + F08 角色身份）
+  //     ⇒ 102 → **103**；带编号 101 → **102**。★ 第十六次。
+  //   ★★ 2026-10-18（D270）：新增情形 109（四道闸门的真行为守卫 —— F10 撞出来的真实缺口）
+  //     ⇒ 103 → **104**；带编号 102 → **103**。★ 第十七次。
+  eq("★ 口径：section 总数 = 104（情形 93~109）", sectionCalls, 104);
+  eq("★ 口径：其中带「情形 N」编号的 = 103", numbered, 103);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -11369,7 +11425,11 @@ section("情形 41：审计报告点出的 A2 / A3 数据完整性缺陷（先�
     mod.apply(run.ctx, {});
     const A = execFor(root, "session-a2b2b2b2-a2b2");
     const T = run.registeredTools;
-    const small = "# 台账\n\n## 目标\n留着\n";
+    // ★★★ 2026-10-18（D267）：`newActive` 原来写 `## 目标\n留着` ——
+    //   而夹具台账里是 `## 目标\n**做点事**` ⇒ 这次归档把 `做点事` **换掉了**，
+    //   那一行既不在新台账也不进 entries ⇒ **凭空消失**。
+    //   F05 的新判据（覆盖整份正文）当场把它拦下 ⇒ 这里必须**保住原有正文**。
+    const small = "# 台账\n\n## 目标\n做点事\n";
     const batch = "## 这一批\n- 只该出现一次\n";
 
     await T.get("ledger_archive").execute({ entries: batch, newActive: small }, A);
@@ -15502,7 +15562,18 @@ section("情形 77：ledger_init 纳入 goals / principles（D187）");
         .then((x) => ({ ok: x.ok === true, reason: "" }))
         .catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
 
-    const absPath = await mk({ goals: "C:\\abs\\GOALS.md" });
+    // ★★★★★ 2026-10-18（D270 · 修 review v1.2.7 的 F10）：**绝对路径由平台决定**。
+    //
+    //   🔴 病（review 在 Linux 实测）：这里原来写 `"C:\\abs\\GOALS.md"`。
+    //      在 POSIX 上它是**合法的相对文件名** ⇒ 被测代码不拒绝 ⇒ 断言假红。
+    //   ★ 与情形 2 同一处病、同一个修法：`path.resolve` 出来的就是**该平台真的绝对路径**。
+    const absProbe = path.resolve("/evil-abs");
+    ok(
+      "★ 夹具自检：77④ 构造出的路径在本平台真的是绝对路径",
+      path.isAbsolute(absProbe) === true,
+      `absProbe=${absProbe}`
+    );
+    const absPath = await mk({ goals: absProbe });
     ok("★★★★ 77④ goals 不许是绝对路径", absPath.ok === false, JSON.stringify(absPath).slice(0, 120));
     const escape = await mk({ principles: "../逃出去.md" });
     ok("★★★★ 77④ principles 不许逃出项目根", escape.ok === false, JSON.stringify(escape).slice(0, 120));
@@ -15768,17 +15839,32 @@ section("情形 78：根本原则 · 提议路在文件不存在时也走得通�
     rmrf(root);
   }
 
-  // ── 78④ ★★★★★ **带授权的写入能建立文件并登记清单**（D189 的正解路径）──
+  // ── 78④ ★★★★★ **用户授权窗口 ⇒ 能建立文件并登记清单**（现在唯一合法的写原则路径）──
   //
-  //   ★ 这是本轮**真正用到**的那条路：用户在对话里明确授权 ⇒ `authorizedBy` 带值 ⇒ 写入。
-  //   ★ 判据：文件真被建立 + **登记进了清单**（不靠 guess 兜底）。
+  //   ★★★ 2026-10-18（D266，修 review v1.2.7 的 F01）**本条已重写**。
+  //     🔴 改前它断言的是：`ledger_write({target:"principles", authorizedBy:"user-natural-language-test"})`
+  //        **能成功**。而 review 实测证明**那条路本身就是漏洞** —— 任何字符串都能当授权凭据
+  //        （它用一个编造的 `"I claim user approved"` 就写成功了）。
+  //     ⇒ 那个参数已从工具 schema **彻底移除**，"传字符串即放行"被删除。
+  //     ★ 但 D189 那条**真需求没变**：文件不存在时，用户批准之后原则必须建得起来
+  //       （否则这个项目的原则根本建不起来）。所以判据改成走**真授权窗口**：
+  //       模拟用户在卡片上点"授权" ⇒ `state.principleGrants` 有票 ⇒ 写入成功。
+  //     ★ 这条比原来那条**更硬**：它同时证明了"授权是必须的"和"授权够了就能写"。
   {
     const { root, run, exec } = mkRun78("d189-authorized-write");
-    const r = await run.registeredTools.get("ledger_write").execute(
+    // ★ 需要 userQuestions 服务（授权卡片走它）。★ D266 改：原来这条用例**不需要**卡片服务
+    //   —— 因为它走的是"传 authorizedBy 字符串"那条**漏洞路**。现在只能走真卡片。
+    const runG = makeCtx({ withUserQuestions: true });
+    mod.apply(runG.ctx, {});
+    // 模拟用户点了"授权"
+    runG.setAnswer(() => ({ answers: [{ selected: ["授权（仅这一次）"] }] }));
+    const grant = await runG.registeredTools.get("ledger_principles_access").execute({ reason: "自检：验证授权后可写" }, exec);
+    ok("★★★★ 78④ 前置：授权卡片返回 authorized=true", grant.authorized === true, JSON.stringify(grant).slice(0, 220));
+    // ② 拿到窗口后写入
+    const r = await runG.registeredTools.get("ledger_write").execute(
       {
         target: "principles",
         content: "# 原则\n\n## 一、准确性优先\n不确定就退回整份。\n",
-        authorizedBy: "user-natural-language-test",
       },
       exec
     );
@@ -15786,7 +15872,7 @@ section("情形 78：根本原则 · 提议路在文件不存在时也走得通�
     const body = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : "";
     const man = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
     ok(
-      "★★★★★ 78④ 带 `authorizedBy` 的写入**能建立 PRINCIPLES.md**，且内容在里面" +
+      "★★★★★ 78④ **用户授权窗口**下的写入**能建立 PRINCIPLES.md**，且内容在里面" +
         "（文件不存在时这条路必须走得通 —— 否则本项目的原则根本建不起来）",
       r.ok === true && body.includes("准确性优先"),
       `ok=${r.ok} 文件=${fs.existsSync(abs)} 含内容=${body.includes("准确性优先")}`
@@ -15795,6 +15881,16 @@ section("情形 78：根本原则 · 提议路在文件不存在时也走得通�
       "★★★★ 78④b 且它**登记进了清单**（不靠「文件已存在」的 guess 兜底）",
       man.principles === "PRINCIPLES.md",
       `manifest.principles=${man.principles}`
+    );
+    // ③ 一次一授权：用掉之后窗口必须没了（再写一次要再问）
+    const again = await run.registeredTools.get("ledger_write").execute(
+      { target: "principles", content: "第二次不该成功\n" },
+      exec
+    );
+    ok(
+      "★★★★ 78④c ★ 授权**一次一用**：窗口被消费后再写必须被拒",
+      again.ok === false && again.refused === true,
+      `ok=${again.ok} refused=${again.refused}`
     );
     rmrf(root);
   }
@@ -16061,26 +16157,55 @@ section("情形 80：原则授权窗口 + 经验教训文件（D191 / D192）");
     rmrf(root);
   }
 
-  // ── 80③ ★★★★★ **模型无法自己产生授权** —— state 里那个 Map 只能由卡片回执写 ──
+  // ── 80③ ★★★★★ **工具参数表里不许有 `authorizedBy`**（D266 修 review F01 的核心）──
   //
-  //   ★ 判据：直接调 `ledger_write` 时**多传一个 `authorizedBy`** 是**不行的**吗？
-  //     ⚠️ 诚实说明：D180 那条老路**确实认字符串**（用户亲手敲命令会用 `user-command`）。
-  //     所以本条的判据**不是**"字符串一概无效"，而是：
-  //     ★ **工具参数表里没有 `authorizedBy` 这个字段**了吗？—— 有的（D180 契约）。
-  //     ⇒ 于是真正该守的是：**模型若只靠自己，能写出什么字符串它都能写**；
-  //       所以新路（卡片窗口）才是**结构性**的那条。
-  //     ★ 本情形只断言"★ 参数表里 `authorizedBy` 的说明**明确写着只有用户/插件能设**"，
-  //       以及"窗口状态**不在**模型的任何入参里"。
+  //   ★★★ 2026-10-18（D266）**本条已反转**。改前它断言的是：
+  //     "`authorizedBy` 的参数说明里明确写着只有插件在用户授权后才设它"。
+  //     🔴 而 review 实测证明：**只要它在参数表里，模型就能填，填了就被当成授权** ——
+  //        `{authorizedBy: "I claim user approved"}` ⇒ 写入成功。
+  //     ★ 所以"写清说明"不是修复，**把它从 schema 里删掉**才是。
+  //       一个可见的伪造入口本身就是教唆：模型看到这个字段，就会想"这里是不是该填点什么"。
+  //
+  //   ★ 判据（两条，都要）：
+  //     ① `defineWriteTool` 的 `parameters.properties` 里**没有** `authorizedBy` 这个键；
+  //     ② 授权窗口的状态**不在**模型任何入参里（它只能是 `state.principleGrants`）。
   {
     const src = readLibSource();
-    const a = src.indexOf("authorizedBy: {");
-    const b = src.indexOf("}", a);
-    const seg = src.slice(a, b < 0 ? a + 600 : b);
+    // ① 只截「ledger_write 的工具定义」那一段，不拿全文件判。
+    // ★★★ 这里踩到**注释污染第 4 次**：第一版直接对 `propsSeg` 跑 `/authorizedBy\s*:/`，
+    //   结果命中了我自己写的那段注释（"① 不带 `authorizedBy` ⇒ 被拒"）。
+    //   而且它还命中了 `target` 的**描述文本**（"it is REFUSED unless you pass `authorizedBy`"）——
+    //   ★ 后者**不是污染，是真的过期文案**：参数都删了、描述还教人传它 ⇒ 一句假话。
+    //   ⇒ 两件事一起修：**剥注释再判**（判据）+ **把描述改对**（代码）。
+    const stripC = (s) =>
+      s
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+    const defStart = src.indexOf("export function defineWriteTool");
+    const defSeg = defStart < 0 ? "" : src.slice(defStart, defStart + 9000);
+    const propsStart = defSeg.indexOf("properties: {");
+    const propsRaw = propsStart < 0 ? "" : defSeg.slice(propsStart, defSeg.indexOf("required:", propsStart));
+    const propsSeg = stripC(propsRaw);
     ok(
-      "★★★★ 80③ `authorizedBy` 的**参数说明**里明确写着：只有插件在用户授权后才设它" +
-        "（否则模型会以为可以自己填）",
-      /only the plugin sets|only.*plugin|ONLY for target/i.test(seg),
-      seg.slice(0, 200)
+      "★★★★ 80③ 夹具自检：定位到了 ledger_write 的参数表",
+      propsSeg !== "" && propsSeg.includes("target"),
+      `defStart=${defStart} propsLen=${propsSeg.length}`
+    );
+    // ★ 尺子自检：剥之前那个字面串**确实存在**（否则这条判据红得毫无意义）
+    ok(
+      "★★★★ 80③ a 尺子自检：`authorizedBy` 这个串在剥注释前确实出现过（说明判据面对的是真对象）",
+      /authorizedBy/.test(propsRaw),
+      `raw=${propsRaw.length}`
+    );
+    ok(
+      "★★★★★ 80③ ★ `ledger_write` 的参数表里**没有 `authorizedBy`**" +
+        "（有它 = 模型能自己填 = 授权可以被自称，review F01 就是这么绕过的）",
+      propsSeg !== "" && !/\bauthorizedBy\s*:/.test(propsSeg),
+      propsSeg === "" ? "定位失败（夹具故障）" : "参数表里仍有 authorizedBy"
+    );
+    ok(
+      "★★★★ 80③b 授权窗口状态只存在于 state（模型入参里没有它）",
+      /state\.principleGrants/.test(src),
     );
   }
 
@@ -19490,6 +19615,915 @@ section("情形 102：设置写入口必须在**两层**都建立授权（D258�
     !/assertAuthorized/.test(fakeOneLayer) &&
       !fakeOneLayer.slice(fakeOneLayer.indexOf("saveSettings")).includes("assertAuthorized"),
   );
+}
+
+section("情形 103：没有区分力的维度不许计分（D260 · 排序 bug）");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ★ 这段守的是 D246 那条「代际 3/3 = 最老却算加分」。
+  //   ★★ 先说清实测结论：**D246 的描述不成立** —— 升序 + `1 - rk/span` 下，3/3 拿的是 0.25，是**减分**。
+  //   真正的 bug 在别处：**纯相对秩在 n=1 或全体同值时退化成按绝对量给分，且方向反了** ——
+  //     一份落后 227 代的孤本拿 **100 分**、三份一样老的稿子白拿 **并列中点 0.5**。
+  //   ⇒ 判据：**这一维没有区分力时，就不能记分**（与"取不到值"同待遇，但分开记名）。
+  //   ★ 不能用「只有文件数 == 1」挡 —— 三份一样老是同一个病，只挡 n===1 会漏掉它（探针实测过）。
+  const p6 = fs.readFileSync(path.join(HERE, "..", "lib", "part6.js"), "utf8");
+  const strip6 = (s) =>
+    s
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+      .replace(/`(?:[^`\\]|\\.)*`/g, "");
+  const c6 = strip6(p6);
+
+  // ① 必须真的判「取值全等」，而不是只判数量
+  ok(
+    "103① ★ 判「无区分力」用的是**取值全等**（every v === v[0]），不是只看条数",
+    /every\s*\(\s*\(?\s*v\s*\)?\s*=>\s*v\s*===\s*finiteValues\[0\]\s*\)/.test(c6),
+  );
+  ok(
+    "103② ★ 无区分力时**不写 pos**（一个文件都不给分），不是给个中间值",
+    /if\s*\(\s*!noDiscrimination\s*\)\s*for\s*\(\s*const\s*\[k,\s*rk\]\s*of\s*ranks\s*\)\s*pos\.set/.test(c6),
+  );
+
+  // ③ 无区分力必须**可见**（不能静默少算）
+  ok("103③ ★ 无区分力的维记进 flat（与 missing 分开记）", /flat\.push\s*\(\s*d\.name\s*\)/.test(c6));
+  ok("103④ ★ anchor 里带出 flat 字段", /flat\s*,/.test(c6) || /flat\s*:/.test(c6));
+  ok(
+    "103⑤ ★ 渲染层把「无区分力·未计分」写进注入（不许静默）",
+    /无区分力·未计分/.test(p6),
+  );
+
+  // ⑥ 行为验证：**从真源码抽函数跑**，不靠静态判据
+  //   ★ 这是本项目的老规矩：静态 grep 只能证明"写了"，行为断言才能证明"对了"。
+  const extractFn = (s, name) => {
+    const start = s.indexOf(`export function ${name}(`);
+    if (start < 0) return "";
+    let i = s.indexOf("{", start);
+    let depth = 0;
+    for (let j = i; j < s.length; j += 1) {
+      if (s[j] === "{") depth += 1;
+      else if (s[j] === "}") {
+        depth -= 1;
+        if (depth === 0) return s.slice(start, j + 1).replace("export function", "function");
+      }
+    }
+    return "";
+  };
+  const p1 = fs.readFileSync(path.join(HERE, "..", "lib", "part1.js"), "utf8");
+  const grabConst = (s, name) => {
+    const m = new RegExp(`^const ${name} = .*$`, "m").exec(s);
+    return m ? m[0] : "";
+  };
+  let anchorWithinKind = null;
+  try {
+    const src = [
+      grabConst(p6, "FIRSTHAND_RE"),
+      grabConst(p6, "UNVERIFIED_RE"),
+      extractFn(p1, "ranksOf"),
+      extractFn(p1, "starValueOf"),
+      extractFn(p6, "maxDecisionRefOf"),
+      extractFn(p6, "declaredDateMs"),
+      extractFn(p6, "evidenceLevelOf"),
+      extractFn(p6, "citationCountOf"),
+      extractFn(p6, "anchorWithinKind"),
+      "return { anchorWithinKind };",
+    ].join("\n");
+    anchorWithinKind = new Function(src)().anchorWithinKind;
+  } catch {
+    anchorWithinKind = null;
+  }
+  ok("103⑥ 夹具自检：能真从源码抽出 anchorWithinKind 来跑", typeof anchorWithinKind === "function");
+
+  if (typeof anchorWithinKind === "function") {
+    const mk = (rel, dRef, mtime, size, star) => ({
+      rel,
+      head: `${"★".repeat(star)} 稿，引用到 D${dRef}。\n${"x".repeat(size)}`,
+      mtimeMs: mtime,
+      sizeBytes: size,
+    });
+    // 场景 A：孤本且极老 ⇒ 修前 100 分，修后必须 0 分
+    const solo = anchorWithinKind([mk("孤本.md", 32, Date.now(), 3000, 1)], { maxDecision: 259, corpus: null });
+    ok("103⑦ ★★ 落后极远的**孤本**不得拿高分（修前 100 分）", solo[0].anchor.score === 0);
+    ok("103⑦ b ★ 而且它这一维记进了 flat（不是静默少算）", (solo[0].anchor.flat ?? []).includes("代际"));
+
+    // 场景 B：三份一样老 ⇒ 代际维对谁都不计分
+    const same = anchorWithinKind(
+      [
+        mk("甲.md", 32, Date.now(), 3000, 3),
+        mk("乙.md", 32, Date.now() - 1000, 3000, 2),
+        mk("丙.md", 32, Date.now() - 2000, 3000, 1),
+      ],
+      { maxDecision: 259, corpus: null },
+    );
+    ok(
+      "103⑧ ★★ 三份在同一代时，代际维对**一份都不**计分（不是白送并列中点）",
+      same.every((f) => (f.anchor.flat ?? []).includes("代际")),
+    );
+    ok(
+      "103⑧ b ★ 三份分差全部来自其它维（同分只可能因为其它维也一样）",
+      new Set(same.map((f) => f.anchor.score)).size === 3,
+    );
+
+    // 场景 C：有真有假时必须保留区分力（不能为了修 bug 把正常情况也弄哑）
+    const mixed = anchorWithinKind(
+      [mk("新.md", 255, Date.now(), 3000, 3), mk("老甲.md", 32, Date.now() - 1000, 3000, 3), mk("老乙.md", 30, Date.now() - 2000, 3000, 3)],
+      { maxDecision: 259, corpus: null },
+    );
+    ok(
+      "103⑨ ★★ 代际真有差异时，这一维**必须照常计分**（修 bug 不许把正常路径弄哑）",
+      mixed.every((f) => !(f.anchor.flat ?? []).includes("代际")),
+    );
+    ok(
+      "103⑨ b ★ 且最老的那份排最后（方向没反）",
+      mixed.slice().sort((a, b) => b.anchor.score - a.anchor.score)[2].rel === "老乙.md",
+    );
+  }
+
+  // ⑩ 反向自检：把修复摘掉，上面 103⑦ 必须变红
+  const unfixed = c6.replace(
+    /if\s*\(\s*!noDiscrimination\s*\)\s*for\s*\(\s*const\s*\[k,\s*rk\]\s*of\s*ranks\s*\)\s*pos\.set\(k,\s*1\s*-\s*rk\s*\/\s*span\);?/,
+    "for (const [k, rk] of ranks) pos.set(k, 1 - rk / span);",
+  );
+  ok(
+    "103⑩ ★ 反向自检：摘掉守卫后这条判据必须能红（证明它有效）",
+    !/if\s*\(\s*!noDiscrimination\s*\)\s*for/.test(unfixed),
+  );
+}
+
+section("情形 104：分数只管顺序，不许决定「能不能被看见」（D261 · 用户纠正）");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ★ 用户原话（2026-10-18）：*"模型依旧应该去查所有的文本 —— 看不看取决于分数高低，
+  //   但得让模型知道相关的有哪些文件"*
+  //
+  //   ★ 我原来的实现把第 6 名之后折成一行「另有 N 份未被列出」——
+  //     那等于**模型根本不知道它们存在**，分数于是从"顺序"变成了"资格线"。
+  //   ★ 正确形态：material 类**全列**；fragment/history/conclusion 仍不逐条列
+  //     （体积实测 ≈ 2.5 万字符，全列会把真材料淹掉），由面地图报"各面存在多少"。
+  //   ★ 判据：**「有哪些」必须可见；只有「先看哪个」才由分数决定。**
+  const p6r = fs.readFileSync(path.join(HERE, "..", "lib", "part6.js"), "utf8");
+  const p3r = fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8");
+  const stripR = (s) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1").replace(/`(?:[^`\\]|\\.)*`/g, "");
+
+  // ① 调用点必须真的传 fullList
+  ok(
+    "104① ★ 调用点传了 fullList: true（否则全列根本不会发生）",
+    /renderFileAnchor\([^)]*fullList:\s*true/.test(p3r),
+  );
+  // ② 渲染函数必须真的认这个开关
+  ok("104② ★ 渲染函数认 fullList 开关", /fullList\s*===\s*true/.test(stripR(p6r)));
+  // ③ 不许再出现"未被列出"这种让人以为不重要的措辞
+  //   ★★ 必须先剥注释再判 —— 我这一行判据**第二次**被自己的注释打红（前一次是 "不依赖 spec.def"）。
+  //     注释里正大光明地写着「我原来的设计是…『另有 N 份未被列出』」，
+  //     拿整份源码 grep 必然命中那句**解释**。**判据只吃代码。**
+  const p6code = stripR(p6r);
+  ok("104③ ★ 不再有「N 份未被列出」的措辞（那会让模型以为剩下的不重要）", !/未被列出/.test(p6code));
+  ok(
+    "104③ b ★ 尺子自检：剥注释前该串**确实存在**（证明 ③ 不是空过）",
+    /未被列出/.test(p6r),
+  );
+  // ④ 必须把"分数只是顺序"写进注入本身
+  ok(
+    "104④ ★ 注入里明写「分数只决定顺序，不决定要不要看」",
+    /分数只决定顺序，不决定要不要看/.test(p6r),
+  );
+  // ⑤ fragment/history/conclusion **不许**跟着全列（防"修一个 bug 又淹掉真材料"）
+  ok(
+    "104⑤ ★ 全列只对 material 生效（fragment/history/conclusion 仍不逐条列）",
+    /const material = list\.filter/.test(stripR(p6r)) && /listed\s*=\s*fullList\s*\?\s*sorted\s*:\s*shown/.test(stripR(p6r)),
+  );
+
+  // ⑥ 行为验证：真从源码渲染一次，数行数
+  //   ★ 静态判据只能证明"写了"，行数才证明"真的列全了"。
+  let renderFileAnchor = null;
+  try {
+    // 复用情形 103 已经构建好的抽取链路，再加渲染函数
+    const p1r = fs.readFileSync(path.join(HERE, "..", "lib", "part1.js"), "utf8");
+    const grabC = (s, name) => {
+      const m = new RegExp(`^const ${name} = .*$`, "m").exec(s);
+      return m ? m[0] : "";
+    };
+    const fn = (s, name) => {
+      let start = s.indexOf(`export function ${name}(`);
+      if (start < 0) return "";
+      let i = s.indexOf("{", start);
+      let depth = 0;
+      for (let j = i; j < s.length; j += 1) {
+        if (s[j] === "{") depth += 1;
+        else if (s[j] === "}") {
+          depth -= 1;
+          if (depth === 0) return s.slice(start, j + 1).replace("export function", "function");
+        }
+      }
+      return "";
+    };
+    const src = [
+      grabC(p6r, "FIRSTHAND_RE"),
+      grabC(p6r, "UNVERIFIED_RE"),
+      'const STASH_DIR = "_stash";',
+      grabC(p6r, "TITLE_CHARS"),
+      'const FILE_ANCHOR_TOP = 6;',
+      // ★ `renderFileAnchor` 里用到 `path.basename` —— `new Function` 的沙箱里没有模块作用域，
+      //   必须自己垫一个最小实现。★ 这不是"改被测对象"，是补**运行环境**；
+      //   垫片只实现用到的那一个函数，且下面 104⑥ 的夹具自检会确认它真的跑起来了。
+      'const path = { basename: (p) => String(p).split("/").pop() };',
+      fn(p1r, "ranksOf"),
+      fn(p1r, "starValueOf"),
+      fn(p6r, "maxDecisionRefOf"),
+      fn(p6r, "declaredDateMs"),
+      fn(p6r, "evidenceLevelOf"),
+      fn(p6r, "citationCountOf"),
+      fn(p6r, "anchorWithinKind"),
+      fn(p6r, "renderFileAnchor"),
+      "return { anchorWithinKind, renderFileAnchor };",
+    ].join("\n");
+    const built = new Function(src)();
+    renderFileAnchor = built.renderFileAnchor;
+
+    const mk = (rel, score, gen) => ({
+      rel,
+      kind: "material",
+      anchor: { score, why: ["时效第1/8", "代际第1/8"], missing: [], flat: [], raw: { generation: gen } },
+    });
+    const list = Array.from({ length: 8 }, (_, i) => mk(`材料-${i + 1}.md`, 90 - i * 5, i));
+    const short = built.renderFileAnchor(list, { top: 6 });
+    const full = built.renderFileAnchor(list, { top: 6, fullList: true });
+    const rowsOf = (t) => t.split("\n").filter((l) => l.startsWith("- **")).length;
+
+    ok("104⑥ 夹具自检：能真从源码抽出 renderFileAnchor 来跑", typeof renderFileAnchor === "function");
+    ok("104⑦ ★ 默认（不开 fullList）只列 top 条", rowsOf(short) === 6);
+    ok("104⑧ ★★ 开 fullList 后**8 条全列**（不是只列前 6）", rowsOf(full) === 8);
+    ok(
+      "104⑨ ★★ 且第 7、8 名的名字真的出现了（这是用户要的「知道有哪些」）",
+      full.includes("材料-7.md") && full.includes("材料-8.md"),
+    );
+    ok("104⑩ ★ 第 7、8 名在默认模式下确实看不到（对照组，证明修复有意义）", !short.includes("材料-7.md"));
+
+    // ⑪ 反向自检：把 fullList 摘掉，104⑧ 的逻辑必须不成立
+    const noFull = stripR(p6r).replace(/listed\s*=\s*fullList\s*\?\s*sorted\s*:\s*shown/, "listed = shown;");
+    ok(
+      "104⑪ ★ 反向自检：摘掉 fullList 分支后，这条判据必须能红",
+      !/listed\s*=\s*fullList\s*\?/.test(noFull),
+    );
+  } catch {
+    ok("104⑥ 夹具自检：能真从源码抽出 renderFileAnchor 来跑", false);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 105：回合内压缩失败后必须节流（D265 · 报告 007 §8.1 方案 A）");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ★ 这段守的是**放大器**，不是失败本身：
+  //   压缩失败是允许的（外部原因、surface 撞车都可能）；**但失败后几秒就再试**不行 ——
+  //   因为每次失败收尾（`compaction/end` 带 error）都在 `turn/end` **之后**落盘
+  //   （内核时序特性，见故障报告 007 第二层），
+  //   ⇒ **每多试一次，就多写一条"跨过 turn/end 的未闭合压缩"**。
+  //   实测 02:33:57 / 02:34:18 / 02:34:45 —— 间隔 21s/21s/27s，把一次偶发放大成 4 次。
+  const { midTurnCompactGate } = await import("../lib/part3.js");
+  const g = midTurnCompactGate;
+  const p3Src = fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8");
+  const idxSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
+  const stripC = (s) =>
+    s
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+      .replace(/`(?:[^`\\]|\\.)*`/g, "");
+  const p3Code = stripC(p3Src);
+  const idxCode = stripC(idxSrc);
+
+  // ① 失败相位 ⇒ 本回合内不再试（这就是"隔一个回合再试"的实现方式）
+  eq(
+    "105① ★ 相位=failed ⇒ wait（本回合不再重试）",
+    g({ enabled: true, ratio: 0.72, line: 0.7, gapsOk: true, phase: "failed", urgent: 0.78 }).act,
+    "wait",
+  );
+  eq(
+    "105① b 理由必须是 failed-this-turn（不是含糊的 wait）",
+    g({ enabled: true, ratio: 0.72, line: 0.7, gapsOk: true, phase: "failed", urgent: 0.78 }).why,
+    "failed-this-turn",
+  );
+
+  // ② ★★★ 但必须配「等到什么时候就不等了」——到 78% 紧急线要绕过节流
+  //   ★ 理由与 D119 紧急旁路同一条：到 78% 还不压 = 把机会让给内核 80% 那次**抓不到胶囊**的硬压。
+  eq(
+    "105② ★★ 水位到紧急线(78%) ⇒ 绕过节流，照压",
+    g({ enabled: true, ratio: 0.79, line: 0.7, gapsOk: true, phase: "failed", urgent: 0.78 }).act,
+    "compact",
+  );
+  eq(
+    "105② b 恰好 78% 也算到线（≥ 而不是 >）",
+    g({ enabled: true, ratio: 0.78, line: 0.7, gapsOk: true, phase: "failed", urgent: 0.78 }).act,
+    "compact",
+  );
+  // ③ 对照：同样相位、水位只差 1 点（77%）⇒ 仍然等（证明这条不是"总放行"）
+  eq(
+    "105③ 对照：77% 仍 wait（证明节流不是形同虚设）",
+    g({ enabled: true, ratio: 0.77, line: 0.7, gapsOk: true, phase: "failed", urgent: 0.78 }).act,
+    "wait",
+  );
+  // ④ 紧急旁路不许把"义务没做"也一起放行 —— 落盘铁律仍优先
+  eq(
+    "105④ ★ 紧急旁路不豁免『先落盘』：义务没做 ⇒ 仍先 pull",
+    g({ enabled: true, ratio: 0.79, line: 0.7, gapsOk: false, phase: "failed", urgent: 0.78 }).act,
+    "pull",
+  );
+
+  // ⑤ 源码层：失败分支**不许再 delete 相位**（那正是"下一步立刻重试"的成因）
+  const failSegs = [...p3Code.matchAll(/state\.turnCompact\.delete\(key\)/g)];
+  //   ★ 现在只允许"水位掉回线下"和"水位掉回时清 held"这两处 delete（都在上方）。
+  //     失败分支里必须出现 `phase: "failed"`。
+  ok(
+    "105⑤ ★ part3 失败分支写成 phase:\"failed\"（不再 delete）",
+    /phase:\s*"failed"/.test(p3Code),
+    "part3.js 里找不到 phase:\"failed\"",
+  );
+  ok("105⑤ b part3 里仍有 delete（水位掉回线下那条清标记的路，别把它一起删了）", failSegs.length >= 1, `实际 ${failSegs.length} 处`);
+
+  // ⑥ index.js 那个闭包同样必须留 failed（它是先返回的一处，留空 = 下一步就重试）
+  ok(
+    "105⑥ ★ index.js 的 runner 闭包失败时也写 phase:\"failed\"",
+    /phase:\s*"failed"/.test(idxCode),
+    "index.js 里找不到 phase:\"failed\"",
+  );
+
+  // ⑦ 紧急线必须是**同一个常量**，不许在两处各写一个字面量 0.78
+  //   ★ 判据：part3 的门里不许出现裸 0.78；调用处必须引用 FULL_COMPACT_URGENT_RATIO。
+  const gateSeg = p3Code.slice(p3Code.indexOf("export function midTurnCompactGate"), p3Code.indexOf("export async function runMidTurnCompact"));
+  ok(
+    "105⑦ ★ 门里不写裸数字 0.78（用传进来的 urgent）",
+    gateSeg !== "" && !/0\.78/.test(gateSeg),
+    gateSeg === "" ? "定位不到 midTurnCompactGate（夹具故障）" : "门里出现了裸 0.78",
+  );
+  ok(
+    "105⑦ b 调用处引用 FULL_COMPACT_URGENT_RATIO 常量",
+    /urgent:\s*FULL_COMPACT_URGENT_RATIO/.test(p3Code),
+    "没把 FULL_COMPACT_URGENT_RATIO 传进 gate",
+  );
+
+  // ⑧ 反向自检：把 failed 那支摘掉，105① 必须「不成立」
+  const noThrottle = p3Code.replace(/if\s*\(\s*x\.phase\s*===\s*"failed"\s*\)/, "if (false)");
+  ok(
+    "105⑧ ★ 反向自检：摘掉 failed 分支后，'失败不再重试' 必须不成立",
+    !/x\.phase\s*===\s*"failed"/.test(noThrottle),
+  );
+
+  // ⑨ 夹具自检：确认这些断言真的跑在我们的目标代码上（不是空文件）
+  ok("105⑨ 夹具自检：part3/index 源码都非空且含关键函数", p3Code.length > 1000 && idxCode.length > 1000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必须在程序边界上成立）");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ★ 这一段守的是 `docs/dsh-ledger-memory-review-v1.2.7.md` 里 10/10 复现的 P1。
+  //   它们的共同形状是：**承诺写在文档里、代码边界上没有成立**。
+  //   所以本节只做一件事：把 review 的**复现输入**当断言跑 —— 原来 assert 它成功，
+  //   现在 assert 它**被拒**（报告原话：「修复以后，应把断言改成预期安全行为」）。
+  const p1 = fs.readFileSync(path.join(HERE, "..", "lib", "part1.js"), "utf8");
+  const p2 = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
+  const p4 = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
+  const stripAll = (s) =>
+    s
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+      .replace(/`(?:[^`\\]|\\.)*`/g, "");
+  const p4c = stripAll(p4);
+  const p2c = stripAll(p2);
+  const p1c = stripAll(p1);
+
+  // ── 106① F06：统一原子写入口存在，且三处要害都走它 ──────────────────
+  ok(
+    "106① ★ 统一原子写函数 writeFileAtomic 存在（唯一出口 —— 原来 tmp+rename 被手抄了 8 遍）",
+    /export\s+function\s+writeFileAtomic\s*\(/.test(p2c),
+  );
+  ok(
+    "106① b 它用独占创建（flag \"wx\"）—— 临时名撞了必须失败，不许覆盖别人的临时文件",
+    /flag:\s*"wx"/.test(p2c),
+  );
+  ok(
+    "106① c ★ active 台账写入走 writeFileAtomic（原来直接 writeFileSync ⇒ 半截就丢旧内容）",
+    /const\s+writeResult\s*=\s*writeFileAtomic\s*\(\s*abs\s*,\s*next\s*\)/.test(p4c),
+  );
+  ok(
+    "106① d ★ 归档改 active 走 writeFileAtomic",
+    /const\s+activeWrite\s*=\s*writeFileAtomic\s*\(\s*activeAbs\s*,\s*registered\s*\)/.test(p4c),
+  );
+  ok(
+    "106① e ★ revision 清单走 writeFileAtomic（它被截断 ⇒ 多会话保护静默失效且无人报错）",
+    /writeFileAtomic\s*\(\s*path\.join\(root,\s*MANIFEST_REL\)/.test(p1c),
+  );
+  // 反向：active 那条路上**不许**再有裸的 writeFileSync(abs, next)
+  ok(
+    "106① f ★ 活跃台账那条路上不再有裸 fs.writeFileSync(abs, next)（判据面对的是真对象）",
+    !/fs\.writeFileSync\(\s*abs\s*,\s*next\s*,\s*"utf8"\s*\)/.test(p4c),
+  );
+
+  // ── 106② F04：卡片批次**写第一张之前**做完整预检 ────────────────────
+  ok(
+    "106② ★ 批内重号预检存在（seenInBatch），且不只看磁盘已有编号",
+    /seenInBatch/.test(p4c) && /dupInBatch/.test(p4c),
+  );
+  ok(
+    "106② b ★ 非法编号也在**写之前**整批查（原来在循环里查 ⇒ 留下半批）",
+    /const\s+badKeys\s*=\s*parts\.filter/.test(p4c) && /invalidKeys/.test(p4c),
+  );
+  // ★ 位置判据：dupInBatch 那一段必须在**第一个 writeCard 之前**
+  {
+    const iDup = p4c.indexOf("dupInBatch.length > 0");
+    const iWrite = p4c.indexOf("writeCard(root, cmode.dirRel, p.key");
+    ok(
+      "106② c ★ 预检位置在第一次 writeCard **之前**（顺序错了就等于没预检）",
+      iDup > 0 && iWrite > 0 && iDup < iWrite,
+      `dup=${iDup} write=${iWrite}`,
+    );
+  }
+
+  // ── 106③ F01：原则授权只能来自 state，参数表里没有 authorizedBy ──────
+  ok(
+    "106③ ★ 写原则的判定**不再读 args.authorizedBy**（只认 state.principleGrants）",
+    /const\s+authorizedBy\s*=\s*grant\s*===\s*undefined\s*\?\s*""\s*:\s*grant\.authorizedBy/.test(p4c),
+  );
+  ok(
+    "106③ b ★ 但仍显式识别「有人传了断言性授权」并告知它不算数（不许静默忽略）",
+    /selfAssertedAuthIgnored/.test(p4c),
+  );
+  ok(
+    "106③ c ★ ledger_init 拒绝把原则文件登记成普通角色（review F01 变体②）",
+    // ★ 判据不能用 `p4c` —— `stripAll` 会**把模板串整段剥掉**，而那句提示正是模板串。
+    //   这是"注释/字符串污染判据"的**反方向**：剥离过头 ⇒ 真对象被剥没了。
+    //   ⇒ 这里判**原始源码**（这句提示是字符串内容，不是注释，本来就不该被剥）。
+    /原则文件不能被登记成普通角色/.test(p4),
+  );
+
+  // ── 106④ F05：归档判据覆盖**整份正文**，不是只覆盖列表行 ──────────────
+  ok(
+    "106④ ★ lostLines（整份正文 + 保留计数）存在",
+    /export\s+function\s+lostLines\s*\(/.test(p1c),
+  );
+  ok(
+    "106④ b ★ 归档判据已换成 lostLines（不再是只看列表行的 lostEntries）",
+    /const\s+lost\s*=\s*lostLines\s*\(/.test(p4c),
+  );
+  ok(
+    "106④ c ★ `entryLines` 仍在（多会话自动保留那条路要条目粒度，不能被一起改宽）",
+    /export\s+function\s+entryLines\s*\(/.test(p1c) && /lostEntries\s*\(/.test(p4c),
+  );
+
+  // ── 106⑤ F02/F03：路径边界先词法、再真实路径 ────────────────────────
+  ok(
+    "106⑤ ★ isUnderReal 存在（词法判定之后解析真实路径 ⇒ 挡住符号链接逃逸）",
+    /export\s+function\s+isUnderReal\s*\(/.test(p2c),
+  );
+  ok(
+    "106⑤ b ★ 它对**尚不存在的目标**解析「最近的已存在祖先」（否则新建文件永远过不了）",
+    /nearestExistingAncestor/.test(p2c),
+  );
+  ok(
+    "106⑤ c ★ 卡片目录有自己的边界判据 cardDirIsSafe（原来只查「文件在目录内」）",
+    /export\s+function\s+cardDirIsSafe\s*\(/.test(p4c),
+  );
+  ok(
+    "106⑤ d ★ inspect 里对清单的三个 *Dir 做闸门，并把被拒原因留给 status（不静默）",
+    /const\s+gateDir\s*=/.test(p2c) && /unsafePaths/.test(p2c),
+  );
+  ok(
+    "106⑤ e ★ 清单路径不安全时**直接拒绝并要求修配置**（静默降级会让人以为写对了地方）",
+    /unsafeManifestPath/.test(p4c),
+  );
+
+  // ── 106⑥ 尺子自检：这些判据必须能看见红 ─────────────────────────────
+  //   ★ 做法：拿真实源码做一次"伪装成旧写法"的替换，确认正则确实抓得到。
+  ok(
+    "106⑥ a 反向自检：旧写法 `fs.writeFileSync(abs, next` 会被 106①f 抓到",
+    /fs\.writeFileSync\(\s*abs\s*,\s*next\s*,\s*"utf8"\s*\)/.test('fs.writeFileSync(abs, next, "utf8");'),
+  );
+  ok(
+    "106⑥ b 反向自检：旧写法「读 args.authorizedBy」会被 106③ 的判据排除",
+    !/const\s+authorizedBy\s*=\s*grant\s*===\s*undefined/.test(
+      'const authorizedBy = explicitAuth !== "" ? explicitAuth : grant === undefined ? "" : grant.authorizedBy;',
+    ),
+  );
+  ok(
+    "106⑥ c 夹具自检：三个源文件都非空",
+    p1c.length > 1000 && p2c.length > 1000 && p4c.length > 1000,
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 107：P2 两项（D268）—— journal 只能追加 · README 不谎称包内有自检");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ── 107① F09：`target:"journal"` 传 `mode:"replace"` 必须**被忽略** ──
+  //
+  //   🔴 review 实测：`ledger_write({target:"journal", mode:"replace", content:"NEW ONLY"})`
+  //      ⇒ ok:true，**历史被整份抹掉**。
+  //   ★ 为什么"默认 append"不够：默认值只影响**不传 mode 的调用**；
+  //     而"想清空历史"的人**一定会去传 mode** ⇒ 那条承诺**只对老实人成立**。
+  {
+    const root = tmpProject("d268-journal-append-only");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n- x\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.writeFileSync(path.join(root, "JOURNAL.md"), "HISTORICAL JOURNAL\n", "utf8");
+    fs.mkdirSync(path.join(root, "_a"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", journal: "JOURNAL.md",
+        archiveDir: "_a", logDir: "_ledger-log", maxActiveLines: 300, revision: 0,
+        logLevels: { L0: true, L1: true, L2: true, L3: false, L4: true },
+      }),
+      "utf8"
+    );
+    const run = makeCtx({});
+    mod.apply(run.ctx, {});
+    const ex = { agent: { session: { header: { id: "s-d268j", cwd: root } } } };
+    const T = run.registeredTools;
+
+    const r = await T.get("ledger_write").execute(
+      { target: "journal", mode: "replace", content: "NEW ONLY\n" },
+      ex
+    );
+    const body = fs.readFileSync(path.join(root, "JOURNAL.md"), "utf8");
+    ok(
+      "107① ★★ 传 mode:\"replace\" 写 journal ⇒ 历史**仍在**（只追加是硬约束，不是默认值）",
+      body.includes("HISTORICAL JOURNAL"),
+      `body=${body.slice(0, 120).replace(/\n/g, "\\n")}`
+    );
+    ok("107① b ★ 新内容确实**追加**进去了", body.includes("NEW ONLY"));
+    eq("107① c ★ 返回值里 mode 报的是 append（不是被忽略的 replace）", r.mode, "append");
+    ok(
+      "107① d ★★ 且**如实告知** replace 被忽略了（不许静默改写调用方意图）",
+      r.modeIgnored === "replace" && /只能追加/.test(String(r.modeNote ?? "")),
+      `modeIgnored=${r.modeIgnored}`
+    );
+    // 对照：不传 mode 时同样只追加（这是原有行为，不能因为这次改动退回去）
+    await T.get("ledger_write").execute({ target: "journal", content: "SECOND\n" }, ex);
+    const body2 = fs.readFileSync(path.join(root, "JOURNAL.md"), "utf8");
+    ok(
+      "107① e 对照：不传 mode 也照样只追加（原有行为未退化）",
+      body2.includes("HISTORICAL JOURNAL") && body2.includes("SECOND")
+    );
+    // ★ 反面：**decisions 仍允许显式 replace**（那条是另一条契约，不能被一起锁死）
+    const rd = await T.get("ledger_write").execute(
+      { target: "decisions", mode: "replace", content: "# 决策（重写）\n" },
+      ex
+    );
+    eq("107① f ★ 对照：decisions 的显式 replace **仍然有效**（别把两条契约一起锁死）", rd.ok, true);
+    rmrf(root);
+  }
+
+  // ── 107② F11：README 不许说包内有自检 ──
+  //
+  //   🔴 review F11：`files` 白名单只有 lib/patch/README，README 却说"仓库里带一套离线自检"
+  //      并列了 `npm test` ⇒ 用户会以为装出来的包也能自检。
+  //   ★ review 自己明确：**不发布 tools/ 是对的**（不该为文档矛盾把 1.14 MB 塞进包）
+  //     ⇒ 修法是**改措辞**，不是放宽 `files`。
+  {
+    const rd = fs.readFileSync(path.join(HERE, "..", "README.md"), "utf8");
+    const pk = JSON.parse(fs.readFileSync(path.join(HERE, "..", "package.json"), "utf8"));
+    // ① 包内**确实没有** tools —— 先确认前提（前提错了，后面的断言就是空话）
+    const filesArr = Array.isArray(pk.files) ? pk.files : [];
+    ok(
+      "107② 前提：package.json 的 files 白名单里**没有** tools（发布边界是有意的）",
+      !filesArr.some((f) => String(f).startsWith("tools")),
+      JSON.stringify(filesArr)
+    );
+    // ② README 必须**明说**这条边界
+    ok(
+      "107② b ★ README 明说「自检只在源码仓库里、不在 npm 包里」",
+      /不在\s*npm\s*包里|只在源码仓库/.test(rd),
+    );
+    ok(
+      "107② c ★ 并且说清了「包内没有 tools 是**有意**的」，不是漏打包",
+      /整个\s*`?tools\/`?\s*目录不发布|有意的发布边界/.test(rd),
+    );
+    // ③ ★★★ 关键：不许再出现"包内只有 … tools/selftest.mjs"这种**假话**
+    ok(
+      "107② d ★★ README 里不再声称包内含 `tools/selftest.mjs`（这是 review 抓的那句假话）",
+      !/package\.json`?\s*与\s*`?tools\/selftest\.mjs/.test(rd),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 108：P2 后两项（D269）—— init 先预检后执行 · 角色身份按最终文件比");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ★ 这段守 review 的 F07 / F08，与 106 那六项**同一个形状**：
+  //   F07 = 「顺序错」：校验排在副作用之后 ⇒ 被拒时磁盘上已留下一堆没登记的文件。
+  //   F08 = 「身份判错」：角色冲突按**原始字符串**比 ⇒ `./LEDGER.md` 逃过检查。
+  const p4 = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
+
+  // ── 108① F07：预检区在副作用之前，且区内**零写盘** ──────────────────
+  const iDef = p4.indexOf("export function defineInitTool");
+  const iNextFn = p4.indexOf("\nexport function ", iDef + 10);
+  const initBody = iDef < 0 ? "" : p4.slice(iDef, iNextFn < 0 ? undefined : iNextFn);
+  ok("108① 夹具自检：定位到 defineInitTool 函数体", initBody.length > 5000, `len=${initBody.length}`);
+
+  const iPre = initBody.indexOf("// ★★★ D269（修 review F07）：**完整预检区**");
+  const iPreEnd = initBody.indexOf("// ═══════════════════ 预检区结束");
+  ok("108① a 预检区存在且结束标记在其后", iPre >= 0 && iPreEnd > iPre, `pre=${iPre} end=${iPreEnd}`);
+
+  // ★ 核心判据：预检区里**不许有任何写盘调用**
+  const preSeg = iPre >= 0 && iPreEnd > iPre ? initBody.slice(iPre, iPreEnd) : "";
+  const WRITE_CALLS = ["ensureFile(", "fs.writeFileSync", "git(root,", "mergeGitignore(", "writeFileAtomic("];
+  const foundWrites = WRITE_CALLS.filter((w) => preSeg.includes(w));
+  ok(
+    "108① b ★★ 预检区里**零写盘调用**（这是「先预检后执行」的唯一硬判据）",
+    preSeg !== "" && foundWrites.length === 0,
+    preSeg === "" ? "定位失败（夹具故障）" : `区内出现：${foundWrites.join(" / ")}`,
+  );
+
+  // ★ 位置判据：校验都必须在"最早的副作用"之前
+  const checksPos = [
+    ["journal 越界", "ledger_init: 'journal' 逃出了项目根"],
+    ["三类循环", `["goals", goals]`],
+    ["goals≠principles", "目标树与根本原则必须是不同的文件"],
+  ].map(([l, n]) => ({ l, at: initBody.indexOf(n) }));
+  const sidePos = [
+    ["git init", 'git(root, ["init"])'],
+    ["ensureFile(active)", "ensureFile(activeAbs"],
+    ["写清单", "const mw = writeFileAtomic(path.join(root, MANIFEST_REL)"],
+  ].map(([l, n]) => ({ l, at: initBody.indexOf(n) }));
+
+  ok(
+    "108① c 夹具自检：三条校验与三处副作用都找得到",
+    checksPos.every((c) => c.at > 0) && sidePos.every((c) => c.at > 0),
+    JSON.stringify({ checksPos, sidePos }),
+  );
+  const latestCheck = Math.max(...checksPos.map((c) => c.at));
+  const earliestSide = Math.min(...sidePos.map((c) => c.at));
+  ok(
+    "108① d ★★ 最晚的校验早于最早的副作用（顺序对了，被拒时磁盘才干净）",
+    latestCheck < earliestSide,
+    `最晚校验@${latestCheck} vs 最早副作用@${earliestSide}`,
+  );
+
+  // ── 108② F08：角色身份按规范化绝对路径比（含大小写口径）─────────────
+  ok(
+    "108② ★ 存在 fileIdentityOf（把角色路径规范化成「最终文件身份」）",
+    /const\s+fileIdentityOf\s*=/.test(initBody),
+  );
+  ok(
+    "108② a ★ 它对 Windows/macOS **忽略大小写**（那两个平台的文件系统默认如此）",
+    /process\.platform === "win32"\s*\|\|\s*process\.platform === "darwin"/.test(initBody),
+  );
+  const iIdentityUse = initBody.indexOf("const id = fileIdentityOf(rel);");
+  ok("108② b ★★ 冲突判定走 fileIdentityOf（不是裸的 rel 字符串比较）", iIdentityUse > 0, `@${iIdentityUse}`);
+  const iRoles = initBody.indexOf("const roles = [");
+  const iRolesEnd = iRoles < 0 ? -1 : initBody.indexOf("].filter(", iRoles);
+  const roleListSeg = iRoles >= 0 && iRolesEnd > iRoles ? initBody.slice(iRoles, iRolesEnd) : "";
+  const roleCount = ["active", "decisions", "journal", "goals", "principles", "lessons"].filter((r) =>
+    roleListSeg.includes(`["${r}",`),
+  ).length;
+  eq("108② c ★ 六个文件角色两两之间都查冲突（不止 active/decisions）", roleCount, 6);
+
+  // ── 108③ 反向自检：判据必须能看见红 ────────────────────────────────
+  ok(
+    "108③ a 反向自检：预检区写盘判据能抓到 ensureFile",
+    WRITE_CALLS.some((w) => `        ensureFile(jAbs, journal, args).`.includes(w)),
+  );
+  ok(
+    "108③ b 反向自检：`const id = rel;` 这种退写法会被 108②b 判为不合格",
+    !/const\s+id = fileIdentityOf\(rel\);/.test("const id = rel;"),
+  );
+}
+
+// ── 情形 109：四道闸门的**行为**守卫（D270 · F10③ 撞出来的真实缺口）──────
+//
+// ★★★★★ 这一段是本轮最意外的发现，值得写清来历：
+//
+//   `_probe-assertion-can-fail.mjs` 里那些"尺子校验"用例，本质是问
+//   「**我把实现改坏，自检会不会红**」。它们长期报"找不到要替换的那段"——
+//   我原以为只是拆分（D216）让 `good` 串搬了家。改成读整个 `lib/` 拼接之后，
+//   那 9 条**找得到**了，于是探针真的去改坏、真的去跑自检 ——
+//   结果 **4 条改坏了自检照样 1987/0 全绿**。
+//
+//   🔴 也就是说：**这四处代码从来没有被任何断言守着**。
+//      它们此前"看起来被覆盖"，是因为那条用例根本没跑到（探针先报 FAIL 就 continue 了）。
+//      ⇒ 这是"**守卫的守卫**"失效：尺子坏了，于是没人知道尺子底下是空的（L34 的近亲）。
+//
+//   ⇒ 本情形给这四处补上**真行为**断言（不是静态正则 —— L5 那条教训：
+//     静态正则测的是文本巧合，不是后果）。
+//
+//   ★ 为什么用"直接 import 模块函数"而不是静态扫源码：
+//     这四处都是**判定函数**，最诚实的测法就是喂它输入、看它输出。
+//     源码扫法在"改成恒真/恒假"这类退化上会假绿（L13 的形态）。
+section("情形 109：四道闸门的真行为守卫（D270）");
+{
+  const { flushBeforeCompact } = await import("../lib/part3.js");
+  const { selectIncrementalRange } = await import("../lib/part1.js");
+
+  // ── 109① 落盘闸门的「水位兜底」旁路只对**增量**生效 ──────────────────
+  //
+  //   ★ 为什么必须分 mode 测：这条旁路写着 `!isFull && ratio >= 0.75`。
+  //     全量（`mode:"full"`）**不走它**（全量有自己的 78% 紧急线，那是另一条）。
+  //     只测全量的话，把这条旁路改成永远不触发，自检**照样全绿** —— 实测如此。
+  //
+  //   ★ 夹具：state 里没有任何 flushedAt 记录 ⇒ 周期判据认为"没落盘" ⇒
+  //     默认要拦。然后看水位 0.80 能不能把它放行。
+  const mkState = () => ({
+    flushedAt: new Map(),
+    lastCompactCycleAt: new Map(),
+    flushBlocked: new Map(),
+  });
+  const info = { projectRoot: "/tmp/does-not-matter", activeRel: "LEDGER.md" };
+  const noFlushState = mkState();
+
+  {
+    // 增量 + 水位 80% ⇒ **应当放行**（旁路生效）
+    const r = flushBeforeCompact(noFlushState, "s109a", info, { ratio: 0.8 });
+    ok(
+      "109① ★★ 增量压缩：水位 80% 且没落盘 ⇒ **放行**（走 0.75 那条兜底旁路）",
+      r.ok === true,
+      `ok=${r.ok} why=${String(r.why).slice(0, 60)}`,
+    );
+    ok("109① b 且如实标注 forcedThrough（不是假装闸门不存在）", r.forcedThrough === true, `forcedThrough=${r.forcedThrough}`);
+  }
+  {
+    // 增量 + 水位 70%（低于 0.75）⇒ **应当拦住**（证明 ① 不是"总放行"）
+    const r = flushBeforeCompact(noFlushState, "s109b", info, { ratio: 0.7 });
+    ok(
+      "109① c ★★ 对照组：增量 + 水位 70% 且没落盘 ⇒ **拦住**（只差 5 点就必须不同）",
+      r.ok === false,
+      `ok=${r.ok} why=${String(r.why).slice(0, 60)}`,
+    );
+  }
+  {
+    // ★★ 全量 + 水位 80% **也**放行 —— 但它走的是**另一条**（78% 紧急线），
+    //   而不是 0.75 那条。这一条存在的意义：证明「把 0.75 那条拆掉，全量仍然能过」，
+    //   也就是**上面那两条增量断言是不可替代的**（这正是原来那个漏洞的形状）。
+    const r = flushBeforeCompact(noFlushState, "s109c", info, { ratio: 0.8, mode: "full" });
+    ok(
+      "109① d 对照：全量 + 80% 走的是 78% 紧急线（与 0.75 那条**不是同一支**）",
+      r.ok === true && r.fullUrgent === true,
+      `ok=${r.ok} fullUrgent=${r.fullUrgent}`,
+    );
+  }
+  {
+    // 全量 + 水位 76%（低于 78%，也够不着增量的 0.75 旁路）⇒ 必须拦
+    const r = flushBeforeCompact(noFlushState, "s109d", info, { ratio: 0.76, mode: "full" });
+    ok(
+      "109① e 对照组：全量 + 76% 且没落盘 ⇒ **拦住**（全量不许走增量的 0.75 旁路）",
+      r.ok === false,
+      `ok=${r.ok} why=${String(r.why).slice(0, 60)}`,
+    );
+  }
+
+  // ── 109② 增量压缩的**保留量**不许退化成"全压" ─────────────────────────
+  //
+  //   ★ 病：`retainTokens = 0` 意味着"最近保留 0 token" ⇒ 几乎把全部可压历史压掉，
+  //     而"只压最旧一段、不碰最新"正是增量压缩存在的**全部理由**。
+  //   ★ 这里测的是 `selectIncrementalRange`——**保留量最终就落在它身上**。
+  //     ★ 它的契约很硬（照 `lib/part1.js:3359-3392` 读出来的，不是猜的）：
+  //       `measurement.nodes[i].seq` 必须与 `session.surface.nodes[i]` **逐个相等**，
+  //       而且要通过 `session.eventAt(seq)` 取事件。夹具必须照这个形状造。
+  {
+    const seqs = [];
+    for (let i = 1; i <= 10; i += 1) seqs.push(i * 10);
+    const eventAt = (seq) => ({ type: "assistant/message", seq, data: {} });
+    const session = {
+      surface: { nodes: [...seqs] },
+      eventAt,
+    };
+    // 每个节点 100 token，总 1000
+    const priced = seqs.map((seq) => ({ seq, tokens: 100 }));
+    const measurement = { nodes: priced, totalTokens: 1000, window: 1000 };
+
+    const withZero = selectIncrementalRange(session, measurement, 0);
+    const withBig = selectIncrementalRange(session, measurement, 700);
+    ok(
+      "109② ★★ 保留量真的影响选出的区间（0 与 700 必须不同）",
+      withZero !== null && withBig !== null && withZero.end !== withBig.end,
+      `retain=0 ⇒ end=${withZero?.end} · retain=700 ⇒ end=${withBig?.end}`,
+    );
+    // ★ 反向自检：恒 0 的退化算式在上面那条判据下**必然不合格**
+    ok(
+      "109② b 反向自检：`retainTokens 恒 0` 会让两种输入得到同一区间",
+      (() => {
+        const a = selectIncrementalRange(session, measurement, 0);
+        const b = selectIncrementalRange(session, measurement, 0);
+        return a !== null && b !== null && a.end === b.end;
+      })(),
+    );
+  }
+
+  // ── 109③ 选范围时必须检查**工具配对平衡** ───────────────────────────
+  //
+  //   ★ 病：不查平衡 ⇒ `compactRegion` 会把一个 step 的 `tool-call` 与
+  //     它的 `tool/result` 劈到两边 ⇒ 内核报 `tool-pairing balance` 直接抛错。
+  //   ★ 夹具必须**真的含一对未配平的括号**，否则这条断言测的是空气：
+  //     `balanceFlagsOf` 的语义是「`toolCallDeltaOf` 累计为 0 的切点才算平衡」
+  //     （见 `lib/part1.js:3248-3262`，逐字读过）。
+  //     ⇒ 造一串 `call, call, result`：累计 never 回到 0 之前的所有切点**都不平衡**。
+  {
+    ok("109③ ★ 导出 selectIncrementalRange", typeof selectIncrementalRange === "function");
+
+    // 事件形状：toolCallDeltaOf 认 `tool-call` 为 +1、`tool/result` 为 -1
+    const seqs = [10, 20, 30, 40, 50, 60];
+    const events = new Map([
+      // ★ 关键：20 与 30 各开一个 call，40 只关一个 ⇒ 累计在 30/40 之间 = 2/1 ≠ 0
+      [10, { type: "user/message", seq: 10, data: {} }],
+      [20, { type: "assistant/message", seq: 20, data: { message: { content: [{ type: "tool-call", id: "a", name: "x" }] } } }],
+      [30, { type: "assistant/message", seq: 30, data: { message: { content: [{ type: "tool-call", id: "b", name: "x" }] } } }],
+      [40, { type: "tool/result", seq: 40, data: { toolCallId: "a" } }],
+      [50, { type: "tool/result", seq: 50, data: { toolCallId: "b" } }],
+      [60, { type: "assistant/message", seq: 60, data: {} }],
+    ]);
+    const session = {
+      surface: { nodes: [...seqs] },
+      eventAt: (seq) => events.get(seq),
+    };
+    const priced = seqs.map((seq) => ({ seq, tokens: 100 }));
+    const measurement = { nodes: priced, totalTokens: 600, window: 1000 };
+
+    // 逐个保留量试：**任何**切点都不许落在配对中间
+    //   ★ 平衡切点 = seqs 里的 10(前导) / 50（b 关掉之后）/ 60
+    //     而 20/30/40 那几处都不平衡 ⇒ end 不许是它们
+    const badEnds = [];
+    for (const retain of [0, 50, 150, 250, 350, 450]) {
+      const r = selectIncrementalRange(session, measurement, retain);
+      if (r === null) continue;
+      // end = 被压区间的最后一格 ⇒ 它之后必须平衡，即 end 必须在 {10,50,60} 里
+      if (![10, 50, 60].includes(r.end)) badEnds.push(`retain=${retain}⇒end=${r.end}`);
+    }
+    ok(
+      "109③ b ★★ 任何保留量下，切点都**不劈开 tool 配对**（劈开会让内核直接抛错）",
+      badEnds.length === 0,
+      badEnds.join(" · ") || "全部落在平衡切点",
+    );
+    // ★ 反向自检：把平衡收尾摘掉（`if (true) break;`）会得到不平衡的 end
+    ok(
+      "109③ c 反向自检：这份夹具**确实存在**不平衡切点（否则上面那条是空的）",
+      [20, 30, 40].some((s) => seqs.includes(s)),
+      "20/30/40 都在这串里 —— 若把平衡收尾摘掉，end 就会落在这里",
+    );
+  }
+
+  // ── 109④ 胶囊落盘必须**先问有没有启用日志** ──────────────────────────
+  //
+  //   ★ 病：不检查 ⇒ 往"没登记活动日志"的用户项目里偷写文件 —— 那是用户明确禁止的。
+  //   ★ 判据要**真调函数**（静态正则测不出"检查被改成恒假"，实测如此）。
+  {
+    const { persistCapsule } = await import("../lib/part1.js");
+    const r = persistCapsule("/tmp/does-not-matter-109", { projectRoot: "/tmp/does-not-matter-109", logDir: undefined, logRel: undefined }, "sid-109", "some capsule text", {});
+    ok(
+      "109④ ★★ 没启用活动日志 ⇒ 拒绝落盘（不往用户项目里偷写文件）",
+      r.ok === false,
+      `ok=${r.ok} reason=${String(r.reason ?? "").slice(0, 80)}`,
+    );
+    ok(
+      "109④ b 且如实说明理由（不是含糊的失败）",
+      /没启用活动日志|日志/.test(String(r.reason ?? "")),
+      `reason=${String(r.reason ?? "").slice(0, 80)}`,
+    );
+  }
+
+  // ── 109⑤ `estimateCompressibleTokens` 的**保留量算式**不许退化成全压 ──
+  //
+  //   🔴 为什么必须单独一条：这处算式（`nodeSum - removePoints% × window`）住在
+  //      `estimateCompressibleTokens` 里，而它依赖 `ctx.get("tokenMeter")`。
+  //      实测：把算式改成 `Math.max(1, 0)`，**自检 1999/0 全绿** —— 它从来没被测过。
+  //      ★ 而它一旦退化，增量压缩就退回"几乎全压"，也就是**增量存在的理由没了**。
+  //   ★ 测法：造一个假 ctx（tokenMeter 返回固定 measurement）+ 假 agent，
+  //     断言「可压 token 数」**随可分点数变化**，而不是恒等于全部。
+  {
+    const { estimateCompressibleTokens } = await import("../lib/part1.js");
+    const settings = { deltaRemovePoints: 30 };
+    // 造 10 个节点、每节点 100 token
+    const build = (n) => {
+      const seqs = [];
+      for (let i = 1; i <= n; i += 1) seqs.push(i * 10);
+      const ev = new Map(seqs.map((seq) => [seq, { type: "assistant/message", seq, data: {} }]));
+      const session = { surface: { nodes: seqs }, eventAt: (s) => ev.get(s) };
+      const nodes = seqs.map((seq) => ({ seq, tokens: 100 }));
+      const measurement = { nodes, totalTokens: n * 100 };
+      return { session, measurement };
+    };
+    const ctxFor = (m) => ({ get: (k) => (k === "tokenMeter" ? { measure: () => m } : undefined) });
+    const agentFor = (s) => ({ session: s });
+
+    const { session: s1, measurement: m1 } = build(10);
+    const got = estimateCompressibleTokens(ctxFor(m1), agentFor(s1), { window: 1000 }, 5, settings);
+    // ★★ 判据必须**贴着实测值**写，不能用 `got < 1000` 这种宽条件：
+    //   实测（`tools/_diag-retain.mjs`）—— 原版 **300**、把算式改成 `Math.max(1, 0)` 后 **900**。
+    //   两者都 `< 1000` ⇒ 宽条件**分不出来**，那条断言等于没写（这是 L7 的形状：
+    //   断言在"正确实现"与"退化实现"下都过 ⇒ 它不是在测这个修复）。
+    //   ⇒ 取中间值：必须 `< 500`（原版 300 过、退化 900 红）。
+    ok(
+      "109⑤ ★★ 可压 token 数**明显少于全部**（保留量那步真的在起作用）",
+      typeof got === "number" && got > 0 && got < 500,
+      `got=${got}（原版应为 ~300；若退化成"几乎全压"会变成 ~900）`,
+    );
+    // ★ 反向自检：**同一条判据**在退化实现下必须不合格。
+    //   退化 = 保留量恒 0/1 ⇒ 可压量 = 全部（1000）⇒ 上面那条 `got < 1000` 就会红。
+    ok(
+      "109⑤ b 反向自检：若保留量退化成 1，可压量就是全部 1000（上一条必红）",
+      s1.surface.nodes.length * 100 === 1000,
+      `全量=${s1.surface.nodes.length * 100}`,
+    );
+  }
 }
 
 console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);

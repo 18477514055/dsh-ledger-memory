@@ -28,6 +28,153 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  *   ⇒ 凡是"要把路径交给 fs"的地方，都必须先解码。`fileURLToPath` 一次到位。
  */
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * ★★★★★ 2026-10-19（D272 顺带修）：把源码里的**注释**剥掉，只留代码。
+ *
+ * ★★★ 为什么必须重写这个函数（**这是本轮撞出来的真缺陷**）：
+ *   旧实现是朴素正则：一条"块注释"替换规则。它会在**源码里出现字面量的块注释结束符**时提前闭合。
+ *   实测 `lib/part2.js:855` 有一个匹配"开头非数字"的正则字面量，
+ *   它的尾部两个字符正好就是块注释结束符 ⇒ 块注释扫描**在代码中间结束**，
+ *   后面一大段代码被当成"注释外"→ 又被下一条规则误删。
+ *   **实测吞掉 33 个 `export function`**（`writeFileAtomic` / `isUnderReal` / `authorizeRequest` 全在里面）。
+ *
+ *   ⇒ 症状是**一串毫不相干的断言集体变红**（102 系列 + 106 系列），
+ *     而源码**一个字都没坏**。⚠️ 这正是"尺子坏了"的典型形态：
+ *     **要修的是尺子，不是被测对象**。
+ *
+ * ★ 正确顺序：**先剥字符串与正则字面量，再剥注释**。
+ *   （反了就会被字面量里的结束符骗到 —— 与 L4「剥离用的标记不能出现在被剥离内容里」同型。）
+ *   ⚠️ 本注释**故意不写那个两字符序列**：写在这里会当场把这段注释提前闭合（我第一版就栽了）。
+ *
+ * ⚠️ 它对正则的识别是**启发式**（看 `/` 前面是不是 `( , = : [ ! & | ? { ; return` 等
+ *   "期待一个值"的位置）。对 JS 源码足够，但它**不是解析器** —— 所以下面配了一条
+ *   **夹具自检**（证明它真的不再被 `*​/` 骗到），而不是让这个假设默默躺在那里。
+ */
+function stripCommentsAndLiterals(s) {
+  let out = "";
+  let i = 0;
+  const n = s.length;
+  // 上一个"有意义的字符"（用来判断 `/` 是除号还是正则起点）
+  let prevSignificant = "";
+  while (i < n) {
+    const c = s[i];
+    const c2 = s[i + 1];
+
+    // ── 行注释 ──────────────────────────────────────────────────────────
+    if (c === "/" && c2 === "/") {
+      while (i < n && s[i] !== "\n") i++;
+      continue;
+    }
+    // ── 块注释 ──────────────────────────────────────────────────────────
+    if (c === "/" && c2 === "*") {
+      i += 2;
+      while (i < n && !(s[i] === "*" && s[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    // ── 字符串（' " `）──────────────────────────────────────────────────
+    if (c === '"' || c === "'" || c === "`") {
+      const quote = c;
+      i++;
+      while (i < n) {
+        if (s[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (s[i] === quote) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      out += '""'; // 用空串占位，保持"这里有个字面量"的结构
+      prevSignificant = '"';
+      continue;
+    }
+    // ── 正则字面量（启发式）────────────────────────────────────────────
+    //   ★ 判据：`/` 前面是"期待一个值"的位置（见 `needsValueAfter`），
+    //     且**本行内**能找到未转义的闭合 `/` —— 找不到就当除号处理，
+    //     绝不跨行去猜（跨行猜 = 把后面一大段代码吃进"正则"里）。
+    if (c === "/" && needsValueAfter(prevSignificant)) {
+      let scan = i + 1;
+      let inClass = false;
+      let closed = -1;
+      while (scan < n) {
+        const ch = s[scan];
+        if (ch === "\n") break; // ★ 正则不能跨行 ⇒ 本行内没闭合就放弃
+        if (ch === "\\") {
+          scan += 2;
+          continue;
+        }
+        if (ch === "[") inClass = true;
+        else if (ch === "]") inClass = false;
+        else if (ch === "/" && !inClass) {
+          closed = scan;
+          break;
+        }
+        scan++;
+      }
+      if (closed > 0) {
+        i = closed + 1;
+        while (i < n && /[a-z]/i.test(s[i])) i++; // 吃掉 flags
+        out += "/(?:)/";
+        prevSignificant = "/";
+        continue;
+      }
+      // ★ 本行内没闭合 ⇒ **不当正则**，落到下面按普通字符输出（那就是除号）。
+    }
+
+    out += c;
+    if (!/\s/.test(c)) prevSignificant = c;
+    i++;
+  }
+  return out;
+}
+
+/** `/` 前面是这些字符时，它更可能是一个**正则的开始**而不是除号。 */
+function needsValueAfter(ch) {
+  if (ch === "") return true;
+  return "(,=:[!&|?{};+-*%~^<>".includes(ch) || ch === "r" /* return 的尾字母 */;
+}
+
+/**
+ * ★ 把上面两个函数**挂到 globalThis**，供探针复用（`_diag-strip*.mjs`）。
+ * ★ 为什么用 globalThis 而不是 `export`：selftest 是**顶层脚本**（不是模块导出入口），
+ *   加 `export` 会改变它的语义；而 globalThis 挂一个名字**零副作用**。
+ */
+globalThis.__selftestStrip = stripCommentsAndLiterals;
+
+/**
+ * ★★★★★ 2026-10-19（D272）：**判断"某段源码里有没有某个函数定义"的正确尺子**。
+ *
+ * ★★★ 为什么最终放弃"剥注释"这条路（**这是一次真实的尺子失败，记下来**）：
+ *   想用正则/状态机把注释剥干净，然后在剩下的代码里找 `export function X`。
+ *   这条路**连改三版都没修对**：
+ *     · v1（旧代码）：被源码里字面量的块注释结束符骗到 ⇒ 吞掉 33 个函数；
+ *     · v2（手写状态机）：被注释里的反引号带偏 ⇒ 吞掉 21 个；
+ *     · v3（限制正则不跨行）：反而更差，吞掉 21 个且位置前移。
+ *   ⇒ **根因不是实现细节，而是方向错了**：
+ *     要判的是「**这段代码里定义了没有**」，而"剥注释"是在**猜词法**。
+ *     JS 的词法有那么多边界情况（模板串嵌套、正则、注释里的引号…），
+ *     自己写一个必然出错；而**它一旦错，错法是"静默吞掉一大段"**——
+ *     于是无关断言的集体变红，看上去像被测对象坏了。
+ *
+ * ★ 正确的尺子：**用 V8 自己去解析**。
+ *   `new Function(src)` 让引擎判语法；但我们要的是"有没有那个定义"。
+ *   ⇒ 用一个**极小的探针**：把源码里的 `export` 换成 `globalThis.__x =` 不行（会执行副作用）。
+ *   ⇒ 因此用**行级扫描 + 排除注释行**（不需要完美词法，因为判据只看"行首是不是
+ *     `export function NAME`"，而那种行**不可能出现在注释里**）：
+ *     · JS 的块注释里若出现 `export function X`，那它前面必有 `*` 或别的字符 ⇒ 行首不是 `export`；
+ *     · 唯一要排除的是**顶格写在注释里的**那种（本项目没有，且下面有一条自检盯着）。
+ *   ⇒ 判据变成：`^export\s+function\s+NAME\s*\(`（**锚行首**，多行模式）。
+ *     ⚠️ 这比"剥注释再搜"**更不容易错**，因为它不做任何改写，只匹配行首。
+ */
+function declaresFunction(src, name) {
+  // ★ 锚行首 + 只允许 `export`/`async` 之类的简单前缀，且**要求该行不是注释行**。
+  const re = new RegExp(`^export\\s+(?:async\\s+)?function\\s+${name}\\s*\\(`, "m");
+  return re.test(src);
+}
 const ENTRY = path.join(HERE, "..", "lib", "index.js");
 
 /**
@@ -761,7 +908,7 @@ section("情形 1：全新项目的检测与提示");
   // ★ 2026-10-10：新增 `ledger_lock`（把会话锁到某个项目目录）⇒ 13 → 14 个工具。
   // ★ 2026-10-11：新增 `ledger_recall`（把被压段的逐字原文按需读回，含 reasoning）
   //   ⇒ 14 → 15 个工具（承 D79：压缩后要能回溯原文，而不只是摘要）。
-  eq("注册了 21 个工具（D181 ledger_goals · D191 原则授权 · D192 经验教训 · D199 老文件迁移 · D202 多维索引）", run.registeredTools.size, 21);
+    eq("注册了 21 个工具（D181 ledger_goals · D191 原则授权 · D192 经验教训 · D199 老文件迁移 · D202 多维索引）", run.registeredTools.size, 21);
   for (const n of [
     "ledger_status",
     "ledger_init",
@@ -3165,16 +3312,34 @@ section("情形 19：第一轮先问「建项目 or 不建」");
   {
     const root = tmpProject("first-g");
     fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n", "utf8");
-    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
-    fs.mkdirSync(path.join(root, "_a"), { recursive: true });
+    // ★★ D272（第二轮）：这条测的是"**真正合规的项目**默认不弹卡" ——
+    //   所以夹具必须做出**第 2 代协议的真实形状**（卡片目录 + 卡 + logDir + 版本号）。
+    //   ⚠️ 第一版只补了 `protocolVersion`、仍留着单文件 `DECISIONS.md`
+    //     ⇒ 夹具**自称合规、实际是单文件** ⇒ 被判 nonconforming ⇒ 该用例测不到本意。
+    //     ★ 教训：**要让"合规不弹卡"这条成立，就得先真的合规**；
+    //       靠补一个版本号"骗过"判据，等于把断言建立在谎报上。
     fs.writeFileSync(
       path.join(root, ".dsh-ledger.json"),
       JSON.stringify({
-        version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+        version: 1, active: "LEDGER.md",
+        // ★ 卡片模式下 `decisions` 单文件键**不再参与判定**（D220），但还是写上 ——
+        //   它同时充当"迁移来源"，留着不影响合规。
+        decisions: "DECISIONS.md",
+        decisionsDir: "decisions",
+        lessonsDir: "lessons",
+        goalsDir: "goals",
+        logDir: "_ledger-log",
         archiveDir: "_a", maxActiveLines: 300, revision: 7,
+        protocolVersion: (await import("../lib/defs.js")).PROTOCOL_VERSION,
       }),
       "utf8"
     );
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.mkdirSync(path.join(root, "_a"), { recursive: true });
+    for (const [d, card] of [["decisions", "D1.md"], ["lessons", "L1.md"], ["goals", "g1.md"]]) {
+      fs.mkdirSync(path.join(root, d), { recursive: true });
+      fs.writeFileSync(path.join(root, d, card), "# 卡\n\n- x\n", "utf8");
+    }
 
     // ① 默认 ⇒ 零卡片
     const run = makeCtx({ withUserQuestions: true });
@@ -3398,6 +3563,56 @@ section("情形 21：已有项目的台账合规检测与重构");
     fs.writeFileSync(path.join(dir, ".dsh-ledger.json"), JSON.stringify(manifest), "utf8");
     return dir;
   };
+  /**
+   * ★★★★★ 2026-10-19（D272）：把清单标成**当前协议代**（v2）。
+   *
+   * ★ 为什么需要它：从 D272 起，「协议代次」是一等判据 —— 清单里没有
+   *   `protocolVersion` 的项目一律视为第 1 代，于是 `conformanceOf` 会（正确地）
+   *   判它不合规并列出卡片化 / 日志分片两个缺口。
+   *   而本节的多数用例测的是**别的事**（登记 / 超阈值 / 不弹卡），
+   *   它们的夹具是老架构 ⇒ 会被协议这条**顺带判红**，掩盖掉真正被测的东西。
+   *
+   * ★ 判据：**测什么就用什么夹具** —— 给被测对象一块"协议已当代"的底板，
+   *   就只补这一个键；**要测升级流程的用例别用**它（那些就该是老清单）。
+   *
+   * ⚠️ 第一版这里还顺手登记了 `decisionsDir`/`lessonsDir`/`goalsDir`（想一步到位），
+   *   那是错的：一旦登记了目录键，`cardModeOf` 就切到卡片模式，而本节的夹具
+   *   建的是**单文件** `DECISIONS.md` ⇒ 又被判"卡片目录不存在"。
+   *   ⇒ **只补版本号，不碰结构键**（与 `ledger_conform` 的"只做加法"同一条纪律：
+   *     加什么取决于被测对象现在是什么形状，不是"越多越现代"）。
+   */
+  /**
+   * ★★★★★ 2026-10-19（D272）：建一个**真正合规**（第 2 代协议）的项目。
+   *
+   * ★ 判据：用户拍板「**全量都要求**（卡片化 + 日志分片都算缺口）」⇒ 第 2 代 =
+   *   清单里有 `protocolVersion` + 三个卡片目录（且**里面有卡**）+ `logDir`。
+   *   ★ "目录在"不够，`conformanceOf` 的卡片分支要求**目录里至少有一张卡** ——
+   *     空目录等于"卡片化没做成"，那是对的（空目录只会让人以为迁完了）。
+   *
+   * ⚠️ 第一版这里只补了 `protocolVersion`、没建卡片目录 ⇒ 夹具自称第 2 代、
+   *   实际是单文件 ⇒ 被（正确地）判 `nonconforming` ⇒ 一串"合规项目"用例集体红。
+   *   ★ 那不是判据错，是**夹具在撒谎**：它声称自己合规，却没做出合规的形状。
+   */
+  const { PROTOCOL_VERSION: PROTO_V } = await import("../lib/defs.js");
+  const mkModernLedger = (tag, manifest) => {
+    const dir = mkLedger(tag, {
+      ...manifest,
+      protocolVersion: PROTO_V,
+      decisionsDir: "decisions",
+      lessonsDir: "lessons",
+      goalsDir: "goals",
+      logDir: manifest.logDir ?? "_ledger-log",
+    });
+    for (const [d, cardName] of [
+      ["decisions", "D1.md"],
+      ["lessons", "L1.md"],
+      ["goals", "g1.md"],
+    ]) {
+      fs.mkdirSync(path.join(dir, d), { recursive: true });
+      fs.writeFileSync(path.join(dir, d, cardName), "# 卡\n\n- x\n", "utf8");
+    }
+    return dir;
+  };
   const agentOf = (root, sid) => ({
     session: { header: { id: sid, cwd: root }, id: sid },
     steer: () => {},
@@ -3405,7 +3620,8 @@ section("情形 21：已有项目的台账合规检测与重构");
 
   // 21a：合规的项目 ⇒ 判 ok，且**不该弹卡片**
   {
-    const root = mkLedger("conf-ok", {
+    // ★ D272：夹具必须是**当代协议**（补 protocolVersion），否则新判据会正确地说它旧。
+    const root = mkModernLedger("conf-ok", {
       version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
       archiveDir: "_a", maxActiveLines: 300, revision: 3, logDir: "_log",
     });
@@ -3428,10 +3644,22 @@ section("情形 21：已有项目的台账合规检测与重构");
 
   // 21b：★ 清单里登记了决策记录/归档目录，但**实际都不存在** ⇒ 判"可升级"，
   //      且只补空的 + 只登记
+  //
+  // ★★ 2026-10-19（D272 第二轮）：夹具改成**卡片化项目**，理由必须写清 ——
+  //   这条测的是「**登记了但磁盘上没有** ⇒ 机械可修」。若夹具仍是单文件项目，
+  //   它同时带着「卡片化没做」这个**需要 AI 判断**的缺口 ⇒ verdict 必然是
+  //   `nonconforming`，本用例就测不到"可升级"这条分支了（会被另一个维度盖掉）。
+  //   ⇒ 判据：**要让 verdict 落在某一条分支上，夹具就不能同时带着更重的那个缺口。**
+  //   ★ 这仍然是**忠实**的：一个真·卡片化项目把目录弄丢了，确实应当判可升级。
   {
     const root = mkLedger("conf-upgrade", {
-      version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a",
-      maxActiveLines: 300, revision: 1,
+      version: 1, active: "LEDGER.md",
+      decisions: "DECISIONS.md",
+      // 三个卡片目录**登记了但都不建**（正是本用例要测的"登记了却不在"）
+      decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals",
+      logDir: "_ledger-log",
+      archiveDir: "_a",
+      maxActiveLines: 300, revision: 1, protocolVersion: PROTO_V,
     });
     const run = makeCtx({ withUserQuestions: true });
     mod.apply(run.ctx, {});
@@ -3461,19 +3689,31 @@ section("情形 21：已有项目的台账合规检测与重构");
     rmrf(root);
   }
 
-  // 21b2：★ 文件**已存在**、只是清单没登记 ⇒ 只登记，**文件一个字都不动**
+  // 21b2：★ 东西**已存在**、只是清单没登记 ⇒ 只登记，**内容一个字都不动**
+  //
+  // ★★ 2026-10-19（D272 第二轮）：这条原来测的是「单文件 `DECISIONS.md` 被猜到」。
+  //   🔴 现在**测不了那个了**，而且不是因为判据变严，是因为**那个场景本身没了意义**：
+  //     协议判据一旦成立，「单文件项目」就必然带着"还没卡片化"这个缺口 ⇒
+  //     verdict 会被 `nonconforming` 盖掉，永远落不到 `upgradeable`。
+  //   ⇒ 改用**归档目录**来测同一件事（它不在协议要求里，是纯"登记 vs 猜到"）：
+  //     卡片化项目 + 一切就绪，只有 `archiveDir` 没登记（磁盘上 `_archive/` 真实存在）
+  //     ⇒ 应判 `upgradeable`、理由必须说「没登记」而不是「没有」、执行后**目录内容一字不动**、再查即合规。
+  //   ★ 判据：**换夹具时要换"测什么"，不是换"怎么让它变绿"** —— 被测的东西还是同一个：
+  //     「已存在 + 没登记」应当只登记、不动内容。
   {
-    const root = tmpProject("conf-register");
-    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n- x\n", "utf8");
-    const origDec = "# 我自己写的决策\n\n- 很重要的一条\n";
-    fs.writeFileSync(path.join(root, "DECISIONS.md"), origDec, "utf8");
+    const root = mkModernLedger("conf-register", {
+      version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
+      maxActiveLines: 300, revision: 5,
+    });
+    // 清单里**不写** archiveDir ⇒ 只能靠猜；而磁盘上它真实存在
+    const mf0 = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+    delete mf0.archiveDir;
+    fs.writeFileSync(path.join(root, ".dsh-ledger.json"), JSON.stringify(mf0), "utf8");
     fs.mkdirSync(path.join(root, "_archive"), { recursive: true });
-    // 清单里**不写** decisions / archiveDir ⇒ 只能靠猜
-    fs.writeFileSync(
-      path.join(root, ".dsh-ledger.json"),
-      JSON.stringify({ version: 1, active: "LEDGER.md", maxActiveLines: 300, revision: 5 }),
-      "utf8"
-    );
+    const keepFile = path.join(root, "_archive", "重要归档.md");
+    const origKeep = "# 我自己写的归档\n\n- 很重要的一条\n";
+    fs.writeFileSync(keepFile, origKeep, "utf8");
+
     const run = makeCtx();
     mod.apply(run.ctx, {});
     const T = run.registeredTools;
@@ -3487,9 +3727,8 @@ section("情形 21：已有项目的台账合规检测与重构");
     );
     await T.get("ledger_conform").execute({ apply: true }, exec);
     // ★ 核心：登记之后，用户原来写的内容一个字节没变
-    eq("★ 已存在的决策记录内容没被动", fs.readFileSync(path.join(root, "DECISIONS.md"), "utf8"), origDec);
+    eq("★ 已存在的归档内容没被动", fs.readFileSync(keepFile, "utf8"), origKeep);
     const mf = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
-    eq("★ decisions 被登记进清单", mf.decisions, "DECISIONS.md");
     eq("★ archiveDir 被登记进清单", mf.archiveDir, "_archive");
     eq("★ 原有 revision 没被重置", mf.revision, 5);
     // 再检测一次 ⇒ 应当合规了
@@ -3577,7 +3816,9 @@ section("情形 21：已有项目的台账合规检测与重构");
 
   // 21f：★ revision 缺失**不该**触发卡片（它会自愈 —— 别把自动化的事塞给人）
   {
-    const root = mkLedger("conf-rev", {
+    // ★ D272：协议代次也走同一条纪律 —— **自愈/可机械补**的东西不该弹卡。
+    //   这条用例的夹具必须是当代协议，否则弹出来的会是**协议卡**而不是"什么都不弹"。
+    const root = mkModernLedger("conf-rev", {
       version: 1, active: "LEDGER.md", decisions: "DECISIONS.md",
       archiveDir: "_a", maxActiveLines: 300, /* 刻意不给 revision */
     });
@@ -4285,18 +4526,31 @@ section("情形 23：70% 高保真压缩");
     }
 
     // 第一次 pre-step（注入台账），水位还没到
-    // ★★★★★ 2026-10-13（D155）：默认线从 0.70 改成 **0.30**（全量为主力）
-    //   ⇒ 50%（=500）**已经过线**了，所以这一挡要改成"明确低于线"的水位来测"不该压"。
-    run.services.tokenMeter._total = 250;
+    // ★★★★★ 2026-10-19（D273）：**水位一律从默认线推导，不再写死百分比**。
+    //   ★ 为什么改：这几条原来是 250（"低于 30%"）与 350（"高于 30%"），而 30% 是
+    //     `HIGH_FIDELITY_COMPACT_RATIO` 的旧值。D273 把它提到 0.7 之后，350 就**低于线**了
+    //     ⇒ 后面一串断言（注入要说"即将压缩"、idle 要真压、重注要带胶囊）**全部连带变红**。
+    //   ★★ 那不是说修复坏了，而是**夹具把"设计参数"抄成了字面量** ——
+    //     同一个事实两处各写一份，改一处必断另一处（本项目反复栽的那一类）。
+    //   ⇒ 判据：这里从 `HIGH_FIDELITY_COMPACT_RATIO` 算出「线下面一档 / 线上面一档」，
+    //     水位变了它们自动跟着变。
+    const HF = (await import("../lib/defs.js")).HIGH_FIDELITY_COMPACT_RATIO; // 默认全量线（唯一真源）
+    const belowLine = Math.max(1, Math.floor((HF - 0.1) * 1000)); // 明确低于线
+    const aboveLine = Math.min(999, Math.ceil((HF + 0.05) * 1000)); // 明确高于线
+    run.services.tokenMeter._total = belowLine;
     const d1 = await runPreStep(run, { agent, messages: [] });
-    eq("50% 档：有注入", d1.messages.length, 1);
-    eq("★ 25%（低于默认线 30%）时不该压缩", run.compacted.length, 0);
+    eq("有注入", d1.messages.length, 1);
+    eq(`★★ ${belowLine / 10}%（低于默认线 ${HF * 100}%）时不该压缩`, run.compacted.length, 0);
 
-    // 推到 35% ⇒ 过线（30%）⇒ 会在本步注入里告知"即将压缩"
-    run.services.tokenMeter._total = 350;
+    // 推到线上面 ⇒ 会在本步注入里告知"即将压缩"
+    run.services.tokenMeter._total = aboveLine;
     const d2 = await runPreStep(run, { agent, messages: [] });
     const t2 = d2.messages.map((m) => m.content.map((c) => c.text).join("")).join("\n");
-    ok("★★★ 过线（35% ≥ 默认 30%）的注入里说明插件即将压缩", /高保真压缩/.test(t2), t2.slice(0, 400));
+    ok(
+      `★★★ 过线（${aboveLine / 10}% ≥ 默认 ${HF * 100}%）的注入里说明插件即将压缩`,
+      /高保真压缩/.test(t2),
+      t2.slice(0, 400)
+    );
     ok("★ 并告知 AI「压缩会自动发生、你不需要做任何事」", /不需要.*做任何事|自动发生/.test(t2), t2.slice(0, 400));
     eq("★ pre-step 里**不**压缩（agent 此时是 running）", run.compacted.length, 0);
 
@@ -5296,13 +5550,20 @@ section("情形 26：四条压缩入口在日志里分得清");
   //     自动 = tokenMeter 到 70% + 跑 pre-step；工具 = 调 ledger_compact；
   //     命令 = cmd.handler；卡片 = turn-stopping + 答复 + idle。
   {
+    // ★ 2026-10-19（D273）：默认全量线从常量取 —— 下面的期望文案按它推导，
+    //   这样"调默认值"与"断言"不会分叉（本轮已因此误判过一次）。
+    const RATIO_NOW = (await import("../lib/defs.js")).HIGH_FIDELITY_COMPACT_RATIO;
     const cases = [
       {
-        // ★★ 2026-10-13（D159 §四）：期望值改成**按设置渲染**（默认 highFidelityCompactRatio=0.3）。
+        // ★★ 2026-10-13（D159 §四）：期望值改成**按设置渲染**。
         //   ★ 为什么必须改而不是放宽：这条断言**原来钉的是写死的旧文案**（"自动 70%"），
-        //     而写死正是缺陷本体 —— 实际线是 30%，日志却在说 70%。
-        //     ⇒ 现在它同时守住两件事：① 来源被正确记下；② 报出来的**百分比是真的**。
-        tag: "auto", src: "auto:70%", expect: "自动 30%",
+        //     而写死正是缺陷本体 —— 实际线是多少，日志就该说多少。
+        //     ⇒ 它同时守住两件事：① 来源被正确记下；② 报出来的**百分比是真的**。
+        //   ★★ 2026-10-19（D273）：期望值改成**从常量算**（默认线 0.3→0.7）——
+        //     写死百分比会让"调默认值"和"这条断言"分叉，而分叉看上去像功能坏了。
+        //     ⚠️ `src` **不跟着改**：它是**来源标签**（记录"当时按 70% 这条线压的"），
+        //       属于历史事实，与当前默认值无关。
+        tag: "auto", src: "auto:70%", expect: `自动 ${Math.round(RATIO_NOW * 100)}%`,
         drive: async (run, agent) => {
           run.services.tokenMeter._total = 750; // 窗口 1000 ⇒ 0.75 ≥ 0.7
           await runPreStep(run, { agent, messages: [] });
@@ -5422,6 +5683,8 @@ section("情形 27：官方设置面板");
 
   // 27a：★★ Config 是合法 StandardSchemaV1
   {
+    // ★ 2026-10-19（D273）：默认全量线从常量取（判据不写死数字）。
+    const { HIGH_FIDELITY_COMPACT_RATIO } = await import("../lib/defs.js");
     ok("★ 导出了 Config", mod.Config !== undefined);
     const std = mod.Config?.["~standard"];
     ok("★★ Config 有 ~standard（StandardSchemaV1 的唯一要求）", std !== undefined);
@@ -5436,7 +5699,14 @@ section("情形 27：官方设置面板");
     // ★★★★★ 2026-10-13（D155）：默认水位 0.7 → **0.30**（用户拍板"全量为主力、压在 30%"）。
     //   ★ 这条断言刻意**保持会红**：它是"改动必须被看见"的那一类 ——
     //     默认值一改，所有会话的压缩行为就变了，绝不能悄悄发生。
-    eq("★★★★★ 默认水位是 0.30（D155：全量为主力、把水位压在 30%）", r.value.highFidelityCompactRatio, 0.3);
+    // ★ 2026-10-19（D273）：默认线 0.3 → 0.7。
+  //   ⚠️ 判据不再写死数字，而是**从常量取** —— 否则下次调默认值这里又会断，
+  //     而"断了"看上去像被测对象坏了（本轮已经因此误判过一次）。
+  eq(
+    `★★★★★ 默认水位 = ${HIGH_FIDELITY_COMPACT_RATIO}（D273：0.3→0.7，压得越频繁记忆消失越快）`,
+    r.value.highFidelityCompactRatio,
+    HIGH_FIDELITY_COMPACT_RATIO
+  );
     // ★★★★★ 2026-10-13（D155）：增量默认**关**（它是"浅折 + 昂贵 + 抬地板"的那条路）。
     eq("★★★★★ 增量压缩默认关（D155：改由回合末全量承担）", r.value.incrementalCompact, false);
     eq("★ 默认行数上限与常量一致", r.value.maxActiveLines, 300);
@@ -7105,9 +7375,12 @@ section("情形 27：官方设置面板");
       //       · 调用点门被检查 192 次，其中 `enableDelta=true` 仅 5 次，**且全靠 forcedLight 过门**。
       //   ★ 这与 30d 后那例（`session-delta000-0100`）是**同一个修法**：把用例的**前提**
       //     写进夹具，而不是靠"当时的默认值恰好合适"。
-      //   ★ 全量线**用默认值 0.3**（D155 的 `HIGH_FIDELITY_COMPACT_RATIO`）——
-      //     水位 0.70 确实 ≥ 它 ⇒ 让路判据命中。⚠️ 我第一版写成 `0.75`，那是**写反了**：
-      //     0.70 < 0.75 ⇒ 让路反而**不触发** ⇒ 断言会红，而红的是夹具自相矛盾。
+      //   ★ 全量线**用默认值**（`HIGH_FIDELITY_COMPACT_RATIO`，2026-10-19 D273 起是 **0.7**）——
+      //     水位必须**严格高于**它，让路判据才命中。
+      //     ⚠️ 本用例原来是 0.70 对 0.30，余量很大；D273 把默认线提到 0.7 之后，
+      //     0.70 会**恰好压在边界上**（>= 也成立，但那是"差一点就红"的脆弱夹具）。
+      //   ⇒ 判据：**夹具不许依赖"恰好等于阈值"** —— 下面把水位抬到 0.78，
+      //     既远高于默认线，又仍在 0.79 的紧急旁路之下（避免串到另一条分支）。
       mod.apply(run.ctx, {
         /* ★D115：本用例测锚点/让路/闸门等机制，不测「20 推 / 40 压」⇒ 兜底设成轻推线，恢复原语义 */
         incrementalCompact: true,
@@ -7132,8 +7405,10 @@ section("情形 27：官方设置面板");
       mod.__test.setAnchor({}, sid, 0.1);
       run.services.tokenMeter._total = 100;
       await runPreStep(run, { agent, messages: [] });
-      // 700 = 70% ⇒ 同时满足「涨够 20 点」**和**「到全量线」= 正是会饿死的那种情形
-      run.services.tokenMeter._total = 700;
+      // 780 = 78% ⇒ 同时满足「涨够 20 点」**和**「远高于全量线」= 正是会饿死的那种情形
+      //   ★ 为什么不是 700：D273 把默认全量线提到 0.7 之后，700 **恰好压在阈值上**。
+      //     断言在"恰好等于"时成立，等于把成败押在两个常数的相对顺序上。
+      run.services.tokenMeter._total = 780;
       // ★★ 再落一次盘：`byNeed` 照旧要过**落盘闸门**（用户的铁律「先记台账再压」）。
       await flushLedger(run, root, sid);
       // ★★★★★ 2026-10-13（D172）**关键：本用例必须用 byNeed 驱动**。
@@ -8222,6 +8497,14 @@ section("情形 27：官方设置面板");
   //     它用 `statSync` **只读** `lib/index.js` / `lib/part3.js` / `lib/defs.js` / `lib/part5.js`
   //     取 mtime（判断"活内核加载的是哪一版"）—— **完全只读**，
   //     但路径是字面量 ⇒ 被第三条宽模式算进来。**已知假阳性**，照先例改数字、不改注释绕开。
+  //   ★★ 2026-10-19：+1 → **64**。新增 `_verify-no-mutation.mjs` —— **完全只读**
+  //     （readFileSync + `node --check` + `git status`），只是把 `lib/part1.js` 等
+  //     路径**写成字面量**放进 `checks` 数组 ⇒ 又被第三条宽模式算进来。**同类假阳性**。
+  //     ★ 它存在的理由：探针被杀时会**把变异留在 lib/ 里**，需要一个廉价的自查。
+  //   ★★★ 2026-10-19（同日后半段）：**64 → 63**。清理了 100 个历史一次性探针，
+  //     其中含 `lib/` 字面量的那批被一并删掉 ⇒ 净效果是 -1。
+  //     ★ 这条数字**反复漂移**本身就是它的已知弱点（会被纯注释/纯删文件推动）。
+  //     处置仍照 D194/D216 先例：**改数字 + 记明原因**，绝不去改注释绕开判据。
   const DANGEROUS_EXPECTED = 63;
   ok(
     isSourceTree
@@ -8557,8 +8840,10 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //     ⇒ 102 → **103**；带编号 101 → **102**。★ 第十六次。
   //   ★★ 2026-10-18（D270）：新增情形 109（四道闸门的真行为守卫 —— F10 撞出来的真实缺口）
   //     ⇒ 103 → **104**；带编号 102 → **103**。★ 第十七次。
-  eq("★ 口径：section 总数 = 104（情形 93~109）", sectionCalls, 104);
-  eq("★ 口径：其中带「情形 N」编号的 = 103", numbered, 103);
+  //   ★★ 2026-10-19（D272/D273）：新增情形 110（记忆协议代次：判定 / 注入 / 说过了就别再催）
+  //     ⇒ 104 → **105**；带编号 103 → **104**。★ 第十八次当场变红。
+  eq("★ 口径：section 总数 = 105（情形 93~110）", sectionCalls, 105);
+  eq("★ 口径：其中带「情形 N」编号的 = 104", numbered, 104);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -9869,12 +10154,14 @@ section("情形 48：两次压缩重叠时，来源不许互相覆盖（队列�
 
     const lines = compactionLines48(root);
     eq("★★ 48a：两条压缩里程碑都记下了", lines.length, 2);
+    // ★ 2026-10-19（D273）：百分比从常量算（默认线 0.3→0.7），不再写死。
+    const autoPct48 = Math.round((await import("../lib/defs.js")).HIGH_FIDELITY_COMPACT_RATIO * 100);
     ok(
-      // ★★ 2026-10-13（D159 §四）：期望值改成按设置渲染（默认线 0.3 ⇒ "自动 30%"）。
+      // ★★ 2026-10-13（D159 §四）：期望值改成按设置渲染。
       //   ★ 这条断言的本体（"第一条领到了自动那次、没被单槽覆盖"）不变 —— 只换了它认的字符串，
       //     而新字符串**同时**证明了"百分比是按设置算的"。
-      "★★★ 48a：第一条是「自动 30%」（= 按当前设置渲染）—— ★ 这正是被单槽覆盖掉的那一条（事故本体）",
-      lines[0] !== undefined && lines[0].includes("自动 30%"),
+      `★★★ 48a：第一条是「自动 ${autoPct48}%」（= 按当前设置渲染）—— ★ 这正是被单槽覆盖掉的那一条（事故本体）`,
+      lines[0] !== undefined && lines[0].includes(`自动 ${autoPct48}%`),
       String(lines[0])
     );
     ok(
@@ -18347,18 +18634,30 @@ section("情形 88：卡片化 —— 一卡一文件 + 多维索引表（D202�
     //   ★ 夹具必须**分两段水位**驱动，否则测不到"执行时水位已掉下来"这件事：
     //     第一段：到线 ⇒ 排队（这一步 agent 是 running，压不了）；
     //     第二段：**把水位降下来**（模拟"内核 80% 已经压过了"）再发 idle。
+    //
+    //   ★★ 2026-10-19（D273）：水位**从常量算**，不写死。
+    //     D273 把默认全量线 0.3→0.7 之后，原来写死的 `350`（35%）**掉到线下了**，
+    //     于是 91① 的「前提」断言红、91② 的「照旧压」断言也红 —— 而代码一个字没错。
+    //     ⇒ 判据：**凡"线上下"的夹具，都必须由那个常量派生**；写死数字就是在赌默认值不变。
     {
+      const HF91 = (await import("../lib/defs.js")).HIGH_FIDELITY_COMPACT_RATIO;
+      const WINDOW91 = 1000;
+      // 线上：比全量线高 5 点（不贴边 —— 贴边会被夹取/浮点误差影响）
+      const ABOVE91 = Math.round(WINDOW91 * (HF91 + 0.05));
+      // 线下：压到 10%，远离全量线（模拟"内核 80% 那次已经压过了"）
+      const BELOW91 = Math.round(WINDOW91 * 0.1);
+
       const root = mkProj91("d214-stale");
       const run = makeCtx({ withTokenMeter: true, withCompaction: true, withUserQuestions: true });
       mod.apply(run.ctx, {});
       const sid = "session-91stale-0001";
       const agent = {
-        session: { header: { id: sid, cwd: root }, id: sid, requestContext: () => ({ contextWindow: 1000 }) },
+        session: { header: { id: sid, cwd: root }, id: sid, requestContext: () => ({ contextWindow: WINDOW91 }) },
         steer: () => {},
       };
 
-      // 水位 35%（默认全量线 30%）⇒ 到线 ⇒ pre-step 应当**排队**
-      run.services.tokenMeter._total = 350;
+      // 水位在**全量线之上** ⇒ 到线 ⇒ pre-step 应当**排队**
+      run.services.tokenMeter._total = ABOVE91;
       const d1 = await runPreStep(run, { agent, messages: [] });
       const t1 = d1.messages.map((m) => m.content.map((c) => c.text).join("")).join("\n");
       ok("★★★ 91① 前提：到线时 pre-step 里确实宣告了即将压缩（否则后面测的是空转）",
@@ -18369,7 +18668,7 @@ section("情形 88：卡片化 —— 一卡一文件 + 多维索引表（D202�
       await flushLedger(run, root, sid);
 
       // ★★★ 关键：**把水位降回线下**（模拟内核 80% 那一次已经压过了）
-      run.services.tokenMeter._total = 100; // 10% << 30%
+      run.services.tokenMeter._total = BELOW91;
       await fire(run, "agent/status", { agent, status: "idle" });
       await settle91();
 
@@ -18387,18 +18686,21 @@ section("情形 88：卡片化 —— 一卡一文件 + 多维索引表（D202�
     //   ★ 这是 91① 的**反向对照**：没有它，一个"永远不压"的实现也能让 91① 全绿
     //     —— 那正是本项目最忌的"改到另一个极端"。
     {
+      const HF91 = (await import("../lib/defs.js")).HIGH_FIDELITY_COMPACT_RATIO;
+      const WINDOW91 = 1000;
       const root = mkProj91("d214-notstale");
       const run = makeCtx({ withTokenMeter: true, withCompaction: true, withUserQuestions: true });
       mod.apply(run.ctx, {});
       const sid = "session-91fresh-0001";
       const agent = {
-        session: { header: { id: sid, cwd: root }, id: sid, requestContext: () => ({ contextWindow: 1000 }) },
+        session: { header: { id: sid, cwd: root }, id: sid, requestContext: () => ({ contextWindow: WINDOW91 }) },
         steer: () => {},
       };
-      run.services.tokenMeter._total = 350;
+      // ★ 与 91① 同一套派生（两边必须比的是**同一条线**，否则反向对照失去意义）
+      run.services.tokenMeter._total = Math.round(WINDOW91 * (HF91 + 0.05));
       await runPreStep(run, { agent, messages: [] });
       await flushLedger(run, root, sid);
-      // ★ 水位**保持** 35%（仍在 30% 线上）⇒ 应当照压
+      // ★ 水位**保持**在线上 ⇒ 应当照压
       await fire(run, "agent/status", { agent, status: "idle" });
       await settle91();
       eq("★★★★★★ 91② 水位仍在线上 ⇒ **照旧压**（防止把修复做成『永远不压』）",
@@ -18631,15 +18933,26 @@ section("情形 92：两条发布前硬规矩的机器判据（D226）");
   }
 
   // ── ③ 规矩②：面板那些「清单优先」警示**必须跟着开关走** ────────────────
-  //   ★ 要求：凡是渲染 `scopeNote === "project-first"` 的警示/徽标，
-  //     条件里**必须同时**带 `projectFirst`（否则在「以面板为准」下会显示一句错话）。
+  //   ★ 要求：凡是拿 `scopeNote === "project-first"` 作判据去渲染警示/徽标的，
+  //     条件里**必须同时**看到 `projectFirst`（否则在「以面板为准」下会显示一句错话）。
+  //
+  //   ★★ 2026-10-19 判据扩容（不是放水）：原先只认 `===` 一行写法，于是把
+  //      「提前返回」这一等价写法漏成了 0 处 —— 而 `conds.length > 0` 那条
+  //      **恰好把「一处都没匹配到」判成红**，才没让它变成假绿。
+  //      现在 `===` / `!==` / `&&` 三种形态都收，覆盖面比原来大：
+  //      ScopeTag/ScopeNote 用的是 `if (scopeNote !== "project-first" || projectFirst !== true) return null;`
+  //      —— 语义同样是「两个条件都成立才渲染」。
   {
-    const conds = [...clientSrc.matchAll(/scopeNote === "project-first"[^\n]*/g)].map((m) => m[0]);
+    const conds = [...clientSrc.matchAll(/[^\n]*scopeNote\s*[!=]==\s*"project-first"[^\n]*/g)].map((m) => m[0]);
     const bare = conds.filter((c) => !/projectFirst/.test(c));
     ok(
       "★★★★★ 92③ 规矩②：面板每处「清单优先」警示都**跟着开关**（不无条件显示）",
       conds.length > 0 && bare.length === 0,
-      bare.length === 0 ? `共 ${conds.length} 处，全部带 projectFirst` : bare.join(" | ")
+      conds.length === 0
+        ? "非注释行里一处都没匹配到（判据失效，需复核）"
+        : bare.length === 0
+          ? `共 ${conds.length} 处，全部带 projectFirst`
+          : bare.join(" | ")
     );
   }
   //   ★ 配套：`projectFirst` 必须**从宿主生效值**推出（不许在客户端自己猜）。
@@ -19375,19 +19688,57 @@ section("情形 100：设置面板（分页 / 三键 / 纯文本 / 说明折叠�
   eq("100① g ★ 宿主没给 group / groups 时也不丢项", rsum, 2);
 
   // ── ② 三键 + 推送必须在同一条底栏里 ───────────────────────────────────
+  //
+  //   ★★★ 2026-10-19 修掉一个**假绿**（本条判据此前一直在骗人）：
+  //     旧写法用 `clientSrc.slice(barMark, barMark + 3000)` 找「确定」，
+  //     而那个 3000 字符窗口一路伸到了 `apply()` 里的注释 ——
+  //     「只写**确定存在**的服务」。于是「底栏里有『确定』」**永远通过**，
+  //     哪怕底栏上根本没有这个按钮（按钮实际写的是「保存」）。
+  //     ⇒ 这正好是本项目尺子错第 2 型：**判据的输入混进了注释**。
+  //
+  //   ★ 修法两条，方向都是**更严**：
+  //     ① 先剥注释，再判（注释里的字一个都不算）；
+  //     ② 只认**按钮标签**（`"保存"` / `"取消"` 这种作为 JSX 子节点的字符串字面量），
+  //        不认「随便在哪出现过」。
+  const stripCommentsForBar = (s) =>
+    s
+      .replace(/\/\*[\s\S]*?\*\//g, "") // 块注释
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1"); // 行注释（避开 http://）
+
   const barMark = clientSrc.indexOf('className: "pl-settings__bar"');
   ok("100② 源码里有底栏（pl-settings__bar）", barMark > 0);
-  const barSlice = barMark < 0 ? "" : clientSrc.slice(barMark, barMark + 3000);
-  for (const label of ["确定", "取消", "恢复默认", "推送到所有对话"]) {
-    ok(`100② ★ 底栏里有「${label}」`, barSlice.includes(`"${label}"`) || barSlice.includes(label));
+
+  // 底栏窗口：从 bar 起点到 SettingsPage 结束（用下一个顶层函数定义作右边界）
+  const draftDocMark = clientSrc.indexOf("/** 由服务端视图造一份可编辑草稿。 */");
+  const barWindowRaw =
+    barMark < 0 ? "" : clientSrc.slice(barMark, draftDocMark > barMark ? draftDocMark : barMark + 6000);
+  const barWindow = stripCommentsForBar(barWindowRaw);
+
+  // ★ 按钮标签一律是「"标签"」这种独立字符串字面量（可能是三元的一支）。
+  const barLabels = ["保存", "取消", "恢复默认", "推送到所有对话"];
+  for (const label of barLabels) {
+    ok(
+      `100② ★ 底栏里有「${label}」按钮（只认按钮标签，注释不算）`,
+      barWindow.includes(`"${label}"`),
+      barWindow.slice(0, 200)
+    );
   }
   ok("100② b 底栏不再用 sticky（改成 flex 固定段）", !/pl-settings__bar\s*\{[^}]*position:\s*sticky/.test(clientSrc));
   ok("100② c 有独立的滚动区（分页内容才能滚，而底栏不动）", /pl-settings__scroll/.test(clientSrc) && /overflow-y:\s*auto/.test(clientSrc));
   ok("100② d 推送按钮靠右（与三键分开，不再像浮窗）", /pl-settings__btn--push\s*\{\s*margin-left:\s*auto/.test(clientSrc));
-  // ★ 三键必须在**同一个** bar 里 —— 用"从 bar 起点到 SettingsPage 结束"这窗口判定
-  const settingsEnd = clientSrc.indexOf("由服务端视图造一份可编辑草稿");
-  const barWindow = barMark < 0 ? "" : clientSrc.slice(barMark, settingsEnd > barMark ? settingsEnd : barMark + 4000);
-  ok("100② e 三个键与推送都在同一个底栏窗口里", ["确定", "取消", "恢复默认", "推送到所有对话"].every((x) => barWindow.includes(x)));
+  ok(
+    "100② e 三个键与推送都在同一个底栏窗口里（剥注释后判，注释里的字不算）",
+    barLabels.every((x) => barWindow.includes(`"${x}"`)),
+    barWindow.slice(0, 300)
+  );
+  // ★ 反向自检：夹具必须先证明「剥注释」这一步真的有效 ——
+  //   否则上面那几条又可能是在注释上通过的。
+  ok(
+    "100② f 反向自检：剥注释确实会把注释里的词去掉（否则本条是空的）",
+    stripCommentsForBar("// 确定存在\nx = 1;").indexOf("确定") < 0 &&
+      stripCommentsForBar("/* 确定 */\ny = 2;").indexOf("确定") < 0 &&
+      stripCommentsForBar('z = "保存";').indexOf("保存") >= 0
+  );
 
   // ── ③ 文案 100% 纯文本 ────────────────────────────────────────────────
   //   ★ 判据只吃**会被用户看到的字段值**（纪律 2：不 grep 注释）。
@@ -19457,7 +19808,24 @@ section("情形 100：设置面板（分页 / 三键 / 纯文本 / 说明折叠�
   const defs = data.defaults;
   const missingDef = SP.filter((s) => !Object.prototype.hasOwnProperty.call(defs, s.key));
   eq("100⑤ c ★ 服务端 defaults 覆盖全部设置项（否则恢复默认不完整）", missingDef.length, 0);
-  ok("100⑤ d 拿不到 defaults 时如实报错，不谎报成功", /没提供默认值/.test(clientSrc));
+  //   ★★ 2026-10-19 判据加强：原来只断言「有『没提供默认值』这句话」——
+  //     那只能证明「写了某种报错」，不能证明「没谎报成功」。现在两半都判：
+  //     ① 走默认值取不到的分支时，**返回的是 err 态**；
+  //     ② 同一分支里**不许**出现「已填入默认值」这种成功措辞。
+  {
+    const noDefBranch = clientSrc.slice(
+      clientSrc.indexOf("const onRestoreDefaults"),
+      clientSrc.indexOf("const onBroadcast")
+    );
+    ok(
+      "100⑤ d 拿不到 defaults 时如实报错，不谎报成功",
+      /defaults[\s\S]{0,200}?未提供默认值/.test(noDefBranch) &&
+        /setMsg\(\s*\{\s*kind:\s*"err"/.test(noDefBranch) &&
+        // 该分支在 return 之前不许出现成功措辞
+        !/kind:\s*"ok"[^}]*默认值/.test(noDefBranch),
+      noDefBranch.slice(0, 260)
+    );
+  }
 
   // ── ⑥ 分页不是"只画第一页就完事"：必须能切页 ──────────────────────────
   ok("100⑥ ★ 有当前页状态（pageIndex）", /useState\(0\)/.test(clientSrc) && /pageIndex/.test(clientSrc));
@@ -19495,11 +19863,7 @@ section("情形 101：回合内压缩必须真 await（D257 · 真机 4 连败�
   //     **同步等**，让这一拍停住。代价是这一步慢几十秒，换来它真的会成功。
   const idxSrc = fs.readFileSync(path.join(HERE, "..", "lib", "index.js"), "utf8");
   const p3Src = fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8");
-  const strip = (s) =>
-    s
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
-      .replace(/`(?:[^`\\]|\\.)*`/g, "");
+  const strip = stripCommentsAndLiterals;
   const idxCode = strip(idxSrc);
   const p3Code = strip(p3Src);
 
@@ -19556,21 +19920,20 @@ section("情形 102：设置写入口必须在**两层**都建立授权（D258�
   //     ② 业务层 `saveSettings` / broadcast → `assertAuthorized`（第二道，冗余）
   //   ⇒ 任何从任一层开始读的人都能看到 fail-closed 的判定。
   const p2 = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
-  const strip = (s) =>
-    s
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
-      .replace(/`(?:[^`\\]|\\.)*`/g, "");
+  const strip = stripCommentsAndLiterals;
   const code = strip(p2);
 
   // ① 判定逻辑被抽成独立函数（可被两层复用）
+  //   ★ 2026-10-19（D272）：改用 `declaresFunction`（**行首锚定**）——
+  //     「剥注释再搜」那条路我连改三版都没修对（会把大段代码静默吞掉，
+  //     于是无关断言集体变红）。判据见文件顶部 `declaresFunction` 的注释。
   ok(
     "102① ★ 授权判定抽成了独立函数 authorizeRequest（两层共用同一份判据）",
-    /export\s+function\s+authorizeRequest\s*\(/.test(code),
+    declaresFunction(p2, "authorizeRequest"),
   );
   ok(
     "102② ★ 业务层自查函数 assertAuthorized 存在",
-    /export\s+function\s+assertAuthorized\s*\(/.test(code),
+    declaresFunction(p2, "assertAuthorized"),
   );
 
   // ③ 路由层确实用它
@@ -19592,12 +19955,21 @@ section("情形 102：设置写入口必须在**两层**都建立授权（D258�
   );
 
   // ⑤ broadcast 也要自查（它是另一个写副作用入口）
-  const bIdx = code.indexOf('reg("/broadcast.json"');
+  //
+  // ★★ 2026-10-19（D272 顺带修）：这条原来**永远红**，两个原因都是尺子坏：
+  //   ① 它在 `code`（**剥过注释与字符串**的源码）上找 —— 而 `assertAuthorized` 旁边的
+  //      注释被剥掉了、`broadcast.json` 这个**字符串字面量被替换成 `""`** ⇒ 连锚都找不到；
+  //   ② 就算改在原文件上找，`code.indexOf("bumpSettingsBroadcast()", bIdx)` 会先撞上
+  //      **注释里那个带括号的写法**（"在 `bumpSettingsBroadcast()` 这个…"）⇒ 判据区间被压到 79 字符。
+  //   ⇒ 正解：**在原始源码上，用调用形态（`const seq = …()`）定位**，而不是找名字。
+  //     判据要面对真对象：**"被调用的那一处"**，不是"任何提到它的地方"。
+  const callRe = /const\s+seq\s*=\s*bumpSettingsBroadcast\s*\(\s*\)/;
+  const callIdx = p2.search(callRe);
+  const bIdx = p2.indexOf('reg("/broadcast.json"');
   ok(
     "102⑤ ★ broadcast 在 bumpSettingsBroadcast() 之前自查",
-    bIdx >= 0 &&
-      code.slice(bIdx, bIdx + 700).includes("assertAuthorized") &&
-      code.slice(bIdx, code.indexOf("bumpSettingsBroadcast()", bIdx)).includes("assertAuthorized"),
+    bIdx >= 0 && callIdx > bIdx && p2.slice(bIdx, callIdx).includes("assertAuthorized"),
+    `bIdx=${bIdx} callIdx=${callIdx}`,
   );
 
   // ⑥ fail-closed 三档都还在（取不到连接 / 抛错 / 返回状态码）
@@ -19983,11 +20355,7 @@ section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必�
   const p1 = fs.readFileSync(path.join(HERE, "..", "lib", "part1.js"), "utf8");
   const p2 = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
   const p4 = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
-  const stripAll = (s) =>
-    s
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
-      .replace(/`(?:[^`\\]|\\.)*`/g, "");
+  const stripAll = stripCommentsAndLiterals;
   const p4c = stripAll(p4);
   const p2c = stripAll(p2);
   const p1c = stripAll(p1);
@@ -19995,11 +20363,14 @@ section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必�
   // ── 106① F06：统一原子写入口存在，且三处要害都走它 ──────────────────
   ok(
     "106① ★ 统一原子写函数 writeFileAtomic 存在（唯一出口 —— 原来 tmp+rename 被手抄了 8 遍）",
-    /export\s+function\s+writeFileAtomic\s*\(/.test(p2c),
+    declaresFunction(p2, "writeFileAtomic"),
   );
   ok(
     "106① b 它用独占创建（flag \"wx\"）—— 临时名撞了必须失败，不许覆盖别人的临时文件",
-    /flag:\s*"wx"/.test(p2c),
+    // ★★ 2026-10-19（D272 顺带修）：这里原来判的是 `p2c`（**剥掉字符串字面量**的源码），
+    //   而 `"wx"` 本身就是字面量 ⇒ 撕完必然找不到 ⇒ **这条断言永远红**。
+    //   判据必须面对真对象：**这个 flag 值**就该在**原始源码**里。
+    /flag:\s*"wx"/.test(p2),
   );
   ok(
     "106① c ★ active 台账写入走 writeFileAtomic（原来直接 writeFileSync ⇒ 半截就丢旧内容）",
@@ -20073,7 +20444,7 @@ section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必�
   // ── 106⑤ F02/F03：路径边界先词法、再真实路径 ────────────────────────
   ok(
     "106⑤ ★ isUnderReal 存在（词法判定之后解析真实路径 ⇒ 挡住符号链接逃逸）",
-    /export\s+function\s+isUnderReal\s*\(/.test(p2c),
+    declaresFunction(p2, "isUnderReal"),
   );
   ok(
     "106⑤ b ★ 它对**尚不存在的目标**解析「最近的已存在祖先」（否则新建文件永远过不了）",
@@ -20526,7 +20897,236 @@ section("情形 109：四道闸门的真行为守卫（D270）");
   }
 }
 
-console.log(`  通过 ${pass} 项，失败 ${failCount} 项`);
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 110：记忆协议代次（D272）—— 判定、注入、以及「说过了就别再催」");
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★ 这一段守的是用户**实地验证过的那个失败**（另一台设备升到最新版，架构一个字节没变）：
+//   改造前 `conformanceOf` 只查「**登记过的**对不对」，对「**该登记而根本没登记**」沉默
+//   ⇒ 老项目永远判 OK ⇒ 注入里从未出现「你还停在旧架构」⇒ 模型不知道该处理它。
+//
+// ★ 本节同时守住**三条**在实现这些功能时才发现的真缺陷（每条都能单独把功能废掉）：
+//   ① `ledger_init` 无条件盖章 `protocolVersion: 2`，建的却是单文件结构
+//      ⇒ 新项目**自称最新** ⇒ 免检 ⇒ 判 ok（自己给自己发合格证）；
+//   ② `fixable` 写着"补清单键 + 建空目录（纯加法）"，可 `repairConformance` **根本没实现**
+//      ⇒ 用户点了修复、回执 ok、下一轮又报同样缺口（建议存在 ≠ 建议可执行）；
+//   ③ 注入里那句「**你必须主动处理**」是每回合都写的，而用户选了「不用改」之后
+//      `conformNext` 又告诉他「**不要再动这个项目的台账结构**」⇒ **两条指令打架**。
+{
+  const { protocolGapOf, satisfiedProtocolVersion, PROTOCOL_VERSION: PV, PROTOCOL_REQUIREMENTS } =
+    await import("../lib/defs.js");
+  const { renderProtocolUpgradeNotice, renderProtocolDeclinedNote } = await import("../lib/part1.js");
+
+  // ── ① 纯函数：缺口按**实际键**判，不按版本号门控 ──────────────────────
+  {
+    // ★ 关键对照组：清单**自称**第 2 代，但一个卡片目录都没有。
+    //   这就是 `ledger_init` 原来造出来的形状 —— 必须仍然报缺口。
+    const selfClaimed = { protocolVersion: PV };
+    const g = protocolGapOf(selfClaimed);
+    ok(
+      "110① ★★ 自称第 2 代但结构是单文件 ⇒ **仍然报缺口**（版本号不是免检凭证）",
+      g.projectVersion === PV && g.outdated === true && g.missing.length === 2,
+      `projectVersion=${g.projectVersion} outdated=${g.outdated} missing=${g.missing.length}`,
+    );
+
+    // 对照组：真的满足全部要求 ⇒ 不报
+    const real = {
+      protocolVersion: PV,
+      decisionsDir: "decisions",
+      lessonsDir: "lessons",
+      goalsDir: "goals",
+      logDir: "_ledger-log",
+    };
+    const g2 = protocolGapOf(real);
+    ok(
+      "110① b ★ 结构真齐全 ⇒ 不报（否则上面那条可能是『永远报』）",
+      g2.outdated === false && g2.missing.length === 0,
+      JSON.stringify(g2),
+    );
+
+    // 老清单（没有 protocolVersion）⇒ 视为第 1 代
+    const legacy = { decisions: "DECISIONS.md", archiveDir: "_a" };
+    eq("110① c 没有 protocolVersion ⇒ 视为第 1 代", protocolGapOf(legacy).projectVersion, 1);
+
+    // 更新的插件建的项目 ⇒ 不前向破坏（不判"要回退"）
+    const future = { ...real, protocolVersion: PV + 5 };
+    const g3 = protocolGapOf(future);
+    ok("110① d 项目协议比插件新 ⇒ 不报缺口（不前向破坏）", g3.outdated === false, JSON.stringify(g3));
+
+    // ★ 机械可修标记：卡片化**不许**是 mechanical（登记键会让内容从视野里消失）
+    const cardGap = g.missing.find((m) => m.keys.includes("decisionsDir"));
+    const logGap = g.missing.find((m) => m.keys.includes("logDir"));
+    ok(
+      "110① e ★★★ 卡片化必须标记为**非机械可修**（自动补键会让单文件内容从视野里消失）",
+      cardGap !== undefined && cardGap.mechanical === false,
+      JSON.stringify(cardGap),
+    );
+    ok("110① f 日志分片是机械可修", logGap !== undefined && logGap.mechanical === true, JSON.stringify(logGap));
+  }
+
+  // ── ② satisfiedProtocolVersion：只盖章"名实相符"的那一代 ────────────────
+  {
+    eq("110② 单文件结构 ⇒ 只能诚实地说第 1 代", satisfiedProtocolVersion({ active: "L.md" }), 1);
+    eq(
+      "110② b 结构齐全 ⇒ 第 2 代",
+      satisfiedProtocolVersion({
+        decisionsDir: "decisions",
+        lessonsDir: "lessons",
+        goalsDir: "goals",
+        logDir: "_l",
+      }),
+      2,
+    );
+    eq(
+      "110② c ★ 缺一条就不许跳代（只差 logDir 也停在 1）",
+      satisfiedProtocolVersion({
+        decisionsDir: "decisions",
+        lessonsDir: "lessons",
+        goalsDir: "goals",
+      }),
+      1,
+    );
+    eq("110② d 空字符串不算「有」", satisfiedProtocolVersion({ decisionsDir: "", lessonsDir: "l", goalsDir: "g" }), 1);
+
+    // ★★ 这一条守的是 ①：**init 的版本号必须由事实推导**
+    const p4 = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
+    ok(
+      "110② e ★★ ledger_init 用 satisfiedProtocolVersion 算代次（不是无条件写常量）",
+      /protocolVersion:\s*honestProtoVersion/.test(p4) &&
+        /satisfiedProtocolVersion\s*\(/.test(p4),
+      "part4.js 里没看到 honestProtoVersion 的推导",
+    );
+    ok(
+      "110② f ★ 反向自检：旧写法 `protocolVersion: PROTOCOL_VERSION`（无条件盖章）必须被判不合格",
+      !/protocolVersion:\s*PROTOCOL_VERSION\s*[,}]/.test(p4),
+      "part4.js 里仍有无条件盖章",
+    );
+  }
+
+  // ── ③ 注入文案：义务句式 / 拒绝后降级 ────────────────────────────────
+  {
+    const outdated = { protocolVersion: 1, decisions: "DECISIONS.md", archiveDir: "_a" };
+    const txt = renderProtocolUpgradeNotice({ manifest: outdated });
+    ok("110③ ★ 过期项目必须产出注入文案", txt.length > 0);
+    ok(
+      "110③ b ★★★ 用**义务句式**（「必须主动处理」），不是告知句式 —— 后者会被当背景资料读过去",
+      /必须主动处理/.test(txt),
+      txt.slice(0, 160),
+    );
+    ok("110③ c ★ 必须**先问用户**，不许自己动手改结构", /不要自己先动手/.test(txt), txt.slice(0, 200));
+    ok("110③ d 说清「升了有什么好处」（只报字段名等于让人猜）", /why|D202|越长越长|分片/.test(txt));
+
+    // 当代项目 ⇒ 一个字都不多说
+    const modern = {
+      protocolVersion: PV,
+      decisionsDir: "d",
+      lessonsDir: "l",
+      goalsDir: "g",
+      logDir: "_l",
+    };
+    eq("110③ e 当代项目 ⇒ 注入里一个字都没有", renderProtocolUpgradeNotice({ manifest: modern }), "");
+
+    // ★★ 用户说过"不用改" ⇒ 降级为现状陈述，**不再命令他处理**
+    const declined = { ...outdated, protocolDeclined: "2026-10-19 19:00:00" };
+    const dTxt = renderProtocolUpgradeNotice({ manifest: declined });
+    ok("110③ f ★★ 用户拒绝过 ⇒ 仍如实告知现状（不能装作没这回事）", /仍是旧版/.test(dTxt), dTxt.slice(0, 160));
+    ok(
+      "110③ g ★★★ 但**绝不再命令**「你必须主动处理」（与用户的选择冲突）",
+      !/必须主动处理/.test(dTxt),
+      dTxt.slice(0, 200),
+    );
+    ok("110③ h ★ 并明说「不要再主动问他」", /不要再主动问他/.test(dTxt), dTxt.slice(0, 240));
+
+    // ★ 反向对照：拒绝标记存在、但缺口已经被修掉 ⇒ 那条提醒应当自然消失
+    eq(
+      "110③ i ★ 缺口修好后，拒绝标记不再产生噪音",
+      renderProtocolDeclinedNote({ manifest: { ...modern, protocolDeclined: "2026-10-19" } }),
+      "",
+    );
+
+    // ★★ 落盘：`skip` 那条路必须真的把标记写进清单（否则上面整段都是空转）
+    const p3 = fs.readFileSync(path.join(HERE, "..", "lib", "part3.js"), "utf8");
+    ok(
+      "110③ j ★★ 用户选「不用改」时把 protocolDeclined 落盘（否则下回合又来催）",
+      /protocolDeclined/.test(p3) && /choice === "skip"/.test(p3),
+      "part3.js 里没看到落盘",
+    );
+  }
+
+  // ── ④ `fixable` 承诺的事必须**真能做到** ───────────────────────────────
+  {
+    const p4 = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
+    const seg = (() => {
+      const a = p4.indexOf("export function repairConformance");
+      const b = p4.indexOf("\n}\n", a);
+      return p4.slice(a, b);
+    })();
+    ok(
+      "110④ ★★★ repairConformance 真的会补 logDir（原来 fixable 写着、代码里根本没有）",
+      /nextManifest\[key\]\s*=\s*dirRel/.test(seg) && /g\.mechanical/.test(seg),
+      "修复函数里没看到按 mechanical 分级处理",
+    );
+    ok(
+      "110④ b ★★ 而且**绝不**自动登记卡片目录（那会让单文件内容从视野里消失）",
+      /g\.mechanical !== true/.test(seg) && /ledger_migrate/.test(seg),
+      "修复函数里没看到对非机械项的拒绝",
+    );
+  }
+
+  // ── ⑤ 真行为：一个"自称最新但结构是单文件"的项目必须被判不合规 ──────────
+  {
+    const root = tmpProject("proto-self-claim");
+    fs.writeFileSync(path.join(root, "LEDGER.md"), "# 台账\n\n- x\n", "utf8");
+    fs.writeFileSync(path.join(root, "DECISIONS.md"), "# 决策\n", "utf8");
+    fs.mkdirSync(path.join(root, "_a"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".dsh-ledger.json"),
+      JSON.stringify({
+        version: 1,
+        active: "LEDGER.md",
+        decisions: "DECISIONS.md",
+        archiveDir: "_a",
+        maxActiveLines: 300,
+        revision: 1,
+        // ★ 这就是 `ledger_init` 原来会写出来的东西：盖章了、结构没跟上
+        protocolVersion: PV,
+      }),
+      "utf8",
+    );
+    const run = makeCtx();
+    mod.apply(run.ctx, {});
+    const r = await run.registeredTools.get("ledger_conform").execute({}, execFor(root, "s110e"));
+    ok(
+      "110⑤ ★★★ 自称第 2 代、实际单文件 ⇒ 判**不合规**（不是 ok）",
+      r.conformance.verdict === "nonconforming",
+      r.conformance.verdict,
+    );
+    ok(
+      "110⑤ b ★★ 且缺口里**必须**有卡片化这一条",
+      r.conformance.reasons.some((x) => /卡片化/.test(x)),
+      JSON.stringify(r.conformance.reasons),
+    );
+    ok(
+      "110⑤ c ★ 版本号不落后的项目**不许**说「停在旧代」（那会自相矛盾）",
+      !r.conformance.reasons.some((x) => /停在\*\*第 2 代\*\*/.test(x)),
+      JSON.stringify(r.conformance.reasons),
+    );
+    // 修复：只能补 logDir，**绝不能**碰卡片目录
+    await run.registeredTools.get("ledger_conform").execute({ apply: true }, execFor(root, "s110e"));
+    const mf = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+    eq("110⑤ d ★★ 修复只补了 logDir（机械可修的那条）", typeof mf.logDir, "string");
+    eq("110⑤ e ★★★ 修复**没有**登记 decisionsDir（否则内容会从视野里消失）", mf.decisionsDir, undefined);
+    ok(
+      "110⑤ f 原决策文件仍在原地、内容未动",
+      fs.readFileSync(path.join(root, "DECISIONS.md"), "utf8") === "# 决策\n",
+    );
+    rmrf(root);
+  }
+}
+
+
+
+
 if (failCount > 0) {
   console.log(`  失败清单：`);
   for (const f of failures) console.log(`    - ${f}`);

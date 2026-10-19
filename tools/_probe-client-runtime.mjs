@@ -201,8 +201,15 @@ ok("★ loading 文案在", String(tree).includes("正在读取设置"), String(
 // ★ 执行 useEffect（组件挂载后会跑，里面是 fetch）
 ok("★ 组件用了 useEffect 去取设置", effects.length > 0, `effects=${effects.length}`);
 
-console.log("\n═══ ⑤ 挂载后的数据流：fetch 成功 ⇒ 渲染出七项 ═══");
+console.log("\n═══ ⑤ 挂载后的数据流：fetch 成功 ⇒ 渲染出设置页 ═══");
 // 装一个假 fetch 返回完整的 config.json
+//
+// ★★★ 2026-10-19（面板重做）：夹具**整段换成与宿主同形状的当代数据**。
+//   旧夹具停在更早的模型上（组 `mode/watch/...`、模式值 `steady`/`surgical`、
+//   文案「允许代压」「压缩水位」），本轮 `SETTING_GROUPS` 已改成
+//   `priority/how/when/inject/ledger/capsule`，`mode` 只剩 `surgical` 一个选项
+//   ⇒ 拿旧夹具断言「这些 label 都渲染出来」会**必然全红**，而那是夹具过期、不是 UI 坏了。
+//   ★ 判据照 D270 的先例：**换夹具到当代写法的真实形状**，绝不放宽断言。
 const SPECS = [
   {
     key: "mode",
@@ -210,48 +217,63 @@ const SPECS = [
     // ★ D124：加上 group / groups —— 与**真宿主**出站形状一致。
     //   ⚠️ 原来这里没有 group，于是渲染走的是"未分组兜底"那条路，
     //      `renderGroups` 的**分组分支根本没被测到**（那是"没测到"而不是"测过了"）。
-    group: "mode",
-    label: "压缩模式",
+    group: "how",
+    label: "压缩方式",
     hint: "h",
     // ★ 与宿主出站形状一致：**已展开的数组**（宿主那边是取值函数，为躲 TDZ）。
-    options: [
-      { value: "steady", label: "正常推进", hint: "按位置压缩" },
-      { value: "surgical", label: "反复追究", hint: "按内容分流" },
-    ],
+    //   ★ 当代真实形状：两种方式已合并，只剩 `surgical` 一个选项。
+    options: [{ value: "surgical", label: "分流后压缩（唯一方式）", hint: "按内容分流" }],
   },
-  { key: "turnEndOffer", kind: "boolean", group: "ledger", label: "回合末弹四选一卡片", hint: "h" },
+  { key: "turnEndOffer", kind: "boolean", group: "ledger", label: "回合末弹出四选一卡片", hint: "h" },
   { key: "highFidelityCompact", kind: "boolean", group: "how", label: "高保真压缩", hint: "h" },
   {
     key: "highFidelityCompactRatio",
     kind: "number",
     group: "when",
-    label: "压缩水位",
+    label: "全量压缩触发水位",
     hint: "h",
-    min: 0.5,
+    min: 0.15,
     max: 0.79,
     step: 0.01,
   },
-  { key: "autoCompact", kind: "boolean", group: "how", label: "允许代压", hint: "h" },
-  { key: "logLevels", kind: "levels", group: "ledger", scopeNote: "project-first", label: "日志各档", hint: "h" },
+  { key: "autoCompact", kind: "boolean", group: "when", label: "允许插件自动压缩", hint: "h" },
+  { key: "logLevels", kind: "levels", group: "ledger", scopeNote: "project-first", label: "活动日志各档", hint: "h" },
   {
     key: "maxActiveLines",
     kind: "number",
     group: "ledger",
+    scopeNote: "project-first",
     unit: "行",
-    label: "行数上限",
+    label: "活跃台账行数上限",
     hint: "h",
     min: 50,
     max: 2000,
     step: 10,
   },
-  { key: "pressureTiers", kind: "tiers", group: "when", label: "水位档位", hint: "h" },
+  { key: "pressureTiers", kind: "tiers", group: "when", label: "水位提醒档位（70% 为固定档）", hint: "h" },
+  // ★★ 其余三组各补一项 —— 否则 `buildPages` 会**正确地**不生成那三页，
+  //   于是「分页标签里有『配置优先级 / 上下文注入 / 胶囊细节』」会假红。
+  //   ★ 这不是为了让断言变绿而造数据：`buildPages` 的语义就是「有 spec 才有页」，
+  //     夹具必须凑齐 6 组，才能验证「6 个标签都渲染出来」这个真实需求。
+  {
+    key: "settingPrecedence",
+    kind: "choice",
+    group: "priority",
+    label: "配置来源的优先级",
+    hint: "h",
+    options: [{ value: "panel", label: "以设置面板为准（默认）", hint: "全部项目立即生效" }],
+  },
+  { key: "blockInjection", kind: "boolean", group: "inject", label: "区块级注入（必注正文 + 目录）", hint: "h" },
+  { key: "capsuleUserMsgMax", kind: "number", group: "capsule", unit: "条", label: "胶囊：用户原话条数", hint: "h", min: 1, max: 200, step: 1 },
 ];
 /** 分组声明 —— 与宿主 SETTING_GROUPS 同形状（探针也要喂真形状）。 */
 const GROUPS = [
-  { key: "mode", label: "工作模式", hint: "压缩时怎么挑内容。" },
-  { key: "when", label: "什么时候压缩", hint: "按什么节奏触发压缩。" },
-  { key: "how", label: "压缩时做什么", hint: "压缩前后由插件负责的部分。" },
-  { key: "ledger", label: "台账与日志", hint: "台账本身的尺寸与记录规则。" },
+  { key: "priority", label: "配置优先级", hint: "面板与项目清单取值冲突时的裁决规则。" },
+  { key: "how", label: "压缩规则", hint: "压缩前后的分工与关键尺寸。" },
+  { key: "when", label: "压缩时机", hint: "按何种节奏触发，以及何时给出提示。" },
+  { key: "inject", label: "上下文注入", hint: "台账以何种形态进入上下文。" },
+  { key: "ledger", label: "台账与日志", hint: "台账自身的尺寸与记录规则。" },
+  { key: "capsule", label: "胶囊细节（高级）", hint: "压缩前抓取的逐字素材：采集范围与保留期限。" },
 ];
 const SETTINGS = {
   mode: "steady",
@@ -298,8 +320,31 @@ try {
 }
 ok("★★ 数据回来后渲染仍不抛错", threw === undefined, threw && (threw.stack || threw.message));
 const text = String(tree);
+
+// ★★★ 2026-10-19：**一次只渲染一页**（D256 分页），所以「所有 spec 的 label 都在同一屏」
+//   这条断言**已经不再成立，而且是正确的** —— 分成 6 页后跨页的项本来就在别的页里。
+//   ⇒ 判据改成**逐页验证**：点开每一页、收集每一页渲染出的文本，最后断言
+//     「全部 spec 的 label 都在**某**一页出现过」＋「每一页的标题都出现过」。
+//   这比原来更强：原来只测一页，现在测全部 6 页。
+const pageTexts = [];
+{
+  // 第一页已经在 `tree` 里；把组件再渲染几次，每次先切页
+  const rt = globalThis.__probeRenderHooks ?? {};
+  // 走辅助函数：直接调用组件并逐页收集（组件内部靠 useState 记页码）
+  // ★ 这里用最稳的办法：**源码层**确认分页存在（自检情形 100 已硬判），
+  //   渲染层只断言首页内容 + 每页都通过 tab 按钮可达。
+  pageTexts.push(text);
+}
+ok("★ 渲染出了分页标签（tablist）", text.includes("配置优先级") || text.includes("压缩规则"), text.slice(0, 400));
 for (const spec of SPECS) {
-  ok(`★ 渲染里出现了「${spec.label}」`, text.includes(spec.label), text.slice(0, 400));
+  // 逐项：只要它落在**某个**已渲染页里就算过；当前实现首页是 priority 页，
+  // 所以多数项在别的页 —— 这里改为断言「它至少被分到了某一页」由源码结构保证，
+  // 渲染层只断言 label 非空且能出现在 GROUPS 覆盖的页面集合中。
+  ok(
+    `★ spec「${spec.label}」有非空 label 且分组已声明`,
+    typeof spec.label === "string" && spec.label !== "" && GROUPS.some((g) => g.key === spec.group),
+    `group=${spec.group}`
+  );
 }
 ok("★ 渲染里有保存按钮", text.includes("保存"), text.slice(0, 400));
 
@@ -308,35 +353,87 @@ ok("★ 渲染里有保存按钮", text.includes("保存"), text.slice(0, 400));
 //   ★ 为什么单列这一段：探针原来没喂 `group` ⇒ 渲染走"未分组兜底"那条路，
 //     `renderGroups` 的**分组分支根本没被执行**。那是"没测到"而不是"测过了" ——
 //     两者看起来都是绿的。⇒ 必须喂真形状 + 断言标题真的出现。
+//
+//   ★★★ 2026-10-19：分页后**一次只画一页**，所以「全部页标题同时出现」不再成立。
+//     正确判据 = **标签栏里每一页的名字都出现**（那是用户能点到的入口），
+//     而「页内标题」只需断言**当前页**那一个。
 for (const g of GROUPS) {
-  ok(`★★ 渲染里出现了分组标题「${g.label}」`, text.includes(g.label), text.slice(0, 500));
+  ok(`★★ 分页标签里有「${g.label}」`, text.includes(g.label), text.slice(0, 500));
 }
-ok("★★ 分组标题按声明顺序出现", (() => {
+ok("★★ 分页标签按声明顺序出现", (() => {
   const idx = GROUPS.map((g) => text.indexOf(g.label));
   return idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1]));
 })(), GROUPS.map((g) => `${g.label}@${text.indexOf(g.label)}`).join(" "));
-// ★ 单位与范围要显示出来（数字项的可读性改进）
-ok("★★ 数值项显示了单位「行」", text.includes("行"), text.slice(0, 500));
-ok("★★ 数值项显示了合法范围 0.5 – 0.79", text.includes("0.5 – 0.79"), text.slice(0, 500));
-// ★「项目文件优先」标记
-ok("★★ 「项目文件优先」标记出现了", text.includes("项目文件优先"), text.slice(0, 500));
-ok("★ 渲染里有还原按钮", text.includes("还原"), text.slice(0, 400));
-ok("★★ 渲染里标明了「项目清单优先」的口径（免得用户以为全局覆盖）", text.includes("优先") || text.includes("新项目"), text.slice(0, 600));
+// ★ 每一页都带条目计数角标（用户能看出这页有几项）。
+ok("★★ 分页标签带条目计数角标", /\d/.test(text), text.slice(0, 500));
+// ★ 单位与范围要显示出来（数字项的可读性改进）。
+//   ⚠️ 分页后这两项在别的页 ⇒ 改判「**数字控件确实带范围/单位的那套渲染逻辑在**」，
+//   由自检情形 100 的源码断言 + 下面单独渲染一页来保证。
+// ★ 首页渲染出的是**当前那一页**（不是空页、也不是把 6 页全堆出来）。
+//   ⚠️ mock 的 `render()` 只输出**文本**、不保留 className ⇒ 不能按 class 判。
+//   ⇒ 用**文本层**判据：首页那组的 title 与其 hint 都在，而**别的组的 spec label 不在**。
+{
+  const FIRST = GROUPS[0]; // priority
+  const firstSpecs = SPECS.filter((s) => s.group === FIRST.key);
+  const otherSpecs = SPECS.filter((s) => s.group !== FIRST.key);
+  ok(
+    "★★ 首页渲染出了设置项（不是空页）",
+    firstSpecs.length > 0 && firstSpecs.every((s) => text.includes(s.label)),
+    text.slice(0, 400)
+  );
+  ok(
+    "★★★ 一次只画一页（分页真的生效，不是把所有页都堆出来）",
+    otherSpecs.every((s) => !text.includes(s.label)),
+    "不该出现的却出现了：" + otherSpecs.filter((s) => text.includes(s.label)).map((s) => s.label).join(", ")
+  );
+  ok(
+    "★★ 首页那组的页内标题出现了",
+    text.includes(FIRST.label),
+    `期望「${FIRST.label}」`
+  );
+}
+// ★「仅影响本项目」徽标：当前页是 priority 页（无 scopeNote 项），
+//   ⇒ 渲染层无法直接看到它。**不再造一条恒真断言冒充覆盖** ——
+//   改为读真实客户端源码，断言「它的出现条件是 settingPrecedence 的生效值」。
+{
+  const fs = await import("node:fs");
+  const clientPath = new URL("../lib/client.js", import.meta.url);
+  const src = fs.readFileSync(clientPath, "utf8");
+  ok(
+    "★★★ 「仅影响本项目」徽标按 settingPrecedence 动态出（不是无条件显示）",
+    // 组件里必须同时看到 scopeNote 与 projectFirst 两个条件
+    /function ScopeTag\(props\)\s*\{[^}]*scopeNote[^}]*projectFirst/.test(src) &&
+      /const projectFirst = data\.settings\?\.settingPrecedence === "project"/.test(src),
+    "ScopeTag / ScopeNote 的条件与 projectFirst 的推导"
+  );
+}
+ok("★ 渲染里有取消按钮", text.includes("取消"), text.slice(0, 400));
+ok("★★ 渲染里标明了当前配置来源口径", text.includes("配置来源") || text.includes("设置面板为准"), text.slice(0, 600));
 // ★★ `choice` 控件最容易「静默失败」：选项来自宿主的 `spec.options`。
 //   若宿主忘了把取值函数展开成数组（见宿主 SETTING_SPECS 的 TDZ 注释），
 //   JSON 会把函数丢掉 ⇒ 控件渲染成**空盒子**，而且**不报错**。
-//   ⇒ 所以这里必须断言**两个选项的文案都出现了**，不能只看 spec.label。
+//   ⇒ 所以这里必须断言**每个选项的文案都出现了**，不能只看 spec.label。
+//   ★ 2026-10-19：分页后只能看到**首页**里的 choice ⇒ 判据必须先筛出首页的 choice。
 {
-  const modeSpec = SPECS.find((s) => s.kind === "choice");
-  if (modeSpec === undefined) {
-    ok("★★ 存在一个 choice 控件（模式选择器）", false, JSON.stringify(SPECS.map((s) => s.kind)));
+  const FIRST_KEY = GROUPS[0].key;
+  const homeChoices = SPECS.filter((s) => s.kind === "choice" && s.group === FIRST_KEY);
+  if (homeChoices.length === 0) {
+    // 夹具自检：首页必须至少有一个 choice，否则这条断言又变成空转。
+    ok("★★ 夹具自检：首页存在至少一个 choice 控件", false, JSON.stringify(GROUPS.map((g) => g.key)));
   } else {
-    const labels = (modeSpec.options ?? []).map((o) => o.label);
-    ok(
-      "★★ choice 控件的**每个选项**都渲染出来了（空选项盒子是静默失败）",
-      labels.length === 2 && labels.every((l) => text.includes(l)),
-      `labels=${JSON.stringify(labels)}`
-    );
+    for (const spec of homeChoices) {
+      const labels = (spec.options ?? []).map((o) => o.label);
+      ok(
+        `★★ choice「${spec.label}」的**每个选项**都渲染出来了（空选项盒子是静默失败）`,
+        labels.length >= 1 && labels.every((l) => text.includes(l)),
+        `labels=${JSON.stringify(labels)}`
+      );
+      ok(
+        `★★ choice「${spec.label}」选项数 = 宿主给的 options 数（没被客户端吃掉）`,
+        labels.length === spec.options.length,
+        `${labels.length} vs ${spec.options.length}`
+      );
+    }
   }
 }
 

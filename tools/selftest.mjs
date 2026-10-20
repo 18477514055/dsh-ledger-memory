@@ -8231,9 +8231,18 @@ section("情形 27：官方设置面板");
     //   ⇒ 写 `**台账功能不受影响**` 用户看到的就是带星号的原句（观感像"语法没写完"）。
     //   ★ 判据：剥掉注释后，**字符串字面量**里不许再出现 `**`。
     //     ⚠️ 不能整份搜 `**` —— 那会把 66 行文档注释全误判（注释里星号无害）。
-    const cfgNoComment = cfgSrc
+    //
+    // ★★★ 2026-10-20（追查"面板滚不动"时当场撞红，**是判据的前提不全，不是注释写错**）：
+    //   原来只剥 `//` 与行首 `*` 两种注释，可这个文件的 CSS 是一个**模板字符串**，
+    //   里面的 `/* … */` 注释**也是注释**、也不会上屏，却被当成了"界面文案"。
+    //   ⇒ 假阳性。判据必须先在**整份源码**上把块注释剥掉，再逐行剥行注释。
+    //   ★ 这与本项目的老纪律同型：**判据的输入必须是"被测系统真正会显示的那部分"**。
+    //     （顺带：同一次改动里我还在那些 CSS 注释里用了成对反引号，把模板串提前截断成语法错 ——
+    //        `node --check` 才抓到。所以下面顺手补一条语法可解析性。）
+    const cfgNoBlock = cfgSrc.replace(/\/\*[\s\S]*?\*\//g, ""); // 先剥块注释（含 CSS 里的）
+    const cfgNoComment = cfgNoBlock
       .split("\n")
-      .map((l) => l.replace(/^\s*(\/\/|\*|\/\*).*$/, "")) // 丢掉整行注释
+      .map((l) => l.replace(/^\s*(\/\/|\*).*$/, "")) // 再丢整行行注释
       .join("\n");
     const starLines = cfgNoComment
       .split("\n")
@@ -8244,6 +8253,65 @@ section("情形 27：官方设置面板");
       starLines.length === 0,
       starLines.map((x) => `L${x.n}`).join(", ")
     );
+    // ★★★ 2026-10-20 新增：客户端半边必须能被 JS **真解析**。
+    //   起因：我在 CSS 模板串的注释里写了成对反引号 ⇒ 模板串提前结束 ⇒ 整份文件语法错，
+    //   而上面那些基于字符串匹配的断言**全绿**（它们不看语法）。
+    //   ★ 判据：`new Function` 在这里不适用（含 import/export），改用 Function 构造前先过一遍
+    //     更朴素的办法：统计模板串收尾是否唯一 + 交给 vm 的 compileFunction 太绕 ⇒
+    //     直接把这件事实交给 `node --check`（见情形 27 的语法守卫）。
+    //   ⇒ 具体实现放在下面那条独立的断言里。
+    {
+      // 反向自检：确认「剥块注释」这一步真的有效（否则这条修法等于没修）。
+      const probeBad = 'const CSS = `/* 界面 **坏** */ .a{color:red}`;';
+      const probeStripped = probeBad.replace(/\/\*[\s\S]*?\*\//g, "");
+      ok(
+        "★★★ 27q 反向自检：块注释剥除真的生效（CSS 里的注释不该算界面文案）",
+        !probeStripped.includes("**"),
+        probeStripped
+      );
+    }
+
+    // ★★★★ 2026-10-20 新增（**这条是被一次真事故逼出来的**）：
+    //   我在 CSS 模板串的注释里写了成对反引号 ⇒ **模板串提前结束** ⇒ 整份 client.js 语法错。
+    //   🔴 而上面所有断言（含"界面文案没星号""CSS 只引用已知变量"）**全绿** ——
+    //      因为它们做的是**字符串匹配**，根本不解析语法。
+    //   ⇒ 判据：客户端半边必须**能被 JS 解析器接受**（只需解析，不执行）。
+    //   ★ 为什么用 `new Function` 而不是 `vm.SourceTextModule`：
+    //     本机 Node 24 的 vm 没有 SourceTextModule（实测 `not a constructor`），
+    //     而 client.js 里没有顶层 import/export（它整份是 `window.__ModuleLoader__.load({...})`），
+    //     所以 `new Function` 能覆盖到全部语法。
+    {
+      let parseErr = null;
+      try {
+        // eslint-disable-next-line no-new-func
+        new Function(cfgSrc);
+      } catch (e) {
+        parseErr = e && e.message ? e.message : String(e);
+      }
+      ok(
+        "★★★★ 27r 客户端半边**能被 JS 解析**（模板串被截断这类错，字符串匹配是看不出来的）",
+        parseErr === null,
+        parseErr === null ? "" : "解析失败：" + parseErr
+      );
+
+      // 反向自检：故意造一个"注释里的反引号截断模板串"的坏文件，这条判据必须变红。
+      const BT = String.fromCharCode(96);
+      const badSrc =
+        "const CSS = " + BT + "/* 注释里写了 " + BT + "反引号" + BT + " */ .a{color:red}" + BT + ";\n";
+      //   ↑ 这就是修复前那个形状：注释里的成对反引号提前结束了模板串。
+      let badParsed = true;
+      try {
+        // eslint-disable-next-line no-new-func
+        new Function(badSrc + "\n", "");
+      } catch {
+        badParsed = false;
+      }
+      ok(
+        "★★★★ 27s 反向自检：注释里放成对反引号 ⇒ 这条判据**必须**看见红（证明它不是摆设）",
+        badParsed === false,
+        badParsed ? "⚠️ 坏样本居然解析通过了，判据无效" : ""
+      );
+    }
   }
 }
 
@@ -8842,8 +8910,17 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //     ⇒ 103 → **104**；带编号 102 → **103**。★ 第十七次。
   //   ★★ 2026-10-19（D272/D273）：新增情形 110（记忆协议代次：判定 / 注入 / 说过了就别再催）
   //     ⇒ 104 → **105**；带编号 103 → **104**。★ 第十八次当场变红。
-  eq("★ 口径：section 总数 = 105（情形 93~110）", sectionCalls, 105);
-  eq("★ 口径：其中带「情形 N」编号的 = 104", numbered, 104);
+  //   ★★ 2026-10-20（D280 · issue #1）：新增情形 111（变更登记区的边界是「登记行」）
+  //     ⇒ 105 → **106**；带编号 104 → **105**。★ 第十九次当场变红 —— 上面那几条口径
+  //       当场打红正是它该有的样子（改代码忘了改文档 ⇒ 立刻可见，不是静默漂移）。
+  //   ★★ 2026-10-20（D282）：新增情形 112（协议判据不许冤枉已升级的项目 + init 能建第 2 代）
+  //     ⇒ 106 → **107**；带编号 105 → **106**。★ 第二十次当场变红。
+  //   ★★ 2026-10-20（A 方案 · 三段式检索）：新增情形 113（`ledger_recall` 的索引层与按名单取正文）
+  //     ⇒ 107 → **108**；带编号 106 → **107**。★ 第二十一次当场变红。
+  //   ★★ 2026-10-20（D284 · 作废卡降权）：新增情形 114（`mechanicalWeight` 的 done 词表补齐）
+  //     ⇒ 108 → **109**；带编号 107 → **108**。★ 第二十二次当场变红。
+  eq("★ 口径：section 总数 = 109（情形 93~114）", sectionCalls, 109);
+  eq("★ 口径：其中带「情形 N」编号的 = 108", numbered, 108);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -21127,6 +21204,524 @@ section("情形 110：记忆协议代次（D272）—— 判定、注入、以�
 
 
 
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 111：变更登记区的边界是「登记行」，不是「从标题到文件末尾」（issue #1）");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ★ 用户在自己仓库报的 issue #1（他自己写的，为了给仓库加点人气 —— 但 bug 是真的）。
+  //   🔴 原实现：`splitChangeRegister` 从登记标题处**一刀切到文本末尾**。
+  //   ⇒ 两处受害：
+  //     ① `ledger_archive` 的"移走 ≠ 删除"判据把 `${newActive}\n${entries}` 当成一份文本去剥，
+  //        而 newActive 通常带登记区 ⇒ **entries 整段被当登记区吃掉** ⇒ 必然误报"凭空丢失"，
+  //        报的恰好是"我要归档的那一段"（用户实测 36 行）。
+  //     ② 登记区**之后**若还有正文，`withChangeRegister` 会把它**静默丢掉**、而调用返回 ok。
+  //   ★ 这两条都是"承诺写在文档里、边界上没有成立"，与情形 106 同型。
+  const { lostLines, splitChangeRegister, withChangeRegister } = await import("../lib/part1.js");
+
+  const REGH = "## 变更登记（插件自动维护）";
+  const mkLine = (t) => `- ${t} (append) [a5dd] +1 行 → 100 行 · revision→1`;
+  const mkReg = (...ts) => `\n\n${REGH}\n\n> 说明行\n\n${ts.map(mkLine).join("\n")}\n`;
+
+  // ── ① 登记区在中段时，它**后面**的正文必须还能读到 ────────────────────
+  {
+    const text = `# L\n\n## A\n\nA 正文。\n${mkReg("2026-10-20 11:00:00")}\n## B\n\nB 正文。\n`;
+    const sp = splitChangeRegister(text);
+    ok("111① ★ 登记区**之前**的正文还在", sp.body.includes("A 正文。"), sp.body);
+    ok("111① b ★★★ 登记区**之后**的正文也在（修复前这里会被静默吞掉）",
+      sp.body.includes("B 正文。"), sp.body);
+    ok("111① c 登记标题本身不进正文", !sp.body.includes(REGH), sp.body);
+    ok("111① d 登记行不进正文", !sp.body.includes("(append)"), sp.body);
+    eq("111① e 登记行照旧被收进 entries", sp.entries.length, 1);
+    ok("111① f ★ 幂等：再剥一次结果不变（否则每次写入都会漂）",
+      splitChangeRegister(sp.body).body === sp.body);
+
+    // ★ 反向：把"只保留标题之前"的旧行为装回去，①b 必须能看见红
+    const oldBody = text.slice(0, text.indexOf(REGH)).replace(/\s+$/, "");
+    ok("111① g ★★★ 反向自检：旧行为（只取标题之前）确实**丢掉**了 B 段",
+      !oldBody.includes("B 正文。"), oldBody);
+  }
+
+  // ── ② `withChangeRegister` 不许丢内容 ──────────────────────────────
+  {
+    const text = `# L\n\n## A\n\nA 正文。\n${mkReg("2026-10-20 11:00:00")}\n## B\n\nB 正文。\n`;
+    const out = withChangeRegister(text, mkLine("2026-10-20 12:00:00"), "", 12);
+    ok("111② ★★★ withChangeRegister 不丢登记区**之后**的正文", out.includes("B 正文。"), out);
+    ok("111② b 登记区之前的不丢", out.includes("A 正文。"));
+    eq("111② c 登记区仍只有一份", out.split(REGH).length - 1, 1);
+    ok("111② d 新的登记行写进去了", out.includes("12:00:00"));
+  }
+
+  // ── ③ `ledger_archive` 的判据：entries 拼在 newActive 之后也不许误报 ──
+  //
+  //    ★ 这里**必须连旧实现一起还原**才算对照 —— 第一版我就是拿"修好的 lostLines"
+  //      去跑旧顺序，全绿，白测一轮（纪律：尺子本身也要验）。
+  {
+    const priorActive = `# Ledger\n\n## A 段\n\nA 正文。\n\n## C 段\n\nC 正文。\n${mkReg("2026-10-20 10:00:00")}`;
+    const newActive = `# Ledger\n${mkReg("2026-10-20 10:00:00")}`;
+    const entries = `## A 段\n\nA 正文。\n\n## C 段\n\nC 正文。`;
+
+    // 现在的做法：两边各自先剥，再拼
+    const afterBody = splitChangeRegister(newActive).body + "\n" + splitChangeRegister(entries).body;
+    const lost = lostLines(splitChangeRegister(priorActive).body, afterBody);
+    eq("111③ ★★★ 新做法：整节归档**零误报**（修复前这里是 2 行）", lost.length, 0);
+
+    // 旧的"从标题切到末尾"实现 —— 逐字还原
+    const oldSplit = (t) => {
+      const i = t.indexOf(REGH);
+      if (i < 0) return { body: t, entries: [] };
+      return { body: t.slice(0, i).replace(/\s+$/, ""), entries: [] };
+    };
+    const oldTally = (t) => {
+      const m = new Map();
+      for (const raw of oldSplit(t ?? "").body.split(/\r?\n/)) {
+        const l = raw.replace(/\r$/, "").replace(/\s+$/, "");
+        if (l.trim() === "" || /^\s*#{1,6}\s/.test(l)) continue;
+        m.set(l, (m.get(l) ?? 0) + 1);
+      }
+      return m;
+    };
+    const bef = oldTally(oldSplit(priorActive).body);
+    const aft = oldTally(`${newActive}\n${entries}`);
+    let oldLost = 0;
+    for (const [l, n] of bef) oldLost += Math.max(0, n - (aft.get(l) ?? 0));
+    ok("111③ b ★★★ 反向自检：旧拼接方式**确实会误报**（证明这条守卫不是摆设）",
+      oldLost > 0, `oldLost=${oldLost}`);
+
+    // ★ 真规模：用户报的是"36 行"
+    const big = ["# Ledger", ""];
+    for (let i = 0; i < 6; i++) {
+      big.push(`## 八之${i}`, "");
+      for (let j = 0; j < 6; j++) big.push(`- 条目 ${i}-${j}`, "");
+    }
+    const bigEntries = big.slice(2).join("\n");
+    const bigPrior = big.join("\n") + mkReg("2026-10-20 10:00:00");
+    const bigNew = `# Ledger\n${mkReg("2026-10-20 10:00:00")}`;
+    const bigLost = lostLines(
+      splitChangeRegister(bigPrior).body,
+      splitChangeRegister(bigNew).body + "\n" + splitChangeRegister(bigEntries).body
+    );
+    eq("111③ c ★★★ 36 条目整节归档：零误报（用户 issue 报的正是这个量级）", bigLost.length, 0);
+  }
+
+  // ── ④ 登记区**后面跟一段引用块** —— 不许被当成"还有说明行"吃掉 ──────────
+  //
+  //   ★ 这是我改跳过规则时**自己撞出来的**边角：第一版写的是"跳过所有 `>` 行"，
+  //     于是"登记区之后跟着一段正文引用"会被静默丢掉 —— **同一个病换个形状**。
+  //   ⇒ 判据：`>` 只在**第一条登记行之前**算说明。
+  {
+    const text =
+      `# Ledger\n\n## A 段\n\nA 正文。\n\n${REGH}\n\n> 说明第一行\n> 说明第二行\n\n${mkLine("2026-10-20 10:00:00")}\n` +
+      `\n## B 段\n\n> 这是正文里的引用块，不是登记区的说明。\n\nB 正文。\n`;
+    const sp = splitChangeRegister(text);
+    ok("111④ b ★★ 登记区**之后**的引用块留在正文里", sp.body.includes("> 这是正文里的引用块"), sp.body);
+    ok("111④ c 它后面的正文也在", sp.body.includes("B 正文"), sp.body);
+    ok("111④ d ★ 登记区**之前**的 `>` 说明行仍被剥掉", !sp.body.includes("> 说明第一行"), sp.body);
+    eq("111④ e entries 仍然只有 1 条", sp.entries.length, 1);
+  }
+
+  // ── ⑤ 夹具自检：确认这些断言跑在**真的 lib** 上（不是空导出） ──────────
+  ok(
+    "111⑤ 夹具自检：splitChangeRegister / lostLines / withChangeRegister 都是真函数",
+    typeof splitChangeRegister === "function" &&
+      typeof lostLines === "function" &&
+      typeof withChangeRegister === "function"
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 112：协议代次判据不许冤枉已升级的项目，init 也要能建出第 2 代（D282）");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ★ 用户原话：*"一直在跟我念叨说不是新的协议……同一个项目中开了另外一个对话，
+  //   还要问一句要不要更新到最新协议。这个插件检查是不是有问题？"*
+  //   🔴 病根一：`protocolGapOf` 拿 `protocolVersion` 这个**可能缺失的数字**当"落后"的证据，
+  //     而结构早已齐全（`missing = 0`、`satisfiedProtocolVersion = 2`）⇒ 永远报。
+  //   🔴 病根二：`ledger_init` 参数表里**没有** `decisionsDir/lessonsDir/goalsDir`
+  //     ⇒ 新项目**注定**从第 1 代起 ⇒ 立刻触发"要不要升级"，而没有一条命令能一步升上去。
+  const D = await import("../lib/defs.js");
+  const { protocolGapOf, PROTOCOL_VERSION } = D;
+  const FULL = { decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals", logDir: "_ledger-log" };
+
+  // ── ① 判据：结构齐全时，数字写没写、写多少，都不许判"落后" ────────────
+  for (const [name, m, want] of [
+    ["结构齐全 + 没写 protocolVersion（用户报的那个）", { ...FULL }, false],
+    ["结构齐全 + protocolVersion: 2", { ...FULL, protocolVersion: 2 }, false],
+    ["结构齐全 + protocolVersion: 1（数字说谎）", { ...FULL, protocolVersion: 1 }, false],
+    ["真·单文件（三键全缺）", {}, true],
+    ["半升级：只有卡片化，没 logDir", { decisionsDir: "d", lessonsDir: "l", goalsDir: "g" }, true],
+    ["半升级：只有 logDir", { logDir: "_ledger-log" }, true],
+  ]) {
+    eq(`112① ${name} ⇒ outdated=${want}`, protocolGapOf(m).outdated, want);
+  }
+  {
+    const g = protocolGapOf({ ...FULL, protocolVersion: 1 });
+    ok(
+      "112① g ★★★ 结构齐全但数字写 1 ⇒ effectiveVersion 仍按事实算成 2",
+      g.effectiveVersion === PROTOCOL_VERSION && g.outdated === false,
+      `effective=${g.effectiveVersion} outdated=${g.outdated}`
+    );
+    const oldVerdict = g.projectVersion < g.currentVersion || g.missing.length > 0;
+    ok(
+      "112① h ★★★ 反向自检：旧判据在同一输入上**会**误判（证明这条守卫不是摆设）",
+      oldVerdict === true,
+      `oldVerdict=${oldVerdict}`
+    );
+  }
+
+  // ── ② init 的参数表里必须有卡片化三键 ────────────────────────────────
+  //
+  //   ★ 2026-10-20 自查抓到：我第一版直接用了 `run.registeredTools` ——
+  //     而 `run` 是**别处的局部变量**，在 §112 这个块里取不到 ⇒
+  //     `ReferenceError: run is not defined` ⇒ **整个自检进程崩掉**
+  //     （表现是 exit=1 但 **一条 FAIL 都没有**，很容易被误判成"全过了"）。
+  //   ⇒ 这里**自己造一个干净 ctx**（`makeCtx()` → `mod.apply(run.ctx, …)`），
+  //     与别的情形互不依赖（也避免 D21 那个"跨情形共享夹具"的坑）。
+  const myself = makeCtx();
+  try { mod.apply(myself.ctx, { highFidelityCompactRatio: 1.0, maxActiveLines: 400 }); } catch { /* 允许部分注册 */ }
+  const initTool = myself.registeredTools.get("ledger_init");
+  {
+    ok("112② 拿到了 ledger_init 工具", initTool !== undefined);
+    const props = initTool?.parameters?.properties ?? {};
+    for (const k of ["decisionsDir", "lessonsDir", "goalsDir"]) {
+      ok(
+        `112② ★ ledger_init 暴露了 ${k} 参数（原来根本没有 ⇒ 新项目注定第 1 代）`,
+        Object.prototype.hasOwnProperty.call(props, k),
+        Object.keys(props).join(", ")
+      );
+    }
+  }
+
+  // ── ③ 端到端：init 真的能一步建成第 2 代 ──────────────────────────────
+  //   ★ 用上面那个 `initTool`（来自本块自造的 `myself`），**不要**再取 `run` ——
+  //     那正是第一版崩溃的原因（`run is not defined`）。
+  const mk = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
+  // ★ 只给必备三件、关掉 git 的**最小调用**，避免夹具受环境（有没有 .git）影响
+  const baseArgs = { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", initialActive: "# 台账\n", gitInit: false, gitignore: false };
+
+  {
+    const root = mk("sel112-up-");
+    const r = await initTool.execute({ ...baseArgs, decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals", logDir: "_ledger-log" }, execFor(root, "session-sel112-up"));
+    eq("112③ 建第 2 代项目：ok", r.ok, true);
+    const m2 = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
+    eq("112③ b ★★★ 一步建成 ⇒ protocolVersion = 2（原来不可能）", m2.protocolVersion, 2);
+    eq("112③ c 建成后不再报 outdated", protocolGapOf(m2).outdated, false);
+    for (const d of ["decisions", "lessons", "goals"]) {
+      ok(`112③ d 目录 ${d} 真的建出来了`, fs.existsSync(path.join(root, d)));
+    }
+    ok(
+      "112③ e ★ 回执如实报了 builtGeneration",
+      r.protocol !== undefined && r.protocol.builtGeneration === 2,
+      JSON.stringify(r.protocol)
+    );
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // ★ 旧行为不许被改坏：不给这三个参数 ⇒ 仍是第 1 代
+  {
+    const root2 = mk("sel112-old-");
+    const r2 = await initTool.execute({ ...baseArgs }, execFor(root2, "session-sel112-old"));
+    eq("112③ f 不给卡片目录 ⇒ ok", r2.ok, true);
+    const m3 = JSON.parse(fs.readFileSync(path.join(root2, ".dsh-ledger.json"), "utf8"));
+    eq("112③ g ★ 不给卡片目录 ⇒ 如实写第 1 代（不许虚报）", m3.protocolVersion, 1);
+    fs.rmSync(root2, { recursive: true, force: true });
+  }
+
+  // ★ 回执的 stillMissing 必须**按实际键**筛，不许把已经做到的也冤枉进去
+  {
+    const root3 = mk("sel112-half-");
+    const r3 = await initTool.execute(
+      { ...baseArgs, decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals" },
+      execFor(root3, "session-sel112-half")
+    );
+    const miss = r3.protocol?.stillMissing ?? [];
+    ok(
+      "112③ h ★★★ 建了卡片化只差 logDir ⇒ stillMissing **不许**再提卡片化（回执不许说假话）",
+      miss.length === 1 && !miss.some((x) => String(x).includes("卡片化")),
+      JSON.stringify(miss)
+    );
+    fs.rmSync(root3, { recursive: true, force: true });
+  }
+
+  // ── ④ 边界：新参数也走同一套路径校验 ─────────────────────────────────
+  {
+    const root4 = mk("sel112-sec-");
+    let absRejected = false;
+    try {
+      await initTool.execute({ ...baseArgs, decisionsDir: "C:\\evil" }, execFor(root4, "session-sel112-sec1"));
+    } catch { absRejected = true; }
+    ok("112④ ★ 绝对路径的 decisionsDir 被拒（新参数不许绕过边界检查）", absRejected);
+
+    let escRejected = false;
+    try {
+      await initTool.execute({ ...baseArgs, lessonsDir: "../outside" }, execFor(root4, "session-sel112-sec2"));
+    } catch { escRejected = true; }
+    ok("112④ b ★ 逃出项目根的 lessonsDir 被拒", escRejected);
+    fs.rmSync(root4, { recursive: true, force: true });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 情形 113：`ledger_recall` 的三段式检索（索引层 → 按名单取正文）
+//
+// ★ 为什么必须守它：这条改动让模型能"先看有什么，再决定取哪段"，
+//   而它的**全部价值**建立在一条契约上 ——
+//   **索引报的字数，必须与真去取时拿到的字数一致**。
+//   契约一破，模型就会以为内容丢了（那比"根本没索引"更坏：它会导致误判）。
+//
+// ★ 反向验证放在同一段里：造一个"抖动 session"（同一 seq 第二次给不同正文），
+//   断言契约检测**必须失败**。若它不失败 ⇒ 说明这个断言没有判别力。
+// ═══════════════════════════════════════════════════════════════════════════════
+section("情形 113：ledger_recall 三段式（索引层 + 按名单取正文，A 方案）");
+{
+  const T = mod.__test;
+  ok("113① 暴露了 readSessionIndex（索引层）", typeof T.readSessionIndex === "function");
+  ok("113① 暴露了 readSessionPicked（按名单取）", typeof T.readSessionPicked === "function");
+
+  // ── 夹具：8 个 seq，其中 1 个空事件、2 条超长（否则 gist 省略号/闸门都测不到）──
+  const EVT = [
+    { seq: 10, type: "user/message", time: 1000, data: { message: { role: "user", content: [{ type: "text", text: "第一句，很短。" }] } } },
+    { seq: 11, type: "assistant/message", time: 2000, data: { message: { role: "assistant", content: [{ type: "reasoning", text: "我先想一想。" }, { type: "text", text: "回答正文。" }] } } },
+    { seq: 12, type: "tool/result", time: 3000, data: { content: [{ type: "text", text: "工具结果。" }] } },
+    { seq: 13, type: "assistant/message", time: 4000, data: { message: { role: "assistant", content: [{ type: "tool-call", name: "read", arguments: { p: "a" } }] } } },
+    { seq: 14, type: "turn/start", time: 5000, data: {} },
+    { seq: 15, type: "user/message", time: 6000, data: { message: { role: "user", content: [{ type: "text", text: "第二条。" }] } } },
+    { seq: 16, type: "user/message", time: 7000, data: { message: { role: "user", content: [{ type: "text", text: "长消息。".repeat(60) }] } } },
+    { seq: 17, type: "user/message", time: 8000, data: { message: { role: "user", content: [{ type: "text", text: "又一条长消息。".repeat(60) }] } } },
+  ];
+  const bySeq = new Map(EVT.map((e) => [e.seq, e]));
+  const sess = { eventAt: (s) => bySeq.get(s) };
+
+  // ── ① 索引层的基本形态 ──
+  const idx = T.readSessionIndex(sess, 10, 17, {});
+  ok("113① b 索引返回 ok", idx.ok === true);
+  ok("113① c 空事件被跳过（8 个 seq ⇒ 7 条）", idx.events === 7, `events=${idx.events}`);
+  ok("113① d totalChars 等于各行之和", idx.totalChars === idx.rows.reduce((s, r) => s + r.chars, 0));
+  ok("113① e 每行都有 gist", idx.rows.every((r) => typeof r.gist === "string" && r.gist !== ""));
+  ok("113① f 超长行的 gist 带省略号", idx.rows.some((r) => r.gist.endsWith("…")));
+  ok("113① g 标了 hasReasoning", idx.rows.find((r) => r.seq === 11)?.hasReasoning === true);
+  ok("113① h ★ maxRows 生效且如实报 omitted（不许静默截断）", (() => {
+    const lim = T.readSessionIndex(sess, 10, 17, { maxRows: 3 });
+    return lim.rows.length === 3 && lim.omitted === 4;
+  })());
+
+  // ── ② 按名单取正文 ──
+  const picked = T.readSessionPicked(sess, [15, 11], {});
+  ok("113② 只回点名的，且按 seq 升序", picked.events.length === 2 && picked.events[0].seq === 11 && picked.events[1].seq === 15);
+  ok("113② b 重复 seq 去重", T.readSessionPicked(sess, [11, 11, 11], {}).events.length === 1);
+  ok("113② c ★ 点名但取不到的 seq 进 skipped（不许静默丢）", (() => {
+    const s = T.readSessionPicked(sess, [11, 999], {});
+    return s.events.length === 1 && Array.isArray(s.skipped) && s.skipped.includes(999);
+  })());
+
+  // ── ③ ★★★ 核心契约：索引报的字数 ≡ 真取到的字数（同一把尺子）──
+  const whole = T.readSessionRange(sess, 10, 17, { maxChars: 999999 });
+  const viaIdx = T.readSessionPicked(sess, idx.rows.map((r) => r.seq), { maxChars: 999999 });
+  ok("113③ 条数一致", whole.events.length === viaIdx.events.length);
+  ok("113③ b 总字符一致", whole.chars === viaIdx.chars, `${whole.chars} vs ${viaIdx.chars}`);
+  ok("113③ c ★★★ 每条正文逐字节相同（两条路共用 eventTextOf）", (() => {
+    for (const w of whole.events) {
+      const p = viaIdx.events.find((e) => e.seq === w.seq);
+      if (p === undefined || p.text !== w.text) return false;
+    }
+    return true;
+  })());
+  ok("113③ d ★★★ 索引报的 chars ≡ 真取到的 text.length", idx.rows.every((r) => {
+    const p = viaIdx.events.find((e) => e.seq === r.seq);
+    return p !== undefined && p.text.length === r.chars;
+  }));
+
+  // ── ④ ★★★ 反向验证：抖动 session 必须让 ③d 那条判据**失败** ──
+  //   ★ 判据（纪律 10）：反向验证要摘到"能看见红"。这里不去改源码，
+  //     而是让被测对象**真的表现不一致** ⇒ 若断言有判别力，它必然报 false。
+  {
+    const seen = new Map();
+    const jitter = {
+      eventAt(s) {
+        const base = bySeq.get(s);
+        if (base === undefined) return undefined;
+        const n = (seen.get(s) ?? 0) + 1;
+        seen.set(s, n);
+        if (n === 1) return base;
+        // 第二次起正文砍半 ⇒ 索引与真取必然对不上
+        const half = (base.data?.message?.content?.[0]?.text ?? base.data?.content?.[0]?.text ?? "").slice(0, 40);
+        return { ...base, data: { message: { role: "user", content: [{ type: "text", text: half }] } } };
+      },
+    };
+    const jIdx = T.readSessionIndex(jitter, 10, 17, {});
+    const jPicked = T.readSessionPicked(jitter, jIdx.rows.map((r) => r.seq), { maxChars: 999999 });
+    const contractHolds = jIdx.rows.every((r) => {
+      const p = jPicked.events.find((e) => e.seq === r.seq);
+      return p !== undefined && p.text.length === r.chars;
+    });
+    ok("113④ ★★★ 反向验证：契约被打破时，③d 那类断言**确实会红**", contractHolds === false,
+      `contractHolds=${contractHolds}（若为 true 说明断言没判别力）`);
+  }
+
+  // ── ⑤ 闸门仍然生效（加了 mode 不许绕过 maxChars）──
+  ok("113⑤ 传 1 被夹到 200 底线 ⇒ 超了必截断", (() => {
+    const r = T.readSessionPicked(sess, [16, 17], { maxChars: 1 });
+    return r.truncated === true;
+  })());
+  ok("113⑤ b 截断后总量不超闸门", (() => {
+    const r = T.readSessionPicked(sess, [16, 17], { maxChars: 400 });
+    return r.chars <= 400;
+  })());
+
+  // ── ⑥ 工具表：新参数真的暴露给模型了（否则等于没做）──
+  //   ★★ 这一段踩过**两次**取法错，都记下来：
+  //     第一次：`T.tools?.ledger_recall ?? T.defineRecallTool?.({})` ——
+  //       `__test` **既没有 `tools`、也没有 `defineRecallTool`** ⇒ 两边 undefined ⇒ 4 条全红，
+  //       而**红的原因是我取错了地方，不是工具坏了**。
+  //     第二次：自己手搓 `REAL_CFG` 去 `apply` —— 那个常量**只在我别的探针里存在**，
+  //       这里根本没有 ⇒ `ReferenceError` ⇒ 整段炸掉（却又"部分通过"，因为
+  //       后面的 `Array.isArray(undefined)` 恰好为 false 的断言蒙对了）。
+  //       ★ 这正是台账里那条「`exit≠0` 而 `FAIL=0` ⇒ 先怀疑崩溃」的同型。
+  //   ⇒ 正解：用**本文件自己的** `makeCtx()`（它已经把 `ctx.tools.register` 接进 Map）。
+  {
+    const runR = makeCtx();
+    try { mod.apply(runR.ctx, {}); } catch { /* 已注册到哪算哪 */ }
+    const tool = runR.registeredTools.get("ledger_recall");
+    const props = tool?.parameters?.properties ?? {};
+    ok("113⑥ ★ 经过真注册拿到了 ledger_recall（取法本身要对）", tool !== undefined,
+      tool === undefined ? `已注册：${[...runR.registeredTools.keys()].join(",")}` : "");
+    ok("113⑥ b ledger_recall 暴露了 mode 参数", Object.hasOwn(props, "mode"), Object.keys(props).join(","));
+    ok("113⑥ c ledger_recall 暴露了 seqs 参数", Object.hasOwn(props, "seqs"));
+    ok("113⑥ d mode 只允许 index / events", (() => {
+      const e = props.mode?.enum;
+      return Array.isArray(e) && e.length === 2 && e.includes("index") && e.includes("events");
+    })());
+    ok("113⑥ e ★ 老参数 from/to 仍然在（旧行为不许被改坏）", Object.hasOwn(props, "from") && Object.hasOwn(props, "to"));
+    ok("113⑥ f ★ required 里**不再**强制 from/to（否则新 mode 无法单独用）", (() => {
+      const req = tool?.parameters?.required;
+      // ★ 必须真的断言"拿到了 required 且为空"，不能让 undefined 蒙混过关
+      return Array.isArray(req) && req.length === 0;
+    })(), JSON.stringify(tool?.parameters?.required));
+
+    // ── ⑦ ★★★ 真跑工具（不是只验参数表）──
+    const exec = { agent: { session: sess } };
+    if (typeof tool?.execute !== "function") {
+      ok("113⑦ 能真跑 ledger_recall", false, "execute 不存在");
+    } else {
+      const legacy = await tool.execute({ from: 10, to: 17 }, exec);
+      ok("113⑦ 老行为（不带 mode）仍然可用", legacy.ok === true && Array.isArray(legacy.events), String(legacy.reason ?? ""));
+      ok("113⑦ b 老行为返回的就是整段正文", legacy.chars === whole.chars, `${legacy.chars} vs ${whole.chars}`);
+      ok("113⑦ c ★ 老行为没有多出 mode 字段（旧形状逐字节不变）", legacy.mode === undefined, JSON.stringify(legacy.mode));
+
+      const r1 = await tool.execute({ mode: "index", from: 10, to: 17 }, exec);
+      ok("113⑦ d mode:'index' 可用", r1.ok === true && r1.mode === "index", String(r1.reason ?? ""));
+      ok("113⑦ e 索引不返回全文", Array.isArray(r1.rows) && r1.events === 7, `events=${r1.events}`);
+      ok("113⑦ f 索引带下一步提示", typeof r1.hint2 === "string" && r1.hint2.includes("seqs"));
+
+      const r2 = await tool.execute({ mode: "events", seqs: [11, 16] }, exec);
+      ok("113⑦ g mode:'events' 可用", r2.ok === true && r2.mode === "events", String(r2.reason ?? ""));
+      ok("113⑦ h 只回点名的两条", r2.returned === 2, `returned=${r2.returned}`);
+      ok("113⑦ i 取回的正文与老路逐字节一致", (() => {
+        for (const e of r2.events ?? []) {
+          const w = whole.events.find((x) => x.seq === e.seq);
+          if (w === undefined || w.text !== e.text) return false;
+        }
+        return true;
+      })());
+
+      const bad1 = await tool.execute({ mode: "index" }, exec);
+      ok("113⑦ j mode:'index' 缺 from/to ⇒ 如实拒绝", bad1.ok === false && typeof bad1.reason === "string");
+      const bad2 = await tool.execute({ mode: "events" }, exec);
+      ok("113⑦ k mode:'events' 缺 seqs ⇒ 如实拒绝", bad2.ok === false && typeof bad2.reason === "string");
+      const bad3 = await tool.execute({}, exec);
+      ok("113⑦ l 什么都不给 ⇒ 如实拒绝并说清三种用法", bad3.ok === false && String(bad3.reason).includes("mode:'index'"));
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 情形 114：`mechanicalWeight` 的 done 词表必须认识「已作废」（D284）
+//
+// ★ 为什么必须守它：`done` 一旦漏判，症状是**静默的** ——
+//   那张卡照样参与排序、照样可能被读，只是**本该让位**。没有任何报错。
+//   实测（改动前）：`decisions/` 里 **5 张**卡 heading 明写「已作废」（D274–D278），
+//   全部漏网。
+//
+// ★★ 更要守的是**反向**：这次是"往词表里加词"，最容易犯的错是**加宽了误伤面**。
+//   实测反证：正文提到"作废"的卡有 **7 张**（D49 / D57 / D117 / D136 / D173 / D254 / D279），
+//   它们说的是**卡内某个局部结论**作废，卡片本身完全有效。
+//   ⇒ 所以两条断言必须**同时**成立：该降的降了，不该降的一个没降。
+// ═══════════════════════════════════════════════════════════════════════════════
+section("情形 114：作废卡必须降权，且不许误伤「卡内局部结论作废」的有效卡（D284）");
+{
+  const T = mod.__test;
+  const w = (heading, text = "") =>
+    T.mechanicalWeight({ key: "X", heading, text, lines: 0, chars: text.length }, undefined, Date.now());
+
+  // ── ① 作废族：全部要命中 ──
+  const SHOULD_DONE = ["已作废", "已废弃", "已撤销", "已被取代", "被否"];
+  for (const kw of SHOULD_DONE) {
+    ok(`114① 「${kw}」⇒ done`, w(`D999 · ${kw} —— 某事`).done === true, JSON.stringify(w(`D999 · ${kw}`).why));
+  }
+
+  // ── ② 原有词表一个都不许丢（加法不是替换）──
+  for (const kw of ["已完成", "已处理", "已过期", "不要重做", "别再重做"]) {
+    ok(`114② 「${kw}」仍然 done（旧判定不许被改坏）`, w(`D999 · ${kw} —— 某事`).done === true);
+  }
+
+  // ── ③ ★★★ 反向：真实存在的 7 张"卡内局部作废"卡，必须仍然有效 ──
+  const MUST_STAY_VALID = [
+    "D49 · ★★★ 两个压缩模式（正常推进 / 反复追究）—— 用户拍板",
+    "D57 · \"官方通道只装到 0.1.0\"的真根因：过期的 minimumReleaseAgeExclude",
+    "D117 · ★★★ 【已实现】轻推不再按「攒了多少」触发",
+    "D136 · 区块定位 = 相对位置（多维秩融合 + 权重可变）· 2026-10-12",
+    "D173 · ★★★★★★ 接手诊断：模型收到的压缩合同与用户拍板的架构不是同一份",
+    "D254 · 日志系统跟得上台账吗？（覆盖率 100%，但「查得动」已开始告急）",
+    "D279 · 1.2.9：记忆协议代次检测 + 默认压缩线 0.3 → 0.7",
+  ];
+  for (const h of MUST_STAY_VALID) {
+    ok(`114③ 「${h.slice(0, 38)}…」必须仍然有效`, w(h).done !== true, JSON.stringify(w(h).why));
+  }
+
+  // ── ④ ★★★ 判据只吃 heading，不吃正文（这是"不认关键词"的结构性保证）──
+  ok(
+    "114④ ★★★ 正文堆满『作废/废弃/撤销/被否』但标题干净 ⇒ 仍然有效",
+    w("D999 · 一个完全有效的决定", "上一版已作废。已废弃。已撤销。被否。全部不算。").done !== true,
+    JSON.stringify(w("D999 · 一个完全有效的决定", "上一版已作废。已废弃。").why)
+  );
+
+  // ── ⑤ 真实盘面：声明作废却漏网的卡必须是 0，且盘面里**确实**有作废卡 ──
+  //   ★ 后半句不是凑数：不校验"夹具非空"，这条断言在没人写"已作废"时会**永远绿**。
+  //   ★★ 取法第四次踩坑（前三次：情形 113 ⑥⑦ 里的 `T.tools` / `REAL_CFG`，以及这一条自己的 `ROOT`）：
+  //     本文件里 `projectRoot` 确实存在，**但它定义在情形 43 的块作用域里**（`:8395`），
+  //     在情形 114 这个位置**够不着** ⇒ `ReferenceError`。
+  //     第一次写 `ROOT`（根本没这个变量）、第二次写 `projectRoot`（有，但不在此作用域）——
+  //     **两次都是"变量名靠印象编，不查作用域"**。
+  //   ⇒ 正解：用模块顶部的 `HERE`（`:30`）自己拼，不依赖任何别处的局部变量。
+  {
+    const DIR = "decisions";
+    const projRoot = path.join(HERE, "..");
+    let cards = [];
+    try {
+      cards = T.listCards(projRoot, DIR) ?? [];
+    } catch {
+      cards = [];
+    }
+    if (cards.length === 0) {
+      ok("114⑤ 盘面：能读到决策卡", false, `listCards(${projRoot}, ${DIR}) 返回空 ⇒ 断言没被测到`);
+    } else {
+      const DEP = /已作废|已废弃|已撤销|已被取代|被否/;
+      const heads = cards.map((c) => {
+        const text = T.readCard(projRoot, DIR, c.key) ?? "";
+        return {
+          key: c.key,
+          heading: (text.split(/\r?\n/).find((l) => l.trim() !== "") ?? "").replace(/^#+\s*/, "").trim(),
+        };
+      });
+      const miss = heads.filter((b) => DEP.test(b.heading) && w(b.heading).done !== true);
+      ok(`114⑤ ★ 盘面：声明作废却漏网的卡 = ${miss.length} 张（应为 0）`, miss.length === 0, miss.map((m) => m.key).join(","));
+      ok(
+        "114⑤ b ★ 盘面里确实有作废卡（否则上面那条是空的）",
+        heads.some((b) => DEP.test(b.heading)),
+        "一张都没有 ⇒ 断言没被测到"
+      );
+    }
+  }
+}
 if (failCount > 0) {
   console.log(`  失败清单：`);
   for (const f of failures) console.log(`    - ${f}`);

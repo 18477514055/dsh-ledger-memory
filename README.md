@@ -211,7 +211,7 @@ pnpm 会把那一行**自己改成** `- dsh-ledger-memory@0.1.0 || 1.0.0`（追�
 | `ledger_note` | 写一份**问题记录**（非项目场景，有终点的那种） |
 | `ledger_log` | 查活动日志（五档，**从不注入上下文**） |
 | `ledger_log_write` | 追加一条回合小结（L1） |
-| `ledger_recall` | 读回被压缩掉的历史**逐字原文**（按 seq 区间） |
+| `ledger_recall` | 读回被压缩掉的历史**逐字原文**。★ 两段式：`mode:"index"` 先给逐事件索引（seq / 类型 / 字数 / 摘要），再用 `mode:"events"` + `seqs` 只取点名的那几条；不带 `mode` 时按 seq 区间整段取（旧行为不变） |
 | `ledger_handoff` | 写交接单，供下一个会话接手 |
 | `ledger_triage` | 将阶段性产出划为「留 / 落 / 丢」三个桶 |
 | `ledger_lock` | 将本场对话锁定到指定项目目录（跨重启保持；记录不写入工作区） |

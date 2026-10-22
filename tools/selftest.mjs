@@ -30,6 +30,44 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * ★★★★★ 2026-10-21（D297 · V3 迁移前必须补的缺口）：**台账不一定住在项目根。**
+ *
+ * 🔴 病：自检里有两处写死 `path.join(HERE, "..", "LEDGER.md")`，并且**找不到就 ⏭ 跳过**。
+ *   那个"跳过"本意是给**发布包**用的（包里没有 LEDGER.md），逻辑上没错；
+ *   但 V3 迁移会把 `LEDGER.md` 搬进 `<项目名>-ledger-memory/` ⇒
+ *   **同一个"文件不存在"的后果，在开发树上变成了"守卫静默失效"**。
+ *
+ * ★★★ 最危险的地方在于：它**不会报红**。跳过等于放行 ⇒
+ *   「§7 口径表与代码一致」「头部上限与清单一致」这两条守卫会**永久失去牙齿**，
+ *   而人看到的仍是一片绿。这正是本项目反复记的那类错：**守卫静默失效比没有守卫更糟。**
+ *
+ * ⇒ 修法：**先问清单**（`memoryRoot`），再拼路径。清单说在哪就去哪找 ——
+ *   这跟插件本体 `memoryBaseOf()` 是同一条原则：**地址只有一个出处，不能有第二个。**
+ *   ⚠️ 这里刻意**不 import 插件里的函数**：自检要能独立跑，
+ *     而且它要验的正是"清单说了算"这件事，必须自己读一遍清单。
+ */
+const PROJECT_ROOT = path.join(HERE, "..");
+
+/** 读项目清单（读不到返回空对象，调用方自己判）。 */
+function readProjectManifest() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, ".dsh-ledger.json"), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 台账的**真实位置**（V2 在项目根；V3 在 `memoryRoot` 里）。
+ * ★ 这是自检里取台账路径的**唯一入口** —— 不许再写 `path.join(HERE, "..", "LEDGER.md")`。
+ */
+function ledgerPathOf(manifest) {
+  const active = typeof manifest?.active === "string" && manifest.active !== "" ? manifest.active : "LEDGER.md";
+  const memRoot = typeof manifest?.memoryRoot === "string" && manifest.memoryRoot !== "" ? manifest.memoryRoot : "";
+  return memRoot === "" ? path.join(PROJECT_ROOT, active) : path.join(PROJECT_ROOT, memRoot, active);
+}
+
+/**
  * ★★★★★ 2026-10-19（D272 顺带修）：把源码里的**注释**剥掉，只留代码。
  *
  * ★★★ 为什么必须重写这个函数（**这是本轮撞出来的真缺陷**）：
@@ -908,7 +946,7 @@ section("情形 1：全新项目的检测与提示");
   // ★ 2026-10-10：新增 `ledger_lock`（把会话锁到某个项目目录）⇒ 13 → 14 个工具。
   // ★ 2026-10-11：新增 `ledger_recall`（把被压段的逐字原文按需读回，含 reasoning）
   //   ⇒ 14 → 15 个工具（承 D79：压缩后要能回溯原文，而不只是摘要）。
-    eq("注册了 21 个工具（D181 ledger_goals · D191 原则授权 · D192 经验教训 · D199 老文件迁移 · D202 多维索引）", run.registeredTools.size, 21);
+    eq("注册了 22 个工具（D181 ledger_goals · D191 原则授权 · D192 经验教训 · D199 老文件迁移 · D202 多维索引 · **D299 ledger_extension**）", run.registeredTools.size, 22);
   for (const n of [
     "ledger_status",
     "ledger_init",
@@ -977,8 +1015,23 @@ let initedRoot;
   );
 
   eq("init ok", init.ok, true);
-  ok("git init 执行了", init.gitInit === true, JSON.stringify(init.notes));
-  ok(".git 目录存在", fs.existsSync(path.join(root, ".git")));
+  // ★★★★★ 2026-10-21（D291 · V3 阶段 2）：**这条断言的结论反转了** —— 行为变了，测点也要变。
+  //
+  //   🔴 原来：`ok("git init 执行了", init.gitInit === true)` —— 因为那时**不传就 init**。
+  //   ★ 而用户早已拍板「`git init` 必须显式」，代码却是 `args?.gitInit !== false`（默认 init）
+  //     ⇒ **这条断言一直在把那个违反决策的行为当成"正确"来钉住**。
+  //     这正是「断言本身可能是错的」那一类：它没抓 bug，它在**保护 bug**。
+  //
+  //   ⇒ 现在默认不 init，所以正确的测点是：
+  //     ① 不传 `gitInit` ⇒ **没有** .git，且回执里**明确说了**"我没替你建"
+  //     ② 显式 `gitInit: true` ⇒ 真的建了（下面另起一组验）
+  ok("★ 默认**不**执行 git init（用户拍板：必须显式）", init.gitInit !== true, JSON.stringify(init.notes));
+  ok("★ 默认时**没有** .git 目录", !fs.existsSync(path.join(root, ".git")));
+  ok(
+    "★ 回执如实说明「默认不建仓库、要建请显式」",
+    Array.isArray(init.notes) && init.notes.some((n) => /默认不建仓库/.test(String(n))) ,
+    JSON.stringify(init.notes),
+  );
   ok("LEDGER.md 写出", fs.existsSync(path.join(root, "LEDGER.md")));
   ok("DECISIONS.md 写出", fs.existsSync(path.join(root, "DECISIONS.md")));
   ok("归档目录建了", fs.statSync(path.join(root, "_ledger-archive")).isDirectory());
@@ -1179,7 +1232,14 @@ section("情形 5：ledger_archive");
   const r1 = await T.get("ledger_archive").execute(
     {
       // 把**真实存在**的条目移进归档（而不是夹具里凭空编的那几个）
-      entries: `## 已完成\n${liveEntries.join("\n")}\n`,
+      //
+      // ★★★ 2026-10-21（D287）：原来这里写的是 `## 已完成\n${liveEntries.join("\n")}\n` ——
+      //   前缀 `## 已完成` 是**夹具自己编的**，磁盘上根本没有这个小标题。
+      //   旧判据只看"每行还在不在" ⇒ 多一个假标题也能过；
+      //   新判据要求「entries 是原文里**一整段连续**的真实内容」⇒ **当场拒绝**。
+      //   ★ 这次变红**不是判据太严，是夹具在**编造内容**（它交了一段原文里不存在的段落）。
+      //   ⇒ 修夹具：**原样交真实条目**，不加任何编造的前缀/后缀。
+      entries: liveEntries.join("\n") + "\n",
       newActive: "# 项目台账\n\n## 目标\n继续做。\n\n## 进行中\n- [ ] 起步\n",
       label: "第一批",
     },
@@ -1203,8 +1263,17 @@ section("情形 5：ledger_archive");
   //   🔴 **旧判据（只查列表行）放过了它** —— 这正是 review F05 说的那个洞：
   //      "普通段落不进检查"。★ 所以这次变红**不是判据太严，是夹具本来就在丢内容**。
   //   ⇒ 修夹具（不是放松判据）：让 `newActive` **保住**上一次写进去的正文。
+  // ★★★ 2026-10-21（D287）：这条夹具同样在**编造内容**。
+  //   原来交的是 `entries: "## 已完成\n- [ ] 起步\n"` —— 而此刻磁盘上（第一次归档的 newActive
+  //   写进去的）内容是 `# 项目台账\n\n## 目标\n继续做。\n\n## 进行中\n- [ ] 起步\n`，
+  //   **没有 `## 已完成` 这个小标题**。旧判据只看"每行还在不在"⇒ 编的标题混过去；
+  //   新判据要求「entries 是原文里一整段连续的真实内容」⇒ 当场拒绝。
+  //   ⇒ 修夹具：**原样交真实的那一行**。
+  const live2 = fs.readFileSync(path.join(initedRoot, "LEDGER.md"), "utf8");
+  const live2Body = bodyOf(live2);
+  const startLine2 = live2Body.split("\n").find((l) => /^\s*[-*+]\s+\S/.test(l)) ?? "- [ ] 起步";
   const r2 = await T.get("ledger_archive").execute(
-    { entries: "## 已完成\n- [ ] 起步\n", newActive: "# 项目台账\n\n## 目标\n继续做。\n" },
+    { entries: `${startLine2}\n`, newActive: "# 项目台账\n\n## 目标\n继续做。\n" },
     exec
   );
   eq("二次归档 ok", r2.ok, true);
@@ -1212,7 +1281,7 @@ section("情形 5：ledger_archive");
   eq("appended 标记为真", r2.appended, true);
   const second = fs.readFileSync(arcAbs, "utf8");
   ok("历史未被覆盖（第一次的条目还在）", second.includes("第一批"), second);
-  ok("新条目已追加", second.includes("- [ ] 起步"), second);
+  ok("新条目已追加", second.includes(startLine2), second);
 
   // newActive 仍超阈值 ⇒ 拒绝改活跃台账（归档不能白做）
   // ★ 同样按**当前真正生效的阈值**构造（别写死 200；见情形 4 的说明）。
@@ -1485,7 +1554,7 @@ section("情形 7：服务缺失与容错");
     console.log(`        apply 抛了：${e.message}`);
   }
   ok("没有 commands 服务时 apply 不抛错", !threw);
-  eq("没有 commands 时工具仍注册", run.registeredTools.size, 21);
+  eq("没有 commands 时工具仍注册", run.registeredTools.size, 22);
   rmrf(initedRoot);
 }
 
@@ -4026,6 +4095,12 @@ section("情形 22：台账被改动时的回执");
     const run = makeCtx({ withUserQuestions: true });
     mod.apply(run.ctx, {});
     const agent = agentOf(root, "s22c", []);
+    // ★★★ 2026-10-21（D287）：原夹具交的 `entries: "- 旧条目\n"` 是**凭空编的**
+    //   （磁盘上没这一行）。新判据要求「entries 是原文里一整段真实内容」⇒ 当场拒。
+    //   ⇒ 修夹具：先把这一行真的写进台账，再原样归档。
+    await run.registeredTools
+      .get("ledger_write")
+      .execute({ target: "active", mode: "append", content: "- 旧条目\n" }, { agent, callId: "c0" });
     const ar = await run.registeredTools.get("ledger_archive").execute(
       { entries: "- 旧条目\n", newActive: "# 台账\n\n## 已完成\n" },
       { agent, callId: "c" }
@@ -4389,6 +4464,15 @@ section("情形 22：台账被改动时的回执");
     const root = mk("touch-g");
     const run = makeCtx();
     mod.apply(run.ctx, {});
+    // ★★★ 2026-10-21（D287）：原夹耳朵交的是 `entries: "- old-a\n- old-b"` —— 那两行
+    //   **磁盘上根本不存在**（是夹具凭空编的）。旧判据只看"每行还在不在"⇒ 编的行只要
+    //   不出现就"不算丢失"，于是它一直绿着；新判据要求「entries 是原文里一整段真实内容」
+    //   ⇒ 当场拒绝。★ 这不是判据变严，是夹具一直在**编造归档内容**。
+    //   ⇒ 修夹具：先把要归档的那两行**真的写进台账**，再原样归档。
+    const seed = "- old-a\n- old-b\n";
+    await run.registeredTools
+      .get("ledger_write")
+      .execute({ target: "active", mode: "append", content: seed }, execFor(root, "s22g-seed"));
     const before = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8")).revision;
     const r = await run.registeredTools
       .get("ledger_archive")
@@ -4401,9 +4485,16 @@ section("情形 22：台账被改动时的回执");
 
     // 审计要记下来，而且 audit 视图要能读到（不能因为 kind 变了就漏掉）
     const audit = await run.registeredTools.get("ledger_log").execute({ view: "audit" }, execFor(root, "s22g"));
-    eq("★ 归档留了一条审计", audit.matched, 1);
-    ok("★ 审计标的是归档（不是写入）", audit.changes[0].text.includes("archive"), audit.changes[0].text);
-    ok("★ 审计带会话编号", /cafe/.test(audit.changes[0].text), audit.changes[0].text);
+    // ★★ 2026-10-21（D287）：为了给归档**造真实内容**，上面先跑了一次 `ledger_write`
+    //   ⇒ 审计里现在有 **2 条**（1 条写入 + 1 条归档），不再是 1 条。
+    //   ★ 这不是把断言放松，而是**把判据修准**：原断言 `matched===1` 隐含了
+    //     "这个夹具只做过一次台账改动"，那个前提已经变了。
+    //   ⇒ 改成：**归档那一条必须在**，且条数与实际改动次数一致。
+    eq("★ 审计条数 = 2（先播种 1 次写入 + 1 次归档）", audit.matched, 2);
+    const archiveAudit = audit.changes.find((c) => c.text.includes("archive"));
+    ok("★ 归档留了一条审计", archiveAudit !== undefined, JSON.stringify(audit.changes?.map((c) => c.text)));
+    ok("★ 审计标的是归档（不是写入）", String(archiveAudit?.text).includes("archive"), archiveAudit?.text);
+    ok("★ 审计带会话编号", /cafe/.test(String(archiveAudit?.text)), archiveAudit?.text);
 
     // ★ 关键后果：另一个会话拿**归档前**的 revision 写入、且内容里漏掉了当前
     //   还活着的条目（`- keep`）⇒ 必须被判为过期并把 `- keep` 保留下来。
@@ -5797,15 +5888,16 @@ section("情形 27：官方设置面板");
     ok("★ 回报了可写", r.body.writable === true, JSON.stringify(r.body).slice(0, 200));
     // ★★★★ 2026-10-13（D157/D158）：36 → **37**（新增 `triageKeepTotalMax`）。
     // ★★★★★ 2026-10-13（D179）：37 → **38**（新增 `hardMaintenanceGate`，收尾维护硬门）。
-    eq("★ 回报了四十二项元数据（…D241 turnEndPull · D244 midTurnCompact）", r.body.specs?.length, 42);
+    // ★★★★★ 2026-10-20（D285）：42 → **43**（新增 `diagFile`，回合内压缩诊断落盘）。
+    eq("★ 回报了四十三项元数据（…D244 midTurnCompact · D285 diagFile）", r.body.specs?.length, 43);
     ok(
-      "★★ 四十二项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
+      "★★ 四十三项的键与代码里登记的一致（★ 逐项列出，改错一个当场红）",
       JSON.stringify([...r.body.specs.map((s) => s.key)].sort()) ===
         JSON.stringify([
           "autoCompact", "blockHistoryMax", "blockInjection", "capsuleArtifactMax",
           "capsuleErrorChars", "capsuleErrorMax", "capsuleMaxChars", "capsuleStoreSessions",
           "capsuleUserMsgChars", "capsuleUserMsgMax", "changeRegisterMax", "deltaRemovePoints",
-          "deltaTriggerPoints", "fileAnchor", "hardMaintenanceGate", "highFidelityCompact", "highFidelityCompactRatio",
+          "deltaTriggerPoints", "diagFile", "fileAnchor", "hardMaintenanceGate", "highFidelityCompact", "highFidelityCompactRatio",
           "incrementalCompact", "logBriefChars", "logDefaultLimit", "logLevels",
           "maxActiveLines", "maxArchiveList", "maxReadChars", "midTurnCompact", "minCompressPoints", "mode", "nudgeMinRatio",
           "pressureTiers", "recallMaxChars", "requireFlushBeforeCompact", "settingPrecedence", "shadowedIndexMax",
@@ -8573,7 +8665,14 @@ section("情形 27：官方设置面板");
   //     其中含 `lib/` 字面量的那批被一并删掉 ⇒ 净效果是 -1。
   //     ★ 这条数字**反复漂移**本身就是它的已知弱点（会被纯注释/纯删文件推动）。
   //     处置仍照 D194/D216 先例：**改数字 + 记明原因**，绝不去改注释绕开判据。
-  const DANGEROUS_EXPECTED = 63;
+  //   ★★ 2026-10-21（D288）：63 → **64**。新增的是 `_probe-no-cloud-write.mjs` ——
+  //     ★ 它**真的会读 `lib/` 下所有 .js**（要把"插件本体有没有外发能力"扫干净），
+  //       路径用 `path.join(ROOT,"lib")` 拼出来 ⇒ 本来该是**假阳性**性质。
+  //     ★ 但同一个 D288 里我还新增了 `_probe-gitignore-leak.mjs`，它**没被算进来** ——
+  //       因为它只写 `"lib"` 而不写 `lib/index.js` 这类字面量 ⇒ 本判据的**已知假阴性**。
+  //     ⇒ 所以 **+1 不是 +2**。★ 照例：**先看名单再改数字**（上面那份 64 个就是名单，
+  //       `_probe-no-cloud-write.mjs` 在列，`_probe-gitignore-leak.mjs` 不在）。
+  const DANGEROUS_EXPECTED = 64;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
@@ -8826,10 +8925,10 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const constNames = [...regSeg.matchAll(/\[([A-Z][A-Z0-9_]+),\s*\(\)\s*=>/g)].map((m) => m[1]);
   const toolCount = literalNames.length + constNames.length;
   eq(
-    "★ 口径：工具数 = 21（D181 ledger_goals · D191 原则授权 · D192 经验教训 · D199 老文件迁移 · D202 多维索引）" +
+    "★ 口径：工具数 = 22（D181 ledger_goals · D191 原则授权 · D192 经验教训 · D199 老文件迁移 · D202 多维索引 · **D299 ledger_extension**）" +
       "　★ 判据认**两种写法**：字符串字面量 + 常量（D192 的老版本只认前者，漏了常量）",
     toolCount,
-    21
+    22
   );
   void toolEntries;
 
@@ -8838,7 +8937,7 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   const ssEnd = libSrc.indexOf("\n];", ssStart);
   const ssSeg = libSrc.slice(ssStart, ssEnd === -1 ? ssStart + 40000 : ssEnd);
   const settingKeys = [...ssSeg.matchAll(/\n\s{2}\{\s*\n\s{4}key:\s*"([A-Za-z]+)"/g)].map((m) => m[1]);
-  eq("★ 口径：设置项数 = 42（…D241 turnEndPull · D244 midTurnCompact）", settingKeys.length, 42);
+  eq("★ 口径：设置项数 = 43（…D244 midTurnCompact · D285 diagFile）", settingKeys.length, 43);
 
   // ── ③ 子命令数 ───────────────────────────────────────────────────────────
   //   ★★ 2026-10-13（D180）：加入 `principles`；★ 并**实测**到 `triage` 在源码里
@@ -9090,10 +9189,22 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //     台账侧 = `LEDGER.md` §7 表里的四个数字；代码侧 = 上面 ①—④ 刚数出来的实际值。
   //   ⚠️ 且**不比对"由谁守"那一列**（那是叙述，不是数字）。
   {
-    const ledgerPath = path.join(HERE, "..", "LEDGER.md");
+    const ledgerPath = ledgerPathOf(readProjectManifest());
     if (!fs.existsSync(ledgerPath)) {
       // ★ 发布包不含 LEDGER.md ⇒ 如实跳过，绝不假装通过（与 ⑥ 同一处理）。
-      ok("★ 口径：台账 §7 表与代码一致（⏭ 跳过：台账不在本包内）", true, ledgerPath);
+      //
+      // ★★★ 但"跳过"必须能被**区分**成两件事（否则就是静默失效）：
+      //   ① **发布包**：清单本身不在 ⇒ 跳过是对的；
+      //   ② **开发树/真实项目**：清单在、台账却按清单地址找不到 ⇒ **路径解析错了**，
+      //      必须**报红**。这正是 V3 迁移后最容易掉进去的坑（见 `ledgerPathOf` 那段注释）。
+      const hasManifest = fs.existsSync(path.join(PROJECT_ROOT, ".dsh-ledger.json"));
+      ok(
+        "★ 口径：台账 §7 表与代码一致（⏭ 跳过：台账不在本包内）",
+        !hasManifest,
+        hasManifest
+          ? `清单在、但按清单地址找不到台账：${ledgerPath} ⇒ **守卫会静默失效，必须先修路径解析**`
+          : ledgerPath
+      );
     } else {
       const ledgerSrc = fs.readFileSync(ledgerPath, "utf8");
       // 只吃 §7 那张表：从「口径分叉」标题到下一个 `###` 之前
@@ -9148,10 +9259,12 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   // ★ 上限那条尤其值得守：**它就是"台账到底能写多长"的唯一声明**，
   //   写小了会让人以为该归档了、写大了会让人以为还能写 —— 两种都会误导。
   {
-    const ledgerPath = path.join(HERE, "..", "LEDGER.md");
-    const mfPath = path.join(HERE, "..", ".dsh-ledger.json");
-    if (!fs.existsSync(ledgerPath) || !fs.existsSync(mfPath)) {
-      ok("★ 口径：台账头部上限与清单一致（⏭ 跳过：台账/清单不在本包内）", true, "");
+    const mfPath = path.join(PROJECT_ROOT, ".dsh-ledger.json");
+    const hasManifest2 = fs.existsSync(mfPath);
+    const ledgerPath = ledgerPathOf(readProjectManifest());
+    if (!fs.existsSync(ledgerPath) || !hasManifest2) {
+      // ★ 同上一段：**清单在、台账找不到 ⇒ 必须报红**，不许静默跳过（D297）。
+      ok("★ 口径：台账头部上限与清单一致（⏭ 跳过：台账/清单不在本包内）", !hasManifest2, hasManifest2 ? `清单在、台账找不到：${ledgerPath}` : "");
     } else {
       const ledgerSrc = fs.readFileSync(ledgerPath, "utf8");
       const mf = JSON.parse(fs.readFileSync(mfPath, "utf8"));
@@ -9197,10 +9310,16 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
           ? [...fs.readFileSync(decPath, "utf8").matchAll(/^##\s+D(\d+)\b/gm)].map((m) => Number(m[1]))
           : [];
         // ★ 卡片目录里的文件名**就是编号**（这正是"文件名即地址"的兑现）。
+        // ★★ 2026-10-21（D297）：卡片目录也要**跟着清单走** —— V3 迁移后 `decisions/`
+        //    住在 `memoryRoot` 里，写死项目根会让 `maxD` 退回 0 ⇒
+        //    「头部范围 ≥ 实际最大号」这条**在真超范围时仍然全绿**（又是假绿，与 D203 同型）。
         try {
           const dirRel = mf.decisionsDir;
           if (typeof dirRel === "string" && dirRel !== "") {
-            const cardDir = path.join(HERE, "..", dirRel);
+            const decBase = typeof mf.memoryRoot === "string" && mf.memoryRoot !== ""
+              ? path.join(PROJECT_ROOT, mf.memoryRoot)
+              : PROJECT_ROOT;
+            const cardDir = path.join(decBase, dirRel);
             if (fs.existsSync(cardDir)) {
               for (const e of fs.readdirSync(cardDir, { withFileTypes: true })) {
                 if (!e.isFile() || /^INDEX\.md$/i.test(e.name)) continue;
@@ -11794,7 +11913,16 @@ section("情形 41：审计报告点出的 A2 / A3 数据完整性缺陷（先�
     //   那一行既不在新台账也不进 entries ⇒ **凭空消失**。
     //   F05 的新判据（覆盖整份正文）当场把它拦下 ⇒ 这里必须**保住原有正文**。
     const small = "# 台账\n\n## 目标\n做点事\n";
-    const batch = "## 这一批\n- 只该出现一次\n";
+    // ★★★ 2026-10-21（D287）：原夹具的 `batch` 是 `## 这一批\n- 只该出现一次\n` ——
+    //   **磁盘上没有这两行**（是夹具编的）。新判据要求 entries 是原文里真实连续的一段
+    //   ⇒ 当场拒绝，于是"第一次归档"根本没写成。
+    //   ⇒ 修夹具：先把要归档的那行**真的写进台账**，再原样归档。
+    const batchLine = "- 只该出现一次\n";
+    await T.get("ledger_write").execute(
+      { target: "active", mode: "append", content: batchLine },
+      A
+    );
+    const batch = batchLine;
 
     await T.get("ledger_archive").execute({ entries: batch, newActive: small }, A);
     const files1 = archFiles(root);
@@ -12231,6 +12359,16 @@ section("情形 50：设置面板的文案与分组契约（D124）");
   //     判据：客户端里**不许**出现任何设置项的 key 字面量。
   //   ⚠️ `maxActiveLines` / `logLevels` 在旧版 intro 文案里出现过 ——
   //      D124 已把那句改成不点名，所以现在应当是 0 命中。
+  //
+  //   ★★★★ 2026-10-21（用户拍板「顶层精简到四个」）：**判据收窄，不是取消**。
+  //     新设计里客户端多了 `PANEL_TABS` 与 `HIDDEN_KEYS` 两张**收纳表**，
+  //     它们**必须**点名 key（否则没法决定哪项放哪页）——
+  //     这与"渲染由宿主数据驱动"**不冲突**：控件怎么画仍不认识任何 key。
+  //     ⇒ 判据改成：**剥掉这两张表之后，仍然 0 命中**。
+  //     ★ 为什么这样改仍然是硬的：若有人图省事在 `BoolRow` 里写
+  //       `if (spec.key === "xxx")` 做特判，那行**不在两张表里** ⇒ 照样红。
+  //     ⚠️ 绝不允许"因为红了就把这条删掉" —— 那会把"新增设置项要改客户端"这个
+  //        退化解法重新放回来（本项目最忌讳的那种"修法"）。
   {
     const clientSrc = fs.readFileSync(path.join(HERE, "..", "lib", "client.js"), "utf8");
     // ★ 2026-10-18（D256）：**判据只吃代码，不连注释一起数**。
@@ -12238,15 +12376,38 @@ section("情形 50：设置面板的文案与分组契约（D124）");
     //   与一句解释渲染顺序的 `mode → ledger → how` 全算成"客户端认了 key"。
     //   那不是真缺陷 —— 是**判据污染了被测对象**（本项目第 4 条尺子错的同型）。
     //   ⇒ 先剥注释与模板字符串，再判。
-    const clientCode = clientSrc
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
-      .replace(/`(?:[^`\\]|\\.)*`/g, "");
+    const stripComments = (s) =>
+      s
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+        .replace(/`(?:[^`\\]|\\.)*`/g, "");
+    const clientCode = stripComments(clientSrc);
+
+    /** 按方括号配对切掉一个 `const NAME = [...]` 声明（用于剥两张收纳表）。 */
+    const dropDecl = (src, nm) => {
+      const mark = src.indexOf(`const ${nm} = `);
+      if (mark < 0) return src;
+      const open = src.indexOf("[", mark);
+      if (open < 0) return src;
+      let d = 0;
+      for (let i = open; i < src.length; i += 1) {
+        if (src[i] === "[") d += 1;
+        else if (src[i] === "]") {
+          d -= 1;
+          if (d === 0) return src.slice(0, mark) + src.slice(i + 1);
+        }
+      }
+      return src;
+    };
+    ok("★★ 客户端的收纳表 PANEL_TABS / HIDDEN_KEYS 确实存在（否则下面的剥离是空操作）",
+      clientCode.includes("const PANEL_TABS") && clientCode.includes("const HIDDEN_KEYS"));
+
+    const stripped = dropDecl(dropDecl(clientCode, "PANEL_TABS"), "HIDDEN_KEYS");
     const specsSeg = segOf("SETTING_SPECS");
     const keys = [...specsSeg.matchAll(/\n    key: "([a-zA-Z]+)"/g)].map((m) => m[1]);
-    const hit = keys.filter((k) => new RegExp('["\'\\s]' + k + '["\'\\s,;)]').test(clientCode));
+    const hit = keys.filter((k) => new RegExp('["\'\\s]' + k + '["\'\\s,;)]').test(stripped));
     ok(
-      "★★ 客户端**不认任何设置项 key**（分组与渲染完全由宿主数据驱动）",
+      "★★ 客户端**不认任何设置项 key**（收纳表之外，分组与渲染完全由宿主数据驱动）",
       hit.length === 0,
       hit.length === 0 ? "" : "客户端里出现了：" + hit.join(", ")
     );
@@ -19720,16 +19881,45 @@ section("情形 100：设置面板（分页 / 三键 / 纯文本 / 说明折叠�
   const vmMod = await import("node:vm");
   const sandbox = {};
   vmMod.createContext(sandbox);
+
+  /**
+   * ★★★ 2026-10-21：`buildPages` 现在引用 `PANEL_TABS` / `HIDDEN_KEYS` 两个模块级常量
+   *   ⇒ 抽函数出来单独跑时必须把它们**一起抽出来**，否则沙箱里 ReferenceError。
+   *   ★ 判据：**测的必须是真源码里的那张表** —— 不许在自检里重抄一份 4 页名单
+   *     （重抄一份就变成"测我抄得对不对"，而不是"测面板怎么分页"）。
+   */
+  const extractConst = (nm) => {
+    const mark = clientSrc.indexOf(`const ${nm} = `);
+    if (mark < 0) throw new Error(`找不到 const ${nm}`);
+    const open = clientSrc.indexOf("[", mark);
+    if (open < 0) throw new Error(`const ${nm} 不是数组字面量`);
+    let d = 0;
+    for (let i = open; i < clientSrc.length; i += 1) {
+      const c = clientSrc[i];
+      if (c === "[") d += 1;
+      else if (c === "]") {
+        d -= 1;
+        if (d === 0) return clientSrc.slice(mark, i + 1) + ";";
+      }
+    }
+    throw new Error(`const ${nm} 方括号不配对`);
+  };
+
   vmMod.runInContext(
     `const HINT_FOLD_CHARS = ${FOLD};
+     ${extractConst("PANEL_TABS")}
+     ${extractConst("HIDDEN_KEYS")}
      ${extractFn("firstSentence")}
      ${extractFn("buildPages")}
      this.firstSentence = firstSentence;
-     this.buildPages = buildPages;`,
+     this.buildPages = buildPages;
+     this.PANEL_TABS = PANEL_TABS;
+     this.HIDDEN_KEYS = HIDDEN_KEYS;`,
     sandbox,
   );
-  const { firstSentence, buildPages } = sandbox;
+  const { firstSentence, buildPages, PANEL_TABS: TABS, HIDDEN_KEYS: HIDDEN } = sandbox;
   ok("100⓪ b 两个纯函数都抽出来了（测的是真源码，不是重抄）", typeof firstSentence === "function" && typeof buildPages === "function");
+  ok("100⓪ c ★ 两张表也是从真源码抽的（不是自检里重抄）", Array.isArray(TABS) && Array.isArray(HIDDEN));
 
   // ── ① 分页：一项都不能漏 ──────────────────────────────────────────────
   const data = {
@@ -19741,28 +19931,121 @@ section("情形 100：设置面板（分页 / 三键 / 纯文本 / 说明折叠�
   const pageSum = pages.reduce((n, p) => n + p.specs.length, 0);
   const keys = new Set();
   for (const p of pages) for (const s of p.specs) keys.add(s.key);
-  eq("100① 分页页数 = 有声明的组数（6）", pages.length, G.filter((g) => pages.some((p) => p.key === g.key)).length);
-  eq("100① b ★ 每页项数之和 = 全部设置项（一项不漏）", pageSum, SP.length);
-  eq("100① c ★ 全部 key 都出现在某一页里", keys.size, SP.length);
-  eq("100① d ★ 没有 key 被渲染两次", pageSum, keys.size);
+
+  // ★★★★★ 2026-10-21（用户拍板「顶层精简到四个」）：判据从"6 组"改成"4 页"。
+  eq("100① a ★ 顶层标签页正好 4 个（用户要求）", pages.length, 4);
+  eq("100① b 分页页数 = PANEL_TABS 声明的页数", pages.length, TABS.length);
   eq(
-    "100① e 页顺序 = SETTING_GROUPS 声明顺序（设计意图）",
-    JSON.stringify(pages.map((p) => p.key)),
-    JSON.stringify(G.filter((g) => pages.some((p) => p.key === g.key)).map((g) => g.key)),
+    "100① c ★ 每页项数 + 被隐藏项数 = 全部设置项（一项不漏、也没被悄悄藏光）",
+    pageSum + HIDDEN.length,
+    SP.length,
   );
-  ok("100① f 每页都有非空标题（否则标签是空的）", pages.every((p) => typeof p.title === "string" && p.title !== ""));
+  eq("100① d ★ 全部 key 都出现在某一页里（不含隐藏项）", keys.size, SP.length - HIDDEN.length);
+  eq("100① e ★ 没有 key 被渲染两次", pageSum, keys.size);
+  eq(
+    "100① f 页顺序 = PANEL_TABS 声明顺序（设计意图）",
+    JSON.stringify(pages.map((p) => p.key)),
+    JSON.stringify(TABS.map((t) => t.key)),
+  );
+  ok("100① g 每页都有非空标题（否则标签是空的）", pages.every((p) => typeof p.title === "string" && p.title !== ""));
+
+  // ── ★★★ ① h 名单的准确性：打错一个字会静默改变"露/藏" ─────────────────
+  //
+  //   ★ 为什么必须验这一条：`PANEL_TABS[*].keys` 与 `HIDDEN_KEYS` 都是**手写名单**。
+  //     写错一个 key 的后果是**没有报错、只少一行**（最典型的失败模式）；
+  //     写了一个不存在的 key 则完全无声。
+  //   ⇒ 两边都要求"名单里每个 key 都必须真实存在于 SETTING_SPECS"。
+  const specKeys = new Set(SP.map((s) => s.key));
+  const namedKeys = [];
+  for (const t of TABS) for (const k of Array.isArray(t.keys) ? t.keys : []) namedKeys.push(k);
+  const badNamed = namedKeys.filter((k) => !specKeys.has(k));
+  eq("100① h ★ PANEL_TABS 点名的 key 全部真实存在（打错字会在这里红）", badNamed.join(","), "");
+  const badHidden = HIDDEN.filter((k) => !specKeys.has(k));
+  eq("100① i ★ HIDDEN_KEYS 里的 key 全部真实存在", badHidden.join(","), "");
+  const bothNamed = namedKeys.filter((k) => HIDDEN.includes(k));
+  eq("100① j ★ 没有哪一项既被点名又被隐藏（那会自相矛盾）", bothNamed.join(","), "");
+  ok(
+    "100① k ★ 「扩展记忆」页是独立组件（kind: extensions），不是一堆设置项",
+    pages.some((p) => p.kind === "extensions"),
+  );
+  ok(
+    "100① l ★ 「高级」页兜住了剩余所有项（rest），否则新增设置项会无处可去",
+    TABS.some((t) => t.rest === true) && pages.some((p) => p.key === TABS.find((t) => t.rest === true).key),
+  );
+
+  // ── ① m 控件的形态：开关是"滑块开关"、数值是"拉条"（用户 2026-10-21 要求）─
+  ok("100① m ★ 布尔项渲染成滑块开关（pl-settings__switch）", /pl-settings__switch/.test(clientSrc));
+  ok("100① n ★ 数值项渲染成拉条（pl-settings__range-input + type:\"range\"）", /pl-settings__range-input/.test(clientSrc) && /type:\s*"range"/.test(clientSrc));
+  ok("100① o ★ 开关里那个原生 checkbox 没被 display:none 藏掉（否则键盘按不动）", !/\.pl-settings__switch input\s*\{[^}]*display:\s*none/.test(clientSrc));
+
+  // ── ★★★ ① o2 滑块与数字框**必须同宽**（用户 2026-10-22 要求）──────────
+  //
+  //   用户原话：*"滑快有必要给这么大空间吗？让他占据一小行，然后和数字框留相同的宽度就行了，
+  //              数字放在它右边"*
+  //   ★ 判据为什么落在"同一个变量"上、而不是"两个数相等"：
+  //     写两遍 `104px` 也能相等，但改一处就不同宽了 —— 而**不会有任何断言会红**。
+  //     要求两者都从 `--pl-num-w` 取，等于把"同宽"变成**结构约束**而不是巧合。
+  ok(
+    "100① o2 ★ 滑块宽度取自 --pl-num-w（不是一个手写数）",
+    /\.pl-settings__range-input\s*\{[\s\S]*?width:\s*var\(--pl-num-w\)/.test(clientSrc),
+  );
+  ok(
+    "100① o3 ★ 数字框宽度也取自 --pl-num-w（两者同源 ⇒ 恒等宽）",
+    /\.pl-settings__num\s*\{[\s\S]*?width:\s*var\(--pl-num-w[^)]*\)/.test(clientSrc),
+  );
+  //   ★ 2026-10-22 修正：第一版窗口只给 400 字符 ⇒ 假红。滑块那一行与数字框之间
+  //     隔着 `num-box` 的十几行 JSX（实测 24 行），窗口必须放宽。**假红也是尺子错。**
+  ok(
+    "100① o4 ★ 数字框在滑块**右边**（源码顺序：range 在前、num-box 在后）",
+    (() => {
+      const a = clientSrc.indexOf('className: "pl-settings__range-input"');
+      const b = clientSrc.indexOf('className: "pl-settings__num-box"');
+      return a >= 0 && b > a;
+    })(),
+  );
+  ok(
+    "100① o5 ★ 单位给了固定宽度（否则「%」「行」「字符」会把数字框右边缘推歪）",
+    /\.pl-settings__unit\s*\{[\s\S]*?min-width:\s*[0-9.]+em/.test(clientSrc),
+  );
+
+  // ── ★★★★ ① q 护栏：CSS 模板里**不许出现反引号** ─────────────────────
+  //
+  //   ★ 为什么专门加这一条（**同一个坑我一天踩了三次**，2026-10-21/22）：
+  //     整个样式表是 `const CSS = \`…\`` —— 一个模板字符串。
+  //     只要在 CSS 注释里写一个反引号（比如想引用 `input` 这个选择器），
+  //     模板字符串就**提前结束**，后面全是语法错。
+  //   ★★ 为什么它特别坑：报错位置在**下一行**，指向的是一段完全正常的 CSS
+  //     （`Unexpected identifier 'input'`），看起来像"选择器写错了"，
+  //     而真正的原因在**上一行的注释**里。三次都是这么被误导的。
+  //   ⇒ 判据：把 CSS 模板整段取出来，断言里面**一个反引号都没有**。
+  //     ★ 这条能在 `node --check` 之前就给出**指向正确位置**的报错。
+  {
+    const m = /const CSS = `([\s\S]*?)`;\n/.exec(clientSrc);
+    ok("100① q 能找到 CSS 模板（这条护栏自身的前提）", m !== null);
+    if (m !== null) {
+      const body = m[1];
+      const bad = body.split("\n").filter((l) => l.includes("`"));
+      eq(
+        "100① q ★ CSS 模板内部不许出现反引号（写了会让整个样式表提前结束，报错还会指向错误的行）",
+        bad.join(" | "),
+        "",
+      );
+      ok("100① q b ★ CSS 模板长度合理（没被截断）", body.length > 8000, `len=${body.length}`);
+    }
+  }
 
   // ── ① g 宿主缺 group / 缺 groups 时不许丢项（D124 的老承诺，别在重构里弄丢）─
   const ragged = {
     specs: [
       { key: "a", kind: "boolean", group: "how", label: "A" },
       { key: "b", kind: "boolean", label: "B" }, // ★ 故意没有 group
+      { key: "__unknown_key__", kind: "boolean", label: "C" }, // ★ 名单里没有的 key
     ],
     groups: [], // ★ 故意没有声明
   };
   const rp = buildPages(ragged);
   const rsum = rp.reduce((n, p) => n + p.specs.length, 0);
-  eq("100① g ★ 宿主没给 group / groups 时也不丢项", rsum, 2);
+  eq("100① p ★ 宿主没给 group / 出现没见过的 key 时也不丢项（全部落进高级）", rsum, 3);
 
   // ── ② 三键 + 推送必须在同一条底栏里 ───────────────────────────────────
   //
@@ -19909,6 +20192,106 @@ section("情形 100：设置面板（分页 / 三键 / 纯文本 / 说明折叠�
   ok("100⑥ b 页签可点击切页（setPageIndex）", /setPageIndex\(i\)/.test(clientSrc));
   ok("100⑥ c 只渲染当前页（renderPage(current…）", /renderPage\(current/.test(clientSrc));
   ok("100⑥ d 越界保护：pageIndex 被夹在有效范围内", /Math\.min\(Math\.max\(pageIndex, 0\)/.test(clientSrc));
+
+  // ── ⑦ 结构布局必须走**内联 style**（2026-10-22 真机截图后的修复） ──────────
+  //
+  //   ★★★ 背景（用户原话，逐字）：
+  //     *"我感觉是你在浏览器那里打开的面板很整齐，但是一放到我们的设置面板这里就乱了。"*
+  //     *"所有滑块相关的选项都是这样的，目前只能说还欠缺"*
+  //
+  //   ★ 根因：前两轮我把布局全写在 `.pl-settings__*` **类选择器**上（grid 两列 /
+  //     `display:contents` / 容器查询断点 / 固定列宽）。这些在**隔离页**里当然生效，
+  //     但在**真实宿主 DOM** 里，类选择器**永远会输给宿主任何一条更具体的规则**
+  //     （宿主的设置侧栏容器是什么样，我们控制不了）。
+  //     ⇒ 布局塌成竖条，而我的夹具里没人覆盖它 ⇒ **全绿是假绿**（纪律 8 原样复发）。
+  //
+  //   ★ 修法：结构属性写进 `style`（内联）。内联**不吃选择器特异性、不吃加载顺序、
+  //     不吃样式表解析失败**，唯一对手是 `!important`（宿主极少对这类结构属性用它）。
+  //     响应式仍保留：内联的**值**写成 `var(--pl-ctl-w, 192px)` —— 属性锁死、取值可被改。
+  //
+  //   ⇒ ★★★ 这组断言守的是：**那些内联真的在源码里**。
+  //     它防的退化是「有人为了好看把布局改回只靠 CSS」—— 那样真机又会塌，而隔离页仍然绿。
+  //   ⚠️ 断言必须读**内联 style 对象**（Row / NumberRow 的函数体），
+  //     **不能读 CSS 文本** —— 否则「CSS 里写了 display:grid」也会让它变绿，
+  //     而那正是这次出问题的写法（尺子错：判据的输入必须是"这次真正生效的那一份"）。
+  {
+    const rowSrc = extractFn("Row");
+    const numSrc = extractFn("NumberRow");
+    const has = (s, sub) => s.indexOf(sub) >= 0;
+
+    // ① Row：根节点真的把 style 挂上去了（不是只给 className）
+    ok("100⑦ ★ Row 根节点带内联 style（不是只靠 class）", has(rowSrc, "style: rowStyle"));
+    ok("100⑦ b 普通行 display 内联为 grid（CSS 被宿主覆盖也不影响）", /display:\s*"grid"/.test(rowSrc));
+    ok(
+      "100⑦ c 两列模板内联且**宽度走变量**（属性锁死、取值仍可被容器查询改窄）",
+      /gridTemplateColumns:\s*"minmax\(0, 1fr\) var\(--pl-ctl-w, 192px\)"/.test(rowSrc)
+    );
+    ok("100⑦ d 标签行内联 style 且定位到第 1 列", has(rowSrc, "style: labelStyle") && /gridColumn:\s*"1"/.test(rowSrc));
+    ok("100⑦ e 控件列内联 style 且定位到第 2 列", has(rowSrc, "style: ctlStyle") && /gridColumn:\s*"2"/.test(rowSrc));
+    ok(
+      "100⑦ f 说明横跨两列（内联 gridColumn \"1 / -1\"）⇒ 说明独占一行",
+      /gridColumn:\s*"1 \/ -1"/.test(rowSrc)
+    );
+    ok("100⑦ g stack 行（选择项/多行控件）内联成竖向 flex，不抢宽度", /flexDirection:\s*"column"/.test(rowSrc));
+
+    // ② NumberRow：滑块与数字框的宽度必须**内联**且取自同一个变量
+    //
+    //   ★★★ 这里第一版写的是「数 `var(--pl-num-w, 72px)` 出现次数 ≥ 4」——
+    //     **反向验证当场证明它没有区分力**：把滑块的宽度改成写死的 `72px` 之后，
+    //     命中数从 6 掉到 4，仍然 ≥ 4 ⇒ 断言照样绿。
+    //   ⇒ 教训（本项目的惯犯病）：**计数类判据表达不了"是谁"**。
+    //     "六处里还剩四处"与"滑块那一处还在"是两件事，而我要的是后者。
+    //   ⇒ 改成两条**结构性**判据：①滑块那个窗口里**必须有**变量宽度；
+    //     ②整个 NumberRow 里**不许有任何写死的像素宽度**（"同宽只能有一个真源"）。
+    {
+      const rangeIdx = numSrc.indexOf('type: "range"');
+      const rangeWindow = rangeIdx < 0 ? "" : numSrc.slice(rangeIdx, rangeIdx + 800);
+      ok(
+        "100⑦ h ★ 滑块自己的宽度取自 --pl-num-w（不是写死的像素）",
+        rangeIdx >= 0 && /width:\s*"var\(--pl-num-w, 72px\)"/.test(rangeWindow),
+        rangeIdx < 0 ? "找不到 type: \"range\"" : ""
+      );
+      ok(
+        "100⑦ h2 ★ NumberRow 里没有任何写死的像素宽度（同宽只能有一个真源）",
+        !/\b(?:width|maxWidth):\s*"\d+px"/.test(numSrc)
+      );
+    }
+    ok("100⑦ i 数字框 box-sizing 也内联（否则 padding 会把它撑出列宽）", /boxSizing:\s*"border-box"/.test(numSrc));
+    ok(
+      "100⑦ j ★ 数值簇内联 nowrap + row ⇒ 滑块与数字框不可能再「各掉一行」",
+      /flexWrap:\s*"nowrap"/.test(numSrc) && /flexDirection:\s*"row"/.test(numSrc)
+    );
+
+    // ③ Hint / ScopeNote 必须能接收内联定位（否则它们的 grid 位置只能靠 CSS）
+    const hintSrc = extractFn("Hint");
+    const scopeSrc = extractFn("ScopeNote");
+    ok("100⑦ k Hint 透传内联 style", has(hintSrc, "props.style"));
+    ok("100⑦ l ScopeNote 透传内联 style", has(scopeSrc, "props.style"));
+
+    // ④ ★ 反向护栏：不许退回 `display:contents` 那个脆技巧
+    //   （它只要被宿主任何一条规则碰到就失效，一失效就退化成竖条 —— 正是用户看到的样子）
+    //
+    //   ★★★ 这里第一版**只**判了 `clientCode`（= stripComments 的产物）——
+    //     而 stripComments 会把**模板字符串整段删掉**，CSS 恰好就住在模板字符串里
+    //     ⇒ **往 CSS 里加 `display:contents`，这条断言根本看不见**。
+    //     反向验证当场抓到（变异⑥ 全绿）⇒ 判据的输入选错了那一份。
+    //   ⇒ 拆成两条：JS 侧查 clientCode，CSS 侧**单独把模板抽出来、只剥 CSS 注释**再查。
+    ok("100⑦ m ★ JS 侧不许出现 display:contents（clientCode）", !/display\s*:\s*["']?contents/.test(clientCode));
+    {
+      const cssMark = "const CSS = `";
+      const cssStart = clientSrc.indexOf(cssMark);
+      const cssEnd = cssStart < 0 ? -1 : clientSrc.indexOf("`;", cssStart);
+      const cssText =
+        cssStart < 0 || cssEnd < 0 ? "" : clientSrc.slice(cssStart + cssMark.length, cssEnd);
+      // ★ 只剥 CSS 注释；**不剥模板字符串**（我们就是要看它里面的东西）。
+      const cssNoComments = cssText.replace(/\/\*[\s\S]*?\*\//g, "");
+      ok(
+        "100⑦ m2 ★ CSS 里也不许出现 display:contents（注释不计）",
+        cssText.length > 8000 && !/display\s*:\s*["']?contents/.test(cssNoComments),
+        `cssText=${cssText.length}`
+      );
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -20432,6 +20815,8 @@ section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必�
   const p1 = fs.readFileSync(path.join(HERE, "..", "lib", "part1.js"), "utf8");
   const p2 = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
   const p4 = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
+  // ★ 2026-10-21（D288）：本条原则的机检要看 defs.js（`DEFAULT_IGNORE_LINES` 在那）。
+  const defsAll = fs.readFileSync(path.join(HERE, "..", "lib", "defs.js"), "utf8");
   const stripAll = stripCommentsAndLiterals;
   const p4c = stripAll(p4);
   const p2c = stripAll(p2);
@@ -20477,9 +20862,16 @@ section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必�
     /const\s+badKeys\s*=\s*parts\.filter/.test(p4c) && /invalidKeys/.test(p4c),
   );
   // ★ 位置判据：dupInBatch 那一段必须在**第一个 writeCard 之前**
+  //
+  // ★★ 2026-10-21（D289）：这段判据原来把 `writeCard(root, cmode.dirRel, p.key` 当锚点，
+  //   而 V3 把首参从 `root` 换成 `memBase` ⇒ 锚点**找不到**（iWrite = -1 ⇒ 判红）。
+  //   ★ 该改的是**尺子**而不是结论：这段要断言的是「预检在首次写卡之前」，
+  //     而「首参叫什么」与本判据**无关** —— 原来那个锚点顺手绑了一个会变的实现细节。
+  //   ⇒ 改成锚**结构位**：`writeCard(` 后面跟任何合法首参；仍用 indexOf 比先后。
   {
     const iDup = p4c.indexOf("dupInBatch.length > 0");
-    const iWrite = p4c.indexOf("writeCard(root, cmode.dirRel, p.key");
+    const mWrite = /writeCard\(\s*[A-Za-z_$][\w$]*\s*,\s*cmode\.dirRel\s*,\s*p\.key/.exec(p4c);
+    const iWrite = mWrite === null ? -1 : mWrite.index;
     ok(
       "106② c ★ 预检位置在第一次 writeCard **之前**（顺序错了就等于没预检）",
       iDup > 0 && iWrite > 0 && iDup < iWrite,
@@ -20504,18 +20896,70 @@ section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必�
     /原则文件不能被登记成普通角色/.test(p4),
   );
 
-  // ── 106④ F05：归档判据覆盖**整份正文**，不是只覆盖列表行 ──────────────
+  // ── 106④ D287：归档判据 = 「entries 是原文里一整段连续的真实内容」──────────
+  //
+  //  ★★★ 2026-10-21 **用户拍板换判据**，原来的两条断言（"必须是 lostLines 做门槛"）
+  //    守的是**旧契约**，保留它们等于把 bug 钉死。⇒ 改成正向断言新契约。
+  //  ★ 判据方向：活跃台账**怎么改都行**；**只有进归档的那一段必须是真的**。
   ok(
-    "106④ ★ lostLines（整份正文 + 保留计数）存在",
-    /export\s+function\s+lostLines\s*\(/.test(p1c),
+    "106④ ★ 判据函数 archiveSegmentOf 存在（首尾空行容错 + 连续逐字定位）",
+    /export\s+function\s+archiveSegmentOf\s*\(/.test(p1c),
   );
   ok(
-    "106④ b ★ 归档判据已换成 lostLines（不再是只看列表行的 lostEntries）",
-    /const\s+lost\s*=\s*lostLines\s*\(/.test(p4c),
+    "106④ b ★ 归档流**用 archiveSegmentOf 做门槛**（不再拿 lostLines 当门槛）",
+    /archiveSegmentOf\s*\(\s*priorBodyForArchive\s*,\s*entries\s*\)/.test(p4c),
   );
   ok(
     "106④ c ★ `entryLines` 仍在（多会话自动保留那条路要条目粒度，不能被一起改宽）",
     /export\s+function\s+entryLines\s*\(/.test(p1c) && /lostEntries\s*\(/.test(p4c),
+  );
+  ok(
+    "106④ d ★ lostLines 仍存在，但**已降级为提示**（算出 goneLines 而不据此拒绝）",
+    /export\s+function\s+lostLines\s*\(/.test(p1c) &&
+      /const\s+goneLines\s*=\s*lostLines\s*\(/.test(p4c) &&
+      // 反向：源码里不许再出现"用 lost 结果做拒绝"的旧形态
+      !/const\s+lost\s*=\s*lostLines\s*\(/.test(p4c),
+  );
+  ok(
+    "106④ e ★ 回执带 archivedSegment（归档的是原文哪一段 —— 可回溯凭证）",
+    /archivedSegment\s*:\s*\{/.test(p4c),
+  );
+  ok(
+    "106④ f ★ 工具描述写明「活跃台账是你的底稿、随便改」这条契约",
+    /YOUR OWN DRAFT/.test(p4) && /CONTIGUOUS VERBATIM/.test(p4),
+  );
+  ok(
+    "106④ g ★ 拒绝时回执带 contract（把唯一要求直接说给模型听）",
+    /contract\s*:/.test(p4c),
+  );
+
+  // ── 106④h D288：★★★ 原则「产物绝不擅自推送云端」的机检 ──────────────
+  //
+  //  ★ 用户 2026-10-21 亲口授权写进 PRINCIPLES.md §六。原话：
+  //    *"所有的来自本插件构建的东西。除非用户亲自允许，否则绝对不允许模型自己推送到云端。
+  //      这个也应该成为我们插件其他地方的必须保证的东西。"*
+  //
+  //  ★ 为什么这里要有断言（L26）：**教训必须变成判据**，真正的理由不是"判据更严格"，
+  //    而是"**判据不需要模型想起来**"。写进原则只是文字，写进自检才是保证。
+  ok(
+    "106④h ★ .gitignore 默认条目里**含** decisions/ lessons/ goals/（第 2 代卡片目录，事故正是漏了这批）",
+    /DEFAULT_IGNORE_LINES\s*=\s*\[/.test(defsAll) &&
+      /"decisions\/"/.test(defsAll) &&
+      /"lessons\/"/.test(defsAll) &&
+      /"goals\/"/.test(defsAll),
+  );
+  ok(
+    "106④h b ★ .gitignore 默认条目**不再是空数组**（事故当时的形态）",
+    !/export\s+const\s+DEFAULT_IGNORE_LINES\s*=\s*\[\s*\]/.test(defsAll),
+  );
+  ok(
+    "106④h c ★ gitAdd 会先 check-ignore 摘掉被忽略路径（否则每次回执都会假红）",
+    /check-ignore/.test(p2),
+  );
+  ok(
+    "106④h d ★ 插件本体**没有** git push / npm publish 这类外发能力（原则 §6.1）",
+    !/\[\s*["']push["']/.test(p1c + p2c + p4c) &&
+      !/git\s+publish|npm\s+publish/.test(p1 + p2 + p4),
   );
 
   // ── 106⑤ F02/F03：路径边界先词法、再真实路径 ────────────────────────
@@ -21694,7 +22138,15 @@ section("情形 114：作废卡必须降权，且不许误伤「卡内局部结�
   //   ⇒ 正解：用模块顶部的 `HERE`（`:30`）自己拼，不依赖任何别处的局部变量。
   {
     const DIR = "decisions";
-    const projRoot = path.join(HERE, "..");
+    // ★★★ 2026-10-21（D297 真跑当场变红）：`projRoot` **不能写死项目根**了。
+    //   迁移后 `decisions/` 住在 `memoryRoot` 里 ⇒ 拿项目根去 `listCards` 得到空数组 ⇒
+    //   这条断言就退化成「永远报红」（比永远绿好，但同样没被测到）。
+    //   ⇒ 与 `ledgerPathOf` 同一条原则：**卡片目录的爹也跟着清单走**。
+    const mfForCards = readProjectManifest();
+    const projRoot =
+      typeof mfForCards.memoryRoot === "string" && mfForCards.memoryRoot !== ""
+        ? path.join(PROJECT_ROOT, mfForCards.memoryRoot)
+        : PROJECT_ROOT;
     let cards = [];
     try {
       cards = T.listCards(projRoot, DIR) ?? [];

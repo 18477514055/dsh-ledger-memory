@@ -1,0 +1,244 @@
+# V3 阶段 0.1b：可疑路径的**分类**（不是结论，是分组）
+
+> 生成：node tools/_probe-v3-hardcoded-paths2.mjs · 总计 123 处
+
+## ① 直接拼字面量文件名 —— **真硬编码，V3 必改**
+
+- `lib/part1.js:635` — const pkgPath = path.join(here, "..", "package.json");
+- `lib/part2.js:1673` — if (fs.existsSync(path.join(dir, ".git"))) return dir;
+- `lib/part2.js:4351` — if (fs.existsSync(path.join(child, ".git"))) {
+- `lib/part2.js:4770` — const hookFile = path.join(hooksDir, "pre-commit");
+- `lib/part4.js:1044` — if (!fs.existsSync(path.join(root, ".git"))) {
+- `lib/part4.js:1050` — } else if (fs.existsSync(path.join(root, ".git"))) {
+- `lib/part4.js:1318` — if (manifest.autoGitAdd && fs.existsSync(path.join(root, ".git"))) {
+- `lib/part4.js:3364` — const archiveFile = path.join(periodDir, `${stem}-archive.md`);
+- `lib/part7.js:238` — const retiredRoot = path.join(home, "plugin-data", "dsh-ledger-memory", "_retired", baseName);
+- `lib/part2.js:3946` — return fs.existsSync(path.join(projectRoot, ".git"));
+- `lib/part2.js:3952` — const gitignorePath = path.join(projectRoot, ".gitignore");
+
+## ② 参数是变量 —— 要看变量来源，多半不用改
+
+- `lib/part1.js:425` [``] — return typeof home === "string" && home !== "" ? home : path.join(os.homedir(), ".dsh");
+  - 来源：(上文没找到来源)
+- `lib/part1.js:438` [``] — return path.join(dshHome(), LOCK_STORE_DIRNAME, LOCK_STORE_PKG, LOCK_STORE_FILE);
+  - 来源：(上文没找到来源)
+- `lib/part1.js:518` [``] — return path.join(path.dirname(lockStorePath()), ANCHOR_STORE_FILE);
+  - 来源：(上文没找到来源)
+- `lib/part1.js:651` [``] — return path.join(path.dirname(lockStorePath()), CAPABILITY_STORE_FILE);
+  - 来源：(上文没找到来源)
+- `lib/part1.js:1057` [``] — return path.join(path.dirname(lockStorePath()), OWED_STORE_FILE);
+  - 来源：(上文没找到来源)
+- `lib/part1.js:1198` [``] — return path.join(path.dirname(lockStorePath()), BLOCK_HISTORY_FILE);
+  - 来源：(上文没找到来源)
+- `lib/part1.js:1330` [``] — return path.join(path.dirname(lockStorePath()), CAPSULE_STORE_FILE);
+  - 来源：(上文没找到来源)
+- `lib/part1.js:1538` [``] — return path.join(path.dirname(lockStorePath()), SHADOWED_INDEX_FILE);
+  - 来源：(上文没找到来源)
+- `lib/part1.js:1612` [``] — const dir = path.join(dshHome(), "sessions", encodeSessionDirName(path.resolve(cwd)));
+  - 来源：(上文没找到来源)
+- `lib/part1.js:1614` [`name`] — const file = path.join(dir, name, "session.v4.jsonl.zstd");
+  - 来源：L1613: for (const name of [`session-${sid}`, sid]) {
+- `lib/part1.js:2659` [``] — const abs = path.resolve(String(root));
+  - 来源：(上文没找到来源)
+- `lib/part1.js:2679` [``] — cwd: typeof cwd === "string" ? path.resolve(cwd) : undefined,
+  - 来源：(上文没找到来源)
+- `lib/part1.js:3536` [`MANIFEST_REL`] — const w = writeFileAtomic(path.join(root, MANIFEST_REL), JSON.stringify(next, null, 2) + "\n");
+  - 来源：(上文没找到来源)
+- `lib/part1.js:3561` [`MANIFEST_REL`] — const abs = path.join(root, MANIFEST_REL);
+  - 来源：(上文没找到来源)
+- `lib/part1.js:4167` [`relDir`] — const absDir = path.resolve(memBase, relDir);
+  - 来源：(上文没找到来源)
+- `lib/part1.js:4187` [`rel`] — const abs = path.resolve(memBase, rel);
+  - 来源：L4186: const rel = `${relDir}/${capsuleFileStamp(now)}-${tag}.md`;
+- `lib/part1.js:4208` [`rel2`] — fs.writeFileSync(path.resolve(memBase, rel2), body, { encoding: "utf8", flag: "wx" });
+  - 来源：L4207: const rel2 = `${relDir}/${capsuleFileStamp(now)}-${tag}-2.md`;
+- `lib/part1.js:4257` [`relDir`] — const absDir = path.resolve(memBaseS, relDir);
+  - 来源：L4254: const relDir = `${STASH_DIR}/${period}`;
+- `lib/part1.js:4262` [`rel`] — const abs = path.resolve(memBaseS, rel);
+  - 来源：L4261: const rel = `${relDir}/${capsuleFileStamp(now)}-${tag}.md`;
+- `lib/part1.js:4309` [`rel2`] — fs.writeFileSync(path.resolve(memBaseS, rel2), body, { encoding: "utf8", flag: "wx" });
+  - 来源：L4308: const rel2 = `${relDir}/${capsuleFileStamp(now)}-${tag}-2.md`;
+- `lib/part2.js:58` [`relPath`] — const abs = path.resolve(memBase, relPath);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:792` [`rel`] — const abs = lcard ? undefined : path.resolve(memBaseL, rel);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:1247` [`relPath`] — const abs = path.resolve(memBaseG, relPath);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:1436` [`targetRel`] — const abs = path.resolve(root, targetRel);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:1545` [`MANIFEST_REL`] — const abs = path.resolve(root, MANIFEST_REL);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:1561` [`MANIFEST_REL`] — const abs = path.resolve(root, MANIFEST_REL);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:1668` [``] — let dir = path.resolve(start);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:1810` [`cmode.dirRel`] — const dirAbs = path.resolve(mBase, cmode.dirRel);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:2036` [``] — const r = path.resolve(root);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:2037` [``] — const t = path.resolve(target);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:2089` [``] — const tail = path.relative(path.resolve(anchor), path.resolve(target));
+  - 来源：(上文没找到来源)
+- `lib/part2.js:2090` [`tail`] — const targetReal = tail === "" ? anchorReal : path.join(anchorReal, tail);
+  - 来源：L2089: const tail = path.relative(path.resolve(anchor), path.resolve(target)); | L2090: const targetReal = tail === "" ? anchorReal : path.join(anchorReal, tail);
+- `lib/part2.js:2108` [``] — return fs.realpathSync.native(path.resolve(p));
+  - 来源：(上文没找到来源)
+- `lib/part2.js:2111` [``] — return fs.realpathSync(path.resolve(p));
+  - 来源：(上文没找到来源)
+- `lib/part2.js:2121` [``] — let cur = path.resolve(target);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:2167` [``] — const abs = path.resolve(file);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:2876` [`rel`] — return fs.statSync(path.resolve(root, rel)).size;
+  - 来源：(上文没找到来源)
+- `lib/part2.js:2987` [`...relFile.split("/"`] — const file = path.join(root, ...relFile.split("/"));
+  - 来源：(上文没找到来源)
+- `lib/part2.js:3565` [`capDirRel`] — `- 历次逐字胶囊（**原件**）：\`${path.join(memBase, capDirRel)}\`` +
+  - 来源：L3562: const capDirRel = capsuleDirRel(info, new Date());
+- `lib/part2.js:3806` [``] — const here = typeof cwd === "string" && cwd !== "" ? path.resolve(cwd) : undefined;
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4349` [`e.name`] — const child = path.join(dir, e.name);
+  - 来源：(上文没找到来源)
+- `lib/part3.js:1475` [`fileRel`] — const abs = path.resolve(b.root, fileRel);
+  - 来源：(上文没找到来源)
+- `lib/part3.js:1668` [``] — const abs = path.resolve(base ?? process.cwd(), raw);
+  - 来源：(上文没找到来源)
+- `lib/part3.js:3096` [`MIDTURN_DIAG_FILE`] — const outFile = path.join(rootDir, MIDTURN_DIAG_FILE);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:33` [`MANIFEST_REL`] — const manifestPath = path.join(root, MANIFEST_REL);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:124` [`dirRel`] — const abs = path.resolve(mBaseRc, dirRel);
+  - 来源：L121: const dirRel = key === "logDir" ? "_ledger-log" : key;
+- `lib/part4.js:273` [`c.rel`] — const abs = path.resolve(root, c.rel);
+  - 来源：L270: ].filter((c) => typeof c.rel === "string" && c.rel !== "");
+- `lib/part4.js:763` [`value`] — const abs = path.resolve(memRootAbs, value);
+  - 来源：L761: if (value === "") continue; // 可选：空就是不启用
+- `lib/part4.js:778` [`value`] — const abs = path.resolve(memRootAbs, value);
+  - 来源：L776: if (value === "") throw fail(`ledger_init: '${label}' 必须是非空字符串`);
+- `lib/part4.js:801` [`rel.trim(`] — const abs = path.resolve(memRootAbs, rel.trim());
+  - 来源：(上文没找到来源)
+- `lib/part4.js:870` [`rel`] — const norm = (rel) => (typeof rel === "string" && rel !== "" ? path.resolve(memRootAbs, rel).toLowerCase() : undefined);
+  - 来源：L870: const norm = (rel) => (typeof rel === "string" && rel !== "" ? path.resolve(memRootAbs, rel).toLowerCase() : u
+- `lib/part4.js:910` [`archiveDir`] — const archAbs = path.resolve(memRootAbs, archiveDir);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:919` [`decisions`] — const decisionsAbs = path.resolve(memRootAbs, decisions);
+  - 来源：L919: const decisionsAbs = path.resolve(memRootAbs, decisions);
+- `lib/part4.js:920` [`archiveDir`] — const archiveAbs = path.resolve(memRootAbs, archiveDir);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:956` [`journal`] — const jAbs = path.resolve(memRootAbs, journal);
+  - 来源：L953: const journal = typeof args?.journal === "string" ? args.journal.trim() : "";
+- `lib/part4.js:979` [`value`] — const abs = path.resolve(memRootAbs, value);
+  - 来源：L977: if (value === "") continue; // 可选：不给就不登记（与 journal / logDir 同口径）
+- `lib/part4.js:1114` [`journal`] — if (journal !== "") ensureFile(path.resolve(memRootAbs, journal), journal, args?.initialJournal, "journal");
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1115` [`goals`] — if (goals !== "") ensureFile(path.resolve(memRootAbs, goals), goals, args?.initialGoals, "goals");
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1116` [`lessons`] — if (lessons !== "") ensureFile(path.resolve(memRootAbs, lessons), lessons, args?.initialLessons, "lessons");
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1120` [`logDir`] — if (logDir !== "") ensureDir(path.resolve(memRootAbs, logDir));
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1128` [`decisionsDir`] — if (decisionsDir !== "") ensureDir(path.resolve(memRootAbs, decisionsDir));
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1129` [`lessonsDir`] — if (lessonsDir !== "") ensureDir(path.resolve(memRootAbs, lessonsDir));
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1130` [`goalsDir`] — if (goalsDir !== "") ensureDir(path.resolve(memRootAbs, goalsDir));
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1159` [`principles`] — const pAbs = path.resolve(memRootAbs, principles);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1306` [`MANIFEST_REL`] — const mw = writeFileAtomic(path.join(root, MANIFEST_REL), JSON.stringify(manifest, null, 2) + "\n");
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1379` [`MANIFEST_REL`] — manifestPath: path.join(root, MANIFEST_REL),
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1537` [`rel`] — const file = path.resolve(mBase, rel);
+  - 来源：L1535: const rel = typeof args?.archiveFile === "string" ? args.archiveFile.trim() : "";
+- `lib/part4.js:1563` [`e.name`] — const p = path.join(d, e.name);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1613` [`relPath`] — const abs = cardWhole !== undefined ? cardDirAbs(mBaseR, cMode.dirRel) : path.resolve(mBaseR, relPath);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1888` [`dirRel`] — return path.resolve(root, dirRel);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1912` [`dirRel`] — const abs = path.resolve(cardDirAbs(root, dirRel), `${key.trim()}.md`);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:1939` [`e.name`] — chars = fs.readFileSync(path.join(dir, e.name), "utf8").length;
+  - 来源：(上文没找到来源)
+- `lib/part4.js:2107` [`dirRel`] — const abs = path.resolve(cardDirAbs(root, dirRel), "INDEX.md");
+  - 来源：(上文没找到来源)
+- `lib/part4.js:2175` [`rel`] — const abs = path.resolve(mBaseE, rel);
+  - 来源：L2172: if (rel === undefined) return { ok: true, found: false, entry, reason: "这一类记忆没有登记（既无目录也无文件）" };
+- `lib/part4.js:2240` [`rel`] — const abs = path.resolve(memBase, rel);
+  - 来源：L2238: const rel = mode.fileRel; | L2239: if (typeof rel !== "string" || rel === "") return { mode: "none", raw: "", cardCount: 0 };
+- `lib/part4.js:2322` [`rel`] — const srcAbs = path.resolve(mBaseS, rel);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:2479` [`MANIFEST_REL`] — const abs = path.resolve(root, MANIFEST_REL);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:2963` [`relPath`] — const abs = path.resolve(memBase, relPath);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:3361` [`dir`] — const periodDir = path.join(archiveAbs, dir);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:3688` [`fileRel`] — const abs = path.resolve(memBase, fileRel);
+  - 来源：L3685: const fileRel = l0Rel.replace(/L0-.*\.md$/, l0Num === undefined ? "L0-ledger-changes.md" : `L0-ledger-changes-
+- `lib/part4.js:3746` [`e.name`] — const abs = path.join(dir, e.name);
+  - 来源：(上文没找到来源)
+- `lib/part4.js:4413` [``] — const abs = path.resolve(base ?? process.cwd(), raw);
+  - 来源：(上文没找到来源)
+- `lib/part5.js:536` [`fileRel`] — const abs = path.resolve(memBase, fileRel);
+  - 来源：L533: const fileRel = logFileRel(info, "L1", now);
+- `lib/part5.js:1252` [`MANIFEST_REL`] — `登记位置：\`${path.join(root, MANIFEST_REL)}\`\n\n` +
+  - 来源：(上文没找到来源)
+- `lib/part5.js:1298` [``] — const abs = path.resolve(base ?? process.cwd(), want);
+  - 来源：(上文没找到来源)
+- `lib/part6.js:286` [``] — const abs = isRoot ? path.resolve(root) : path.resolve(root, dirRel);
+  - 来源：(上文没找到来源)
+- `lib/part6.js:358` [`rel`] — const abs = path.resolve(base, rel);
+  - 来源：(上文没找到来源)
+- `lib/part7.js:112` [`rel`] — const abs = path.join(root, rel);
+  - 来源：(上文没找到来源)
+- `lib/part7.js:118` [`e.name`] — const p = path.join(d, e.name);
+  - 来源：(上文没找到来源)
+- `lib/part7.js:130` [`rel`] — const to = path.join(destRoot, rel);
+  - 来源：(上文没找到来源)
+- `lib/part7.js:171` [`victim.rel`] — fs.writeFileSync(path.join(partialAbs, victim.rel), "★ 被故意写坏的内容（探针注入）\n", "utf8");
+  - 来源：(上文没找到来源)
+- `lib/part7.js:179` [`e.rel`] — const p = path.join(partialAbs, e.rel);
+  - 来源：(上文没找到来源)
+- `lib/part7.js:237` [``] — const home = process.env.DSH_HOME || path.join(os.homedir(), ".dsh");
+  - 来源：(上文没找到来源)
+- `lib/part7.js:239` [`stampSec(new`] — retiredTo = path.join(retiredRoot, stampSec(new Date()).replace(/[: ]/g, "-"));
+  - 来源：(上文没找到来源)
+- `lib/part7.js:244` [`rel`] — const to = path.join(retiredTo, rel);
+  - 来源：L241: for (const rel of existing) {
+- `lib/part2.js:3933` [`memoryRootRaw`] — const cand = path.resolve(projectRoot, memoryRootRaw);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:3983` [`DEFAULT_PRINCIPLES_NAME`] — const cand = path.resolve(projectRoot, DEFAULT_PRINCIPLES_NAME);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:3999` [`DEFAULT_GOALS_NAME`] — const cand = path.resolve(projectRoot, DEFAULT_GOALS_NAME);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4015` [`DEFAULT_JOURNAL_NAME`] — const cand = path.resolve(projectRoot, DEFAULT_JOURNAL_NAME);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4031` [`DEFAULT_LESSONS_NAME`] — const cand = path.resolve(projectRoot, DEFAULT_LESSONS_NAME);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4071` [`rel`] — const r = isUnderReal(memoryBase, path.resolve(memoryBase, rel));
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4101` [`logRel`] — const candidate = path.resolve(memoryBase, logRel);
+  - 来源：L4098: const logRel = manifest?.logDir; | L4100: if (typeof logRel === "string" && logRel !== "") {
+- `lib/part2.js:4155` [`declared`] — const cand = path.resolve(notesBase, declared);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4165` [`c`] — if (fs.statSync(path.join(notesBase, c)).isDirectory()) {
+  - 来源：L4163: for (const c of NOTE_DIR_CANDIDATES) {
+- `lib/part2.js:4167` [`c`] — notesAbs = path.join(notesBase, c);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4179` [`DEFAULT_NOTES_DIR`] — notesAbs = path.resolve(notesBase, DEFAULT_NOTES_DIR);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4186` [`activeRel`] — const candidate = path.resolve(memoryBase, activeRel);
+  - 来源：L4185: if (typeof activeRel === "string" && activeRel !== "") {
+- `lib/part2.js:4219` [`manifestHandoff`] — const cand = path.resolve(memoryBase, manifestHandoff);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4228` [`c`] — if (fs.statSync(path.resolve(memoryBase, c)).isDirectory()) {
+  - 来源：L4226: for (const c of HANDOFF_DIR_CANDIDATES) {
+- `lib/part2.js:4230` [`c`] — handoffAbs = path.resolve(memoryBase, c);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4240` [`DEFAULT_HANDOFF_DIR`] — handoffAbs = path.resolve(memoryBase, DEFAULT_HANDOFF_DIR);
+  - 来源：(上文没找到来源)
+- `lib/part2.js:4261` [`MANIFEST_REL`] — manifestPath: path.join(projectRoot, MANIFEST_REL),
+  - 来源：(上文没找到来源)

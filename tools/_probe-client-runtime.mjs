@@ -335,7 +335,7 @@ const pageTexts = [];
   //   渲染层只断言首页内容 + 每页都通过 tab 按钮可达。
   pageTexts.push(text);
 }
-ok("★ 渲染出了分页标签（tablist）", text.includes("配置优先级") || text.includes("压缩规则"), text.slice(0, 400));
+ok("★ 渲染出了分页标签（tablist）", ["常规", "注入", "扩展记忆", "高级"].some((t) => text.includes(t)), text.slice(0, 400));
 for (const spec of SPECS) {
   // 逐项：只要它落在**某个**已渲染页里就算过；当前实现首页是 priority 页，
   // 所以多数项在别的页 —— 这里改为断言「它至少被分到了某一页」由源码结构保证，
@@ -357,25 +357,47 @@ ok("★ 渲染里有保存按钮", text.includes("保存"), text.slice(0, 400));
 //   ★★★ 2026-10-19：分页后**一次只画一页**，所以「全部页标题同时出现」不再成立。
 //     正确判据 = **标签栏里每一页的名字都出现**（那是用户能点到的入口），
 //     而「页内标题」只需断言**当前页**那一个。
-for (const g of GROUPS) {
-  ok(`★★ 分页标签里有「${g.label}」`, text.includes(g.label), text.slice(0, 500));
+// ★★★★★ 2026-10-21（用户拍板「顶层精简到四个」）：判据从"6 个组"改成"4 个标签页"。
+//
+//   ★ 真源是 `lib/client.js` 的 `PANEL_TABS` 那张表；**那张表本身**由自检
+//     `情形 100 ①` 硬判（页数=4 / 不漏项 / 不重复 / 名单准确性）。
+//     本探针只负责**渲染层**那件事：它真的被画成了 4 个可点标签、且一次只画一页。
+//   ⚠️ 不要把这张表当成第二真源去跟 client.js 对赌 —— 那会变成"两处都要改"。
+//      这里只写"渲染出什么标题"，不写"哪些 key 属于哪页"（后者只在这里用于
+//      判断"首页应该有哪些项 / 不该有哪些项"，且用 fixture 里的 key 表达）。
+const TAB_TITLES = ["常规", "注入", "扩展记忆", "高级"];
+/** 首页（常规页）在夹具里应当出现的 spec key。 */
+const GENERAL_KEYS = new Set([
+  "highFidelityCompactRatio",
+  "settingPrecedence",
+  "autoCompact",
+  "midTurnCompact",
+  "maxActiveLines",
+  "turnEndOffer",
+]);
+
+for (const title of TAB_TITLES) {
+  ok(`★★ 分页标签里有「${title}」`, text.includes(title), text.slice(0, 500));
 }
-ok("★★ 分页标签按声明顺序出现", (() => {
-  const idx = GROUPS.map((g) => text.indexOf(g.label));
-  return idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1]));
-})(), GROUPS.map((g) => `${g.label}@${text.indexOf(g.label)}`).join(" "));
+ok("★★ 顶层正好 4 个标签页（用户要求）", TAB_TITLES.length === 4 && TAB_TITLES.every((t) => text.includes(t)));
+ok(
+  "★★ 分页标签按声明顺序出现",
+  (() => {
+    const idx = TAB_TITLES.map((t) => text.indexOf(t));
+    return idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1]));
+  })(),
+  TAB_TITLES.map((t) => `${t}@${text.indexOf(t)}`).join(" ")
+);
 // ★ 每一页都带条目计数角标（用户能看出这页有几项）。
 ok("★★ 分页标签带条目计数角标", /\d/.test(text), text.slice(0, 500));
-// ★ 单位与范围要显示出来（数字项的可读性改进）。
-//   ⚠️ 分页后这两项在别的页 ⇒ 改判「**数字控件确实带范围/单位的那套渲染逻辑在**」，
-//   由自检情形 100 的源码断言 + 下面单独渲染一页来保证。
-// ★ 首页渲染出的是**当前那一页**（不是空页、也不是把 6 页全堆出来）。
+// ★ 首页渲染出的是**当前那一页**（不是空页、也不是把 4 页全堆出来）。
 //   ⚠️ mock 的 `render()` 只输出**文本**、不保留 className ⇒ 不能按 class 判。
-//   ⇒ 用**文本层**判据：首页那组的 title 与其 hint 都在，而**别的组的 spec label 不在**。
+//   ⇒ 用**文本层**判据：首页该有的 spec label 都在，别页的 spec label 都不在。
 {
-  const FIRST = GROUPS[0]; // priority
-  const firstSpecs = SPECS.filter((s) => s.group === FIRST.key);
-  const otherSpecs = SPECS.filter((s) => s.group !== FIRST.key);
+  const firstSpecs = SPECS.filter((s) => GENERAL_KEYS.has(s.key));
+  const otherSpecs = SPECS.filter((s) => !GENERAL_KEYS.has(s.key));
+  // ★ 夹具自检：首页必须真的有项，否则下面两条都是空转。
+  ok("★★ 夹具自检：夹具里有属于「常规」页的项", firstSpecs.length > 0, `firstSpecs=${firstSpecs.length}`);
   ok(
     "★★ 首页渲染出了设置项（不是空页）",
     firstSpecs.length > 0 && firstSpecs.every((s) => text.includes(s.label)),
@@ -386,11 +408,7 @@ ok("★★ 分页标签带条目计数角标", /\d/.test(text), text.slice(0, 50
     otherSpecs.every((s) => !text.includes(s.label)),
     "不该出现的却出现了：" + otherSpecs.filter((s) => text.includes(s.label)).map((s) => s.label).join(", ")
   );
-  ok(
-    "★★ 首页那组的页内标题出现了",
-    text.includes(FIRST.label),
-    `期望「${FIRST.label}」`
-  );
+  ok("★★ 首页那一页的页内标题出现了", text.includes("常规"), "期望「常规」");
 }
 // ★「仅影响本项目」徽标：当前页是 priority 页（无 scopeNote 项），
 //   ⇒ 渲染层无法直接看到它。**不再造一条恒真断言冒充覆盖** ——
@@ -415,11 +433,10 @@ ok("★★ 渲染里标明了当前配置来源口径", text.includes("配置来
 //   ⇒ 所以这里必须断言**每个选项的文案都出现了**，不能只看 spec.label。
 //   ★ 2026-10-19：分页后只能看到**首页**里的 choice ⇒ 判据必须先筛出首页的 choice。
 {
-  const FIRST_KEY = GROUPS[0].key;
-  const homeChoices = SPECS.filter((s) => s.kind === "choice" && s.group === FIRST_KEY);
+  const homeChoices = SPECS.filter((s) => s.kind === "choice" && GENERAL_KEYS.has(s.key));
   if (homeChoices.length === 0) {
     // 夹具自检：首页必须至少有一个 choice，否则这条断言又变成空转。
-    ok("★★ 夹具自检：首页存在至少一个 choice 控件", false, JSON.stringify(GROUPS.map((g) => g.key)));
+    ok("★★ 夹具自检：首页存在至少一个 choice 控件", false, JSON.stringify([...GENERAL_KEYS]));
   } else {
     for (const spec of homeChoices) {
       const labels = (spec.options ?? []).map((o) => o.label);

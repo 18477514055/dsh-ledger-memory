@@ -56,12 +56,44 @@ console.log("\n═══ ① README 的工具章节 ═══");
 {
   const m = readme.match(/## ([一二三四五六七八九十百]+个工具|[0-9]+ ?个工具)/);
   const declared = m === null ? null : m[1];
-  const CN = { 十四个工具: 14, 二十一个工具: 21, 八个工具: 8, 十五个工具: 15, 二十个工具: 20 };
-  const n = declared === null ? null : (CN[declared] ?? Number(declared.replace(/[^\d]/g, "")));
+  // ★★★★★ 2026-10-22：**原来这里是一张硬编码的中文数字表**（`{十四个工具:14, 二十一个工具:21, …}`）。
+  //   🔴 病（本轮当场撞到）：README 从「二十一个工具」改成「二十二个工具」后，
+  //      表里没有这一项 ⇒ 解析出 `0` ⇒ 报「README 说 二十二个工具（0），代码是 22」。
+  //      ★ 而**事实是对的**（22 = 22），红的只是**尺子只认它见过的那几个词**。
+  //   ★★ 这与本项目「逐条列举一定会漏」是同一条：写死枚举的东西，每改一次文案就要补一次表，
+  //      漏了还会报成"文档错了"——**把探针的盲区伪装成被测对象的错误**。
+  //   ⇒ 换成一个**中文数字解析器**：任意 1~999 都能算，以后改数量不必动这里。
+  //   ★ 只吃「数字 + 十 + 百」，其余字符一律判无效（不猜）—— 判不了就返回 null 让断言红，
+  //     而不是默默算成 0（"算成 0"正是这次的病）。
+  const cnNum = (s) => {
+    const D = { 零: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+    let total = 0;
+    let cur = 0;
+    for (const ch of s) {
+      if (Object.prototype.hasOwnProperty.call(D, ch)) cur = D[ch];
+      else if (ch === "十") {
+        total += (cur === 0 ? 1 : cur) * 10;
+        cur = 0;
+      } else if (ch === "百") {
+        total += (cur === 0 ? 1 : cur) * 100;
+        cur = 0;
+      } else return null; // 认不出来就说认不出来，不猜
+    }
+    return total + cur;
+  };
+  const n =
+    declared === null
+      ? null
+      : (() => {
+          const digits = declared.replace(/[^\d]/g, "");
+          if (digits !== "") return Number(digits); // 阿拉伯数字写法
+          const cn = declared.replace(/个工具$/, "");
+          return cnNum(cn);
+        })();
   check(
     `README 声明的工具数（${declared ?? "未找到章节"}）与代码一致（代码 ${toolCount}）`,
     n === toolCount,
-    `README 说 ${declared}（${n}），代码是 ${toolCount}`
+    `README 说 ${declared}（解析为 ${n}），代码是 ${toolCount}`
   );
   // 表格行数（| `ledger_xxx` | ... |）
   const rows = [...readme.matchAll(/^\|\s*`(ledger_[a-z_]+)`\s*\|/gm)].map((x) => x[1]);

@@ -67,7 +67,13 @@ const marks = [
   ["D62 口径修复（在 nodes 尺度上算保留量）", "Math.max(1, Math.floor(nodeSum - removeRatio * pressure.window))"],
   ["D62 兜底分支保留（量不到节点时退回旧口径）", "量不到节点时就退回旧口径"],
   ["A2 内容指纹幂等", "batch:${bodySha}"],
-  ["A2 内容不变量", "既不在新台账、也不在 entries 里"],
+  // ★★ 2026-10-22：标志物从「既不在新台账、也不在 entries 里」改成**实现本身的函数签名**。
+  //   病（预检当场抓到，两边都 false）：D267 把判据从「列表行 / entries」换成「整份正文逐行」时，
+  //   源码里的措辞改成了「既不在新台账、也不在归档」⇒ **旧标志物在全库 0 命中**。
+  //   而"包内 false + 本地也 false"正是**标志物过期**的指纹（不是"包里没有修复"）。
+  //   ⇒ 判据换成 `export function lostLines(`：它是这条不变量的**实现**，名字唯一、不会随注释措辞漂移。
+  //   ★ 与本文件第 60~65 行那三条教训同型：**标志物必须既能选对文件、又能对上真实写法**。
+  ["A2 内容不变量（整份正文逐行）", "export function lostLines("],
   ["A2 ifRevision 拒绝", "stale: true"],
   ["A3 保留扩展字段", "hadPrevManifest"],
   ["D61 胶囊落盘", "capsules.json"],

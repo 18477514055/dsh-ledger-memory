@@ -9018,8 +9018,11 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //     ⇒ 107 → **108**；带编号 106 → **107**。★ 第二十一次当场变红。
   //   ★★ 2026-10-20（D284 · 作废卡降权）：新增情形 114（`mechanicalWeight` 的 done 词表补齐）
   //     ⇒ 108 → **109**；带编号 107 → **108**。★ 第二十二次当场变红。
-  eq("★ 口径：section 总数 = 109（情形 93~114）", sectionCalls, 109);
-  eq("★ 口径：其中带「情形 N」编号的 = 108", numbered, 108);
+  //   ★★ 2026-10-22（V3 §3.1 · 自动暂存默认关闭）：新增情形 115
+  //     （`shouldAutoStage` 中央判据 + `gitAdd` 路径级硬拒绝 + 真仓库探针）
+  //     ⇒ 109 → **110**；带编号 108 → **109**。★ 第二十三次当场变红。
+  eq("★ 口径：section 总数 = 110（情形 93~115）", sectionCalls, 110);
+  eq("★ 口径：其中带「情形 N」编号的 = 109", numbered, 109);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -22172,6 +22175,151 @@ section("情形 114：作废卡必须降权，且不许误伤「卡内局部结�
         "一张都没有 ⇒ 断言没被测到"
       );
     }
+  }
+}
+section("情形 115：V3 §3.1 自动暂存默认关闭，且不能被旧配置重新打开");
+{
+  // ★★★ 用户拍板的硬边界（PRINCIPLES §六，逐字）：
+  //   *"所有的来自本插件构建的东西。除非用户亲自允许，否则绝对不允许模型自己推送到云端。"*
+  //   今天真发生过一次：整个记忆系统被推到 GitHub（06-DSH-mobile）。
+  //
+  // ★ 任务书 §3.1 两句逐字要求（这就是本情形守的东西）：
+  //   ① *"第三代默认关闭自动暂存。"*
+  //   ② *"私有记忆模式下，不能通过第二代遗留的 `autoGitAdd: true` 意外重新开启自动暂存。"*
+  //
+  // ★★★ 为什么断言要落在**源码结构**上，而不是只跑行为：
+  //   这条规矩最危险的失效形态是「**将来加第六个调用点，又手写一遍 `autoGitAdd !== false`**」——
+  //   那样行为测试若只测已有路径，照样全绿。⇒ 两条一起守：
+  //     · 结构：全 lib 里**不许**再出现旧条件（只许问 `shouldAutoStage`）；
+  //     · 行为：V3 + autoGitAdd:true ⇒ 拒绝；V2 ⇒ 保持原行为。
+  const libFiles = fs.readdirSync(path.join(HERE, "..", "lib")).filter((f) => f.endsWith(".js"));
+  const readLib = (f) => fs.readFileSync(path.join(HERE, "..", "lib", f), "utf8");
+
+  // ── ① 结构：旧条件必须清零 ────────────────────────────────────────────
+  //   ★ 只吃**代码行**，剥掉注释 —— 注释里为了记录这次改动而引用了旧写法（那是文档）。
+  //     第一版没剥注释 ⇒ 7 处「残留」全是注释，断言永远红。**剥离用的标记不能污染内容。**
+  const stripJsComments = (s) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  // ★★ 必须把 `shouldAutoStage` **自己的函数体**摘掉再扫 ——
+  //   它内部那行 `info?.manifest?.autoGitAdd !== false` 是**唯一正当**的用法（V2 分支）。
+  //   ★ 第一版没摘 ⇒ 115① 永远红。这与本项目「剥离用的标记不能污染内容」同型：
+  //     **判据要排除"被允许的那一处"，否则它逼着人删掉正当代码。**
+  const stripFnBody = (src, name) => {
+    const mark = src.indexOf(`export function ${name}(`);
+    if (mark < 0) return src;
+    let d = 0;
+    for (let i = src.indexOf("{", mark); i < src.length; i += 1) {
+      if (src[i] === "{") d += 1;
+      else if (src[i] === "}") {
+        d -= 1;
+        if (d === 0) return src.slice(0, mark) + src.slice(i + 1);
+      }
+    }
+    return src;
+  };
+  const offenders = [];
+  for (const f of libFiles) {
+    const code = stripFnBody(stripJsComments(readLib(f)), "shouldAutoStage");
+    code.split("\n").forEach((l, i) => {
+      // 旧条件的两副面孔（一个 `!== false`，一个直接真值判断）
+      if (/autoGitAdd\s*!==\s*false/.test(l) || /manifest\.autoGitAdd\s*&&/.test(l)) {
+        offenders.push(`${f}:${i + 1}`);
+      }
+    });
+  }
+  ok(
+    "115① ★ 代码里不再有任何「手写 autoGitAdd 条件」的调用点（只许问 shouldAutoStage）",
+    offenders.length === 0,
+    offenders.join(" · ")
+  );
+
+  // ── ② 结构：五个入口必须都真的问判据 ──────────────────────────────────
+  //   ★ 五个入口 = 台账写入 / 日志落盘 / 扩展 / 归档 / init。少一个就是留了一条暗门。
+  const callSites = [];
+  for (const f of libFiles) {
+    stripJsComments(readLib(f))
+      .split("\n")
+      .forEach((l, i) => {
+        if (/shouldAutoStage\s*\(/.test(l) && !/export function shouldAutoStage/.test(l)) {
+          callSites.push(`${f}:${i + 1}`);
+        }
+      });
+  }
+  ok(
+    "115② ★ shouldAutoStage 的调用点 ≥ 5（台账/日志/归档/扩展/init 都要问它）",
+    callSites.length >= 5,
+    `实际 ${callSites.length}：${callSites.join(" · ")}`
+  );
+
+  // ── ③ 结构：gitAdd 里必须有 §3.1 的路径级拒绝（纵深防御）──────────────
+  const p2code = stripJsComments(readLib("part2.js"));
+  ok("115③ ★ gitAdd 里有 §3.1 路径级硬拒绝（refused）", /refused\.push/.test(p2code) && /拒绝暂存私有记忆/.test(p2code));
+  ok("115③ b ★ 无法确认记忆根时 fail closed（不是放行）", /fail closed/.test(p2code));
+
+  // ── ④ 行为：V3 + autoGitAdd:true ⇒ 必须拒绝 ────────────────────────────
+  //   ★ 这一条是 §3.1 第二条的**正面**证明：旧配置不能把开关重新打开。
+  //   ★ 用与本文件其它地方一致的取法（动态 import 具名导出），不要自造 `T` 命名空间。
+  const { shouldAutoStage } = await import("../lib/part2.js");
+  // ★★★ 夹具必须**有 `.git`** —— 第一版我用 `C:/fake/proj` 这种假路径，
+  //   而 `shouldAutoStage` 第一件事就是 `fs.existsSync(<root>/.git)` ⇒ 直接走"不是 git 仓库"
+  //   分支返回 false ⇒ ④b/⑤ 双红，看起来像"判据坏了"，其实**是我的夹具前提错了**。
+  //   ★ 这正是本项目纪律 6：「夹具没走通时，绝不能把夹具故障当成被测对象的问题」。
+  const mkRepoDir = () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "pl-115-"));
+    fs.mkdirSync(path.join(d, ".git"));
+    return d;
+  };
+  const v3dir = mkRepoDir();
+  const gV3 = shouldAutoStage({
+    projectRoot: v3dir,
+    memoryBase: path.join(v3dir, "proj-ledger-memory"),
+    manifest: { autoGitAdd: true },
+  });
+  fs.rmSync(v3dir, { recursive: true, force: true });
+  ok(
+    "115④ ★★★ V3（记忆在子目录）+ autoGitAdd:true ⇒ 仍然拒绝（旧配置不能重开）",
+    gV3.allow === false,
+    JSON.stringify(gV3)
+  );
+  ok("115④ b 拒绝理由要能说清「为什么」", /第三代/.test(gV3.reason) && /不能重新开启/.test(gV3.reason), gV3.reason);
+
+  // ── ⑤ 行为：V2 不许被误伤 ────────────────────────────────────────────
+  const v2dir = mkRepoDir();
+  const gV2 = shouldAutoStage({
+    projectRoot: v2dir,
+    memoryBase: v2dir,
+    manifest: { autoGitAdd: true },
+  });
+  fs.rmSync(v2dir, { recursive: true, force: true });
+  ok(
+    "115⑤ ★ V2（记忆就在项目根）+ autoGitAdd:true ⇒ 仍然允许（不改变既有项目）",
+    gV2.allow === true,
+    JSON.stringify(gV2)
+  );
+
+  // ── ⑥ 行为：V3 的 init 默认值必须是 false ─────────────────────────────
+  //   ★ 清单里写 true 也是假的（④ 已证明它无效），但**写 false 才不会误导人**。
+  const p4code = stripJsComments(readLib("part4.js"));
+  ok(
+    "115⑥ ★ ledger_init 里 autoGitAdd 的默认值按项目形态定（V3 ⇒ false）",
+    /memRootRel === undefined && typeof prev\.memoryRoot !== "string"/.test(p4code)
+  );
+
+  // ── ⑦ 真跑那个探针（它建真 git 仓库、查索引实况）──────────────────────
+  //   ★ 结构断言证明不了「没有别处绕过它去 stage」⇒ 必须真跑。
+  //   ★ 本文件只 import 了 `spawnSync`（不是 execFileSync）—— 用已导入的那个。
+  const probeRun = spawnSync(process.execPath, [path.join(HERE, "_probe-v31-autostage-deny.mjs")], {
+    encoding: "utf8",
+    timeout: 120000,
+  });
+  {
+    const out = String(probeRun.stdout ?? "");
+    const m = /PASS (\d+) · FAIL (\d+)/.exec(out);
+    ok(
+      "115⑦ ★ 探针 _probe-v31-autostage-deny 全过（真建仓库查索引）",
+      probeRun.status === 0 && m !== null && Number(m[2]) === 0,
+      m === null ? String(probeRun.stderr ?? "").slice(-300) || out.slice(-200) : `PASS ${m[1]} FAIL ${m[2]} status=${probeRun.status}`
+    );
   }
 }
 if (failCount > 0) {

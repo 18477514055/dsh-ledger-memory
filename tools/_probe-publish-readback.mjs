@@ -123,7 +123,14 @@ const LEGACY = [
   //   ⇒ 纪律 9 不是"知道就行"，是**报之前必须 grep 一次**；本文件因此每条都带 `文件:行`。
   ["D62 口径修复", "Math.max(1, Math.floor(nodeSum - removeRatio * pressure.window))", "lib/part5.js"],
   ["A2 内容指纹", "batch:${bodySha}", "lib/part4.js"],
-  ["A2 内容不变量", "既不在新台账、也不在 entries 里", "lib/part4.js"],
+  // ★★★ 2026-10-23（D312）：这条标志物的**措辞在源码里被改过**，我一直没跟上：
+  //   旧写法「既不在新台账、也不在 entries 里」⇒ 现写法「这批移走后，旧台账里还有 N 行不在新台账也不在 entries 了」
+  //   （part4.js:3106，已 grep 复核）。
+  //   ★ 判据：**标志物是"代码里的一句话"，代码改措辞它就失效** —— 这是这条机制**固有的脆弱性**。
+  //     ⇒ 处理照先例：**改标志物去追代码**，但必须**先 grep 新位置/新措辞**，不许凭印象写。
+  //   ★ 更稳的写法是把标志物选在**不容易被改写的部分**（如函数名、关键表达式），
+  //     但那样就失去了"这一版的修复真的进了包"这个意义 —— 两者是取舍，不是谁对。
+  ["A2 内容不变量", "不在新台账也不在 entries 了", "lib/part4.js"],
   ["A2 ifRevision 拒绝", "stale: true", "lib/part4.js"],
   ["A3 保留扩展字段", "hadPrevManifest", "lib/part4.js"],
   ["D61 胶囊落盘", "capsules.json", "lib/defs.js"],

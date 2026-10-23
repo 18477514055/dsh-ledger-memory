@@ -217,7 +217,7 @@ pnpm 会把那一行**自己改成** `- dsh-ledger-memory@0.1.0 || 1.0.0`（追�
 | `ledger_goals` | 维护**目标树**（卡片联成树；目标完成时补记一条教训） |
 | `ledger_lessons` | 维护**经验与教训**（经验需注明出处，教训需注明根因） |
 | `ledger_index` | 为卡片目录生成**多维索引表**（融合模型判断、时间、稳定性与星级） |
-| `ledger_extension` | 维护自定义**扩展记忆**（7 种模式，按需挂载项目专属记忆单元） |
+| `ledger_extension` | 维护自定义**扩展记忆**（6 种模式，按需挂载项目专属记忆单元） |
 | `ledger_propose_principle` | **提议**一条根本原则（模型仅可提议） |
 | `ledger_principles_access` | 请求使用者开启**授权窗口**，之后可修改根本原则 |
 | `ledger_compact` | 请求执行一次高保真压缩 |
@@ -236,7 +236,7 @@ pnpm 会把那一行**自己改成** `- dsh-ledger-memory@0.1.0 || 1.0.0`（追�
 | `LEDGER.md` | **当前状态** | 可覆盖 / 精简 / 归档 | **每回合注入** | `ledger_write({target:"active"})` |
 | `JOURNAL.md` | **回合流水**（按天、按会话） | **只追加、不修改** | 不注入（按需查阅） | `ledger_write({target:"journal"})` |
 | `decisions/` | 长期决策（**一卡一文件**） | 只追加，不参与归档 | 摘要见台账 | `ledger_write({target:"decisions"})` |
-| `extensions/` | 自定义**扩展记忆**（7 种模式，注册表 `registry.json`） | 按模式定义（只追加或可覆盖） | 摘要可选注入 | `ledger_extension` |
+| `extensions/` | 自定义**扩展记忆**（6 种模式，注册表 `registry.json`） | 按模式定义（只追加或可覆盖） | 摘要可选注入 | `ledger_extension` |
 | `_ledger-log/` | 活动日志 L0–L4（含**使用者原话**） | 只追加 | **永不注入** | 自动采集；`ledger_log` 查询 |
 | `_ledger-archive/` | 归档 | 只追加 | 否 | `ledger_archive` |
 | `_stash/` | 分流中"后续可能需要查阅"的部分 | 只追加 | 否 | `ledger_triage` 的 stash 桶 |
@@ -269,25 +269,30 @@ pnpm 会把那一行**自己改成** `- dsh-ledger-memory@0.1.0 || 1.0.0`（追�
 
 **判定依据**：**询问"它存储在磁盘何处" ⇒ 卡片轴；询问"本回合向模型推送多少" ⇒ 区块轴。**
 
-### 扩展记忆（7 种模式）
+### 扩展记忆（6 种模式）
 
 为满足项目特有的记忆需求（游戏机制、专有术语、规范清单等），同时避免污染核心记忆体系，插件支持**用户自定义的扩展记忆**：
 
 - **存储形态**：统一存放在记忆目录的 `extensions/` 下，以 `registry.json` 为注册表真源。
   · **卡片型**（`decisions` / `goals` / `lessons`）：`extensions/<id>/cards/<key>.md`，一卡一文件。
-  · **单文件型**：文件名随模式而定 —— `principles` → `PRINCIPLES.md`、`active` → `LEDGER.md`、
-    `journal` → `JOURNAL.md`、`plain` → `content.md`。
-- **七种模式**（顺序固定，受保护的排最前，看得见）：
-  1. `principles`（根本原则型）：单文件，受严格保护，修改需使用者明确授权，模型仅可提议。
-  2. `decisions`（决策型）：卡片型，编号即地址（如 `D1.md`）。
-  3. `active`（活跃台账型）：单文件，可覆盖与精简，适合维护当前业务状态。
-  4. `journal`（流水记录型）：单文件，只追加、不改旧条目。
-  5. `goals`（目标树型）：卡片型，一卡一节点，记录目标演进。
-  6. `lessons`（经验教训型）：卡片型，沉淀经验与踩坑教训。
-  7. `plain`（普通独立记忆型）：单文件，普通读写，无特殊约束。
+  · **单文件型**：文件名随模式而定 —— `active` → `LEDGER.md`、`journal` → `JOURNAL.md`、
+    `plain` → `content.md`。
+- **六种模式**：
+  1. `decisions`（决策型）：卡片型，编号即地址（如 `D1.md`）。
+  2. `active`（活跃台账型）：单文件，可覆盖与精简，适合维护当前业务状态。
+  3. `journal`（流水记录型）：单文件，只追加、不改旧条目。
+  4. `goals`（目标树型）：卡片型，一卡一节点，记录目标演进。
+  5. `lessons`（经验教训型）：卡片型，沉淀经验与踩坑教训。
+  6. `plain`（普通独立记忆型）：单文件，普通读写，无特殊约束。
 - **隔离与防冲突**：扩展记忆**不得占用**核心保留名（`ledger` / `decisions` / `journal` / `goals` /
   `lessons` / `principles`），也不得改变基础模板；可通过工具 `ledger_extension` 或设置面板的
   「扩展记忆」页管理。
+
+> **为什么没有「原则型」**：原则只该有一个出处 —— 核心的 `PRINCIPLES.md`。
+> 再让使用者"额外扩展一份原则"没有语义，而且它会是唯一需要授权的扩展模式，
+> 那条授权路径本身也得另造一套。故**不提供该模式**；根本原则仍走
+> `ledger_propose_principle`（模型提议）→ `ledger_principles_access`（使用者开授权窗口）→
+> `/ledger principles approve`（使用者批准）。
 
 > **能力边界说明**：`goals/`、`lessons/` 以及 `extensions/` 均属于**可选能力**，并非所有项目自动具备。
 > 插件**不会擅自创建**这些文件 —— 如需使用，应在该项目清单中登记（或由模型征得使用者同意后创建）。

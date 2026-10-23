@@ -135,7 +135,7 @@ console.log("\n=== ① 创建：注册表与文件都真的落地 ===\n");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-console.log("\n=== ② 建满 7 种模式 ⇒ 核心记忆一个字节都不许变（§6.5 铁律）===\n");
+console.log("\n=== ② 建满全部模式 ⇒ 核心记忆一个字节都不许变（§6.5 铁律）===\n");
 {
   const root = makeV3Project("all7");
   const info = inspect(root);
@@ -155,8 +155,12 @@ console.log("\n=== ② 建满 7 种模式 ⇒ 核心记忆一个字节都不许�
     results.push({ mode, ok: r.ok === true, reason: r.reason, id: r.created?.id });
   }
   const bad = results.filter((r) => !r.ok);
-  ok("②b 七种模式全部创建成功", bad.length === 0, JSON.stringify(bad));
-  ok("②c 注册表里恰好 7 条", P8.readRegistry(info, root).registry.extensions.length === 7);
+  // ★ 2026-10-23（D311）：7 → **6**（用户拍板去掉「原则型」）。
+  //   这里刻意**用 EXT_MODE_KEYS.length 而不是写死 6** ——
+  //   将来再加/再删模式，这条断言自动跟着走，不必回来改数字（数字写死就会过期）。
+  const want = P8.EXT_MODE_KEYS.length;
+  ok(`②b 全部 ${want} 种模式全部创建成功`, bad.length === 0, JSON.stringify(bad));
+  ok(`②c 注册表里恰好 ${want} 条`, P8.readRegistry(info, root).registry.extensions.length === want, String(P8.readRegistry(info, root).registry.extensions.length));
 
   const after = coreOf(info);
   ok("②d ★★★ 核心记忆文件数没变", before.size === after.size, `${before.size} → ${after.size}`);
@@ -230,14 +234,43 @@ console.log("\n=== ③ 七种模式的读写语义 ===\n");
     ok("③10 journal：两条都在（旧条目没被覆盖）", rd.text.includes("第一条") && rd.text.includes("第二条"));
   }
 
-  // ③11 原则型：**模型不许写**
+  // ③11 ★★★ 2026-10-23（D311）：**「原则型」这个模式已经不存在了** —— 要正面证明它没了。
+  //
+  //   🔴 原来这里验的是"原则型存在、且模型写被硬拒"。用户拍板去掉这个模式之后，
+  //     那条断言就成了**在证明一件已经不存在的事**（它只会因为 create 失败而红）。
+  //   ⇒ 现在该证明的是**三件事**，一件都不能少：
+  //     ① 枚举里没有 `principles`；
+  //     ② 传 `mode:"principles"` 新建 ⇒ **明确被拒**（且理由里说清"必须是这些之一"）；
+  //     ③ 全系统**再没有任何 `protect:true` 的模式** —— 否则"删掉保护"就成了新隐患。
   {
-    const id = mk("principles");
-    const w = P8.writeExtension(info, root, id, { content: "模型想偷偷改原则\n" });
-    ok("③11 principles：**模型写被硬拒**", w.ok === false && w.protected === true, JSON.stringify(w));
-    const rd = P8.readExtension(info, root, id, {});
-    ok("③12 principles：读得到（只是写被拒）", rd.ok === true);
-    ok("③13 principles：被拒之后内容**没被改**", !rd.text.includes("偷偷改"));
+    ok(
+      "③11 ★★★★★ 模式枚举里**没有** principles（D311 用户拍板去掉）",
+      !P8.EXT_MODE_KEYS.includes("principles"),
+      JSON.stringify(P8.EXT_MODE_KEYS)
+    );
+    const r = P8.createExtension(info, root, {
+      name: "想建原则型",
+      description: "这一条应该被拒",
+      mode: "principles",
+      inject: false,
+    });
+    ok(
+      "③12 传 mode:\"principles\" 新建 ⇒ **明确被拒**，且理由列出现在合法的模式",
+      r.ok === false && /必须是这些之一/.test(String(r.reason)),
+      `${r.ok} / ${String(r.reason).slice(0, 90)}`
+    );
+    const protectedModes = Object.entries(P8.EXT_MODES).filter(([, v]) => v.protect === true).map(([k]) => k);
+    ok(
+      "③13 ★★★★ **全系统已无 `protect:true` 的模式**（否则删掉那条写保护分支就是新隐患）",
+      protectedModes.length === 0,
+      `仍是 protect 的模式：${protectedModes.join(",") || "（无）"}`
+    );
+    // ★ 反向自证：这条断言**真的在读模式表**，不是空判据。
+    ok(
+      "③13b 且这条断言不是空的：模式表里确实有 ≥5 个模式（否则 protectedModes 恒空）",
+      P8.EXT_MODE_KEYS.length >= 5,
+      `模式数=${P8.EXT_MODE_KEYS.length}`
+    );
   }
 
   // ③14 非流水型传 append ⇒ 拒绝（防止把台账/决策当流水用）

@@ -9021,8 +9021,11 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //   ★★ 2026-10-22（V3 §3.1 · 自动暂存默认关闭）：新增情形 115
   //     （`shouldAutoStage` 中央判据 + `gitAdd` 路径级硬拒绝 + 真仓库探针）
   //     ⇒ 109 → **110**；带编号 108 → **109**。★ 第二十三次当场变红。
-  eq("★ 口径：section 总数 = 110（情形 93~115）", sectionCalls, 110);
-  eq("★ 口径：其中带「情形 N」编号的 = 109", numbered, 109);
+  //   ★★ 2026-10-23（D311 · 用户拍板去掉「原则型」扩展模式，7 → 6）：新增情形 116
+  //     （守"扩展模式里没有 principles + 全系统无 protect:true + 未知模式不崩"）
+  //     ⇒ 110 → **111**；带编号 109 → **110**。★ 第二十四次当场变红。
+  eq("★ 口径：section 总数 = 111（情形 93~116）", sectionCalls, 111);
+  eq("★ 口径：其中带「情形 N」编号的 = 110", numbered, 110);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -20816,8 +20819,24 @@ section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必�
   //   所以本节只做一件事：把 review 的**复现输入**当断言跑 —— 原来 assert 它成功，
   //   现在 assert 它**被拒**（报告原话：「修复以后，应把断言改成预期安全行为」）。
   const p1 = fs.readFileSync(path.join(HERE, "..", "lib", "part1.js"), "utf8");
-  const p2 = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
-  const p4 = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
+  // ★★★★★ 2026-10-23（D307）：**判据必须跟着实现走。**
+  //   🔴 病（拆模块后当场红了 4 条）：`writeFileAtomic` / `isUnderReal` / `nearestExistingAncestor`
+  //     这些**纯基础函数**已从 `part2.js` 搬到 `lib/base.js`（只依赖 node 内建 ⇒ 叶子模块），
+  //     而本节只读 `part2.js` ⇒ `declaresFunction(p2, …)` 必然假 ⇒ **4 条假红**。
+  //   ★ 判据：这条断言要验的是「**函数存在且这么实现**」，不是「它住在哪个文件」。
+  //     实现整体搬走时尺子也要跟着走，否则**"搬家"这件事本身会被误判成缺陷**。
+  //   ★ 为什么合并成一个 `p2plus` 而不是逐条改断言的入参：
+  //     本节里"三处要害都走它"那几条是**跨文件**判的（p1+p2+p4 拼起来找），
+  //     合并后"实现到底在哪"就变成无关变量，改动面最小。
+  const p2Raw = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
+  const baseAll = fs.readFileSync(path.join(HERE, "..", "lib", "base.js"), "utf8");
+  // ★ 实现搬到 base.js 之后，`p2` 表示"基础函数 + part2 本体"（判据不关心它住哪）。
+  const p2 = `${p2Raw}\n${baseAll}`;
+  // ★★ 2026-10-23（D307 第二刀）：`cardDirIsSafe` 等**卡片操作**已搬到 `lib/card-ops.js`。
+  //   判据要验的是「这个边界判据存在」，不是「它住在 part4」⇒ 把新模块并进来。
+  //   🔴 不并的后果（本轮实测）：拆完当场 1 条红，而实现完全正常 —— **假红**。
+  const cardsAll = fs.readFileSync(path.join(HERE, "..", "lib", "card-ops.js"), "utf8");
+  const p4 = `${fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8")}\n${cardsAll}`;
   // ★ 2026-10-21（D288）：本条原则的机检要看 defs.js（`DEFAULT_IGNORE_LINES` 在那）。
   const defsAll = fs.readFileSync(path.join(HERE, "..", "lib", "defs.js"), "utf8");
   const stripAll = stripCommentsAndLiterals;
@@ -21447,13 +21466,22 @@ section("情形 110：记忆协议代次（D272）—— 判定、注入、以�
     //   这就是 `ledger_init` 原来造出来的形状 —— 必须仍然报缺口。
     const selfClaimed = { protocolVersion: PV };
     const g = protocolGapOf(selfClaimed);
+    // ★★★★★ 2026-10-23（D308）：`missing.length === 2` 这个**写死的数**在引入第 3 代之后
+    //   就变成了"要求表有几条"的隐式拷贝 ⇒ 再加一代它就红。
+    //   ★ 判据：**断言要盯"本该缺的那几条在不在"，不要盯"一共几条"** ——
+    //     后者是**测试在抄实现**，一改实现就得改测试（而这正是测试该报警的地方）。
+    const requiredMiss = g.missing.filter((x) => x.optional !== true);
     ok(
-      "110① ★★ 自称第 2 代但结构是单文件 ⇒ **仍然报缺口**（版本号不是免检凭证）",
-      g.projectVersion === PV && g.outdated === true && g.missing.length === 2,
-      `projectVersion=${g.projectVersion} outdated=${g.outdated} missing=${g.missing.length}`,
+      "110① ★★ 自称第 3 代但结构是单文件 ⇒ **仍然报缺口**（版本号不是免检凭证）",
+      g.projectVersion === PV &&
+        g.outdated === true &&
+        // 第 2 代那两条**必须**缺（卡片化 + 日志分片）—— 这才是"版本号不是免检凭证"的证据
+        requiredMiss.length === 2 &&
+        requiredMiss.every((x) => x.since === 2),
+      `projectVersion=${g.projectVersion} outdated=${g.outdated} 必需缺口=${requiredMiss.length} 全部缺口=${g.missing.length}`,
     );
 
-    // 对照组：真的满足全部要求 ⇒ 不报
+    // 对照组：真的满足**全部必需**要求 ⇒ 不报（★ 第 3 代是 optional，不属于"必需"）
     const real = {
       protocolVersion: PV,
       decisionsDir: "decisions",
@@ -21464,8 +21492,11 @@ section("情形 110：记忆协议代次（D272）—— 判定、注入、以�
     const g2 = protocolGapOf(real);
     ok(
       "110① b ★ 结构真齐全 ⇒ 不报（否则上面那条可能是『永远报』）",
-      g2.outdated === false && g2.missing.length === 0,
-      JSON.stringify(g2),
+      // ★ D308：`missing` 里现在**允许**还剩 optional 那条（第 3 代未迁），但 `outdated` 必须 false
+      //   —— 判据是"该催的才催"，不是"缺口清零"。硬写 `missing.length === 0` 会逼人把第 3 代改成必需，
+      //   而那正是把"待办"报成"缺陷"的错。
+      g2.outdated === false && g2.missing.every((x) => x.optional === true),
+      `outdated=${g2.outdated} missing=${JSON.stringify(g2.missing.map((x) => (x.optional ? `opt${x.since}` : `req${x.since}`)))}`,
     );
 
     // 老清单（没有 protocolVersion）⇒ 视为第 1 代
@@ -21802,10 +21833,18 @@ section("情形 112：协议代次判据不许冤枉已升级的项目，init �
   }
   {
     const g = protocolGapOf({ ...FULL, protocolVersion: 1 });
+    // ★★★★★ 2026-10-23（D308）：原来断言 `effectiveVersion === PROTOCOL_VERSION`（=当前代）。
+    //   🔴 引入第 3 代之后这条**自然就错了** —— 因为 FULL 里没有 `memoryRoot`，
+    //     按事实算它**名副其实就是第 2 代**。断言写"等于当前代"等于**要求实现说谎**。
+    //   ★ 判据：**这条要验的是"按事实算，不看数字"**，所以正确形状是：
+    //     `effectiveVersion` === 「FULL 真能支撑的代次」= 最后一个**非 optional** 要求所属代次，
+    //     而 `outdated` 必须是 false（第 3 代是可选，不算落后）。
+    const REQUIRED_GENS = D.PROTOCOL_REQUIREMENTS.filter((r) => r.optional !== true).map((r) => r.since);
+    const wantEffective = REQUIRED_GENS.length === 0 ? 1 : Math.max(...REQUIRED_GENS);
     ok(
-      "112① g ★★★ 结构齐全但数字写 1 ⇒ effectiveVersion 仍按事实算成 2",
-      g.effectiveVersion === PROTOCOL_VERSION && g.outdated === false,
-      `effective=${g.effectiveVersion} outdated=${g.outdated}`
+      `112① g ★★★ 结构齐全但数字写 1 ⇒ effectiveVersion 按事实算成 ${wantEffective}（不是照抄那个数字）`,
+      g.effectiveVersion === wantEffective && g.outdated === false,
+      `effective=${g.effectiveVersion} want=${wantEffective} outdated=${g.outdated}`
     );
     const oldVerdict = g.projectVersion < g.currentVersion || g.missing.length > 0;
     ok(
@@ -21881,9 +21920,14 @@ section("情形 112：协议代次判据不许冤枉已升级的项目，init �
       execFor(root3, "session-sel112-half")
     );
     const miss = r3.protocol?.stillMissing ?? [];
+    // ★★★★★ 2026-10-23（D308）：`miss.length === 1` 是"要求表一共几条"的隐式拷贝 ⇒ 加第 3 代必红。
+    //   ★ 这条真正要守的是：**已经做到的（卡片化）不许被冤枉**。
+    //     ⇒ 断言改成"不许出现卡片化"，并**另外**要求"确实报了还没做到的那条（日志分片）"，
+    //       否则"只写 !includes"会变成一条**恒真**的空断言（什么都没报也通过）。
     ok(
       "112③ h ★★★ 建了卡片化只差 logDir ⇒ stillMissing **不许**再提卡片化（回执不许说假话）",
-      miss.length === 1 && !miss.some((x) => String(x).includes("卡片化")),
+      !miss.some((x) => String(x).includes("卡片化")) &&
+        miss.some((x) => String(x).includes("日志")),
       JSON.stringify(miss)
     );
     fs.rmSync(root3, { recursive: true, force: true });
@@ -22319,6 +22363,160 @@ section("情形 115：V3 §3.1 自动暂存默认关闭，且不能被旧配置�
       "115⑦ ★ 探针 _probe-v31-autostage-deny 全过（真建仓库查索引）",
       probeRun.status === 0 && m !== null && Number(m[2]) === 0,
       m === null ? String(probeRun.stderr ?? "").slice(-300) || out.slice(-200) : `PASS ${m[1]} FAIL ${m[2]} status=${probeRun.status}`
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 情形 116（D311 · 用户拍板）：**扩展记忆去掉「原则型」模式（7 → 6）**
+//
+// 用户原话（逐字）：*"先去掉扩展记忆中的原则吧，感觉首先原则这个文件就不大，
+// 没必要在用户自己额外扩展一个。"*
+// 并补了现场事实：*"事实上我从现在开发出这个以来，从来没有用过任何的扩展的原则啊，
+// 所有的原则都是经过授权后由模型在根本原则文件中写的。"*
+//
+// ★ 这条守的是**"删干净了没有"**，四件事缺一不可：
+//   ① 枚举里没有 `principles`（模型与面板都看不到这个选项）；
+//   ② 传 `mode:"principles"` 新建 ⇒ **明确被拒**（而不是静默当成 plain 建出来）；
+//   ③ **全系统没有任何 `protect:true` 的模式** —— 我们刚把那条「原则型不许写」
+//      的保护分支删掉了；如果哪天有人加回一个 protect 模式而没加回保护，那就是新漏洞；
+//   ④ 未知模式**不崩**（`EXT_MODES[x]` 为 undefined 时，list/read/write/delete 各自行为）；
+//   ⑤ 三条文案（README / 工具描述 / 面板）不许再说"7 种"或"原则型"。
+//
+// ★★★ 为什么必须单独立一条情形，而不是只靠 `_probe-d299-extension.mjs`：
+//   那个探针是**跑一次**的工具，不进门禁；而模式表是**数据**，被人"顺手加一行"
+//   完全不会报错（加回 principles 只是多一个选项，运行期一切正常）
+//   ⇒ 只有静态判据能在**改动的那一刻**变红。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 116：扩展记忆去掉「原则型」模式（D311 · 用户拍板，7 → 6）");
+{
+  // ★ 这里用**静态读源码**而不是 import 运行时对象：判据要能独立于"能不能加载"成立
+  //   （若 part8 语法坏了，import 会抛，而被 catch 成 {} ⇒ 断言变"假绿"）。
+  //
+  // ★★★ 2026-10-23（D311，**我在这里栽过一次，记下来**）：
+  //   我第一版写了 `stripJsComments(readLib("part8.js"))` —— 那两个名字**在本文件里根本不存在**。
+  //   真名是 `stripCommentsAndLiterals(s)`（本文件 :92）与 `readLibSource()`（:237，**无参、拼全部 lib**）。
+  //   而 `readLibSource()` 是"按目录拼接全部 .js"，**没法只取 part8** ⇒ 这里自己按文件名读。
+  //   ★ 病根：**凭印象编函数名**（纪律 9 第 9 条：「函数名+行号看起来最硬，却最容易凭印象编 ——
+  //     报之前必须 grep 一次」）。这次是**写代码时**犯的，同样是没 grep。
+  //   ★ 更阴的一点：生产环境跑 selftest 时，这段在 115⑦ 之后 ⇒ 前面若已失败就掩盖了它；
+  //     我是**在一次性副本里跑基线**才看见 `ReferenceError` 的。
+  //     ⇒ 判据：**新加的情形必须自己在干净副本上跑一次**，别只信"本地全绿"。
+  const part8src = stripCommentsAndLiterals(
+    fs.readFileSync(path.join(HERE, "..", "lib", "part8.js"), "utf8")
+  );
+  const p8src = part8src;
+
+  // ── ① 模式表里没有 principles ────────────────────────────────────────────
+  ok(
+    "116① ★★★★★ 扩展模式表里**没有** `principles`（`EXT_MODES` 的键里查不到）",
+    !/^\s{2}principles:\s*\{/m.test(p8src),
+    "在 part8.js 的 EXT_MODES 里找 `  principles: {`"
+  );
+
+  // ── ② 现在恰好 6 种（★ 用"数出来的"，不是抄一个数字）────────────────────
+  //   数法：`EXT_MODES` 对象体内形如 `  key: {` 的行。
+  {
+    const start = p8src.indexOf("export const EXT_MODES = Object.freeze({");
+    const end = p8src.indexOf("});", start);
+    const body = start < 0 || end < 0 ? "" : p8src.slice(start, end);
+    const keys = [...body.matchAll(/^\s{2}([a-z][a-z0-9]*):\s*\{/gm)].map((m) => m[1]);
+    ok(
+      "116② ★ 模式恰好 6 种，且是这 6 个（decisions/active/journal/goals/lessons/plain）",
+      keys.length === 6 &&
+        ["decisions", "active", "journal", "goals", "lessons", "plain"].every((k) => keys.includes(k)),
+      `${keys.length} 种：${keys.join(", ")}`
+    );
+    // ★ 自证不是空判据：真的读到了那段对象体
+    ok("116②b 且这条判据不是空的（真的读到了 EXT_MODES 对象体）", body.length > 200, `${body.length} 字符`);
+  }
+
+  // ── ③ ★★★ 全系统没有 protect:true 的模式 ────────────────────────────────
+  //   这是**最该守**的一条：我们删掉了「原则型不许写」那条分支。
+  //   若有人加回一个 `protect: true` 的模式，那条保护就不存在了 ⇒ 必须当场红。
+  {
+    const start = p8src.indexOf("export const EXT_MODES = Object.freeze({");
+    const end = p8src.indexOf("});", start);
+    const body = start < 0 || end < 0 ? "" : p8src.slice(start, end);
+    const protectTrue = /protect:\s*true/.test(body);
+    ok(
+      "116③ ★★★★★ 模式表里**没有任何** `protect: true`（那条写保护分支已随模式删除）",
+      !protectTrue,
+      protectTrue ? "⛔ 有模式声明了 protect:true，但 writeExtension 里已无对应保护" : "（全部 protect:false）"
+    );
+    // ★ 反向自证：`protect: false` 确实出现了 —— 否则上面那条可能只是在读一个空对象。
+    ok(
+      "116③b 且这条判据不是空的：`protect: false` 至少出现 6 次",
+      (body.match(/protect:\s*false/g) ?? []).length >= 6,
+      `${(body.match(/protect:\s*false/g) ?? []).length} 次`
+    );
+  }
+
+  // ── ④ 未知模式不许崩：四处查表都必须有 undefined 兜底 ────────────────────
+  //   ★ 为什么：`EXT_MODES[entry.mode]` 为 undefined 时，原来 `mode.label` /
+  //     `mode.push` 会抛 TypeError ⇒ **一条坏注册表就能让整段注入或列表崩掉**。
+  //     `normalizeRegistry` 会过滤，但"理论上到不了这里"正是本项目栽过很多次的那句话。
+  for (const [fnName, label] of [
+    ["listExtensions", "list"],
+    ["readExtension", "read"],
+    ["writeExtension", "write"],
+    ["deleteExtension", "delete"],
+  ]) {
+    const i = p8src.indexOf(`export function ${fnName}(`);
+    // 取到下一个 `\nexport function` 为止（这一段的函数体）
+    const nextExp = i < 0 ? -1 : p8src.indexOf("\nexport function ", i + 10);
+    const seg = i < 0 ? "" : p8src.slice(i, nextExp < 0 ? i + 6000 : nextExp);
+    ok(
+      `116④ ${label} 对"未知模式"有兜底（不许因一条坏注册表就抛 TypeError）`,
+      /mode === undefined/.test(seg),
+      i < 0 ? `找不到 ${fnName}` : seg.length > 0 ? "已找到 `mode === undefined` 分支" : "缺失"
+    );
+  }
+
+  // ── ⑤ 文案：不许再说"7 种"或把 principles 当成一种扩展模式 ──────────────
+  {
+    const readme = fs.readFileSync(path.join(HERE, "..", "README.md"), "utf8");
+    ok(
+      "116⑤ ★ README 里不再说「7 种模式」",
+      !/7 种模式/.test(readme) && !/七种模式/.test(readme),
+      /7 种模式|七种模式/.test(readme) ? "⛔ 还有残留" : "（已改为 6 种）"
+    );
+    ok(
+      "116⑤b 且 README 明确说了「6 种模式」（否则删字不等于改对）",
+      /6 种模式/.test(readme),
+      ""
+    );
+    // ★ 反向自证：README 里**仍然**必须提到 `principles`（核心根本原则还在），
+    //   否则上面那条可能只是把整段删掉了。
+    ok(
+      "116⑤c ★ 但 README 里**仍然**有核心根本原则的说明（不许连核心一起删）",
+      /principles/.test(readme) && /根本原则/.test(readme),
+      ""
+    );
+    // 工具描述里不许再有 "user-authorized only"
+    const toolsrc = stripCommentsAndLiterals(
+      fs.readFileSync(path.join(HERE, "..", "lib", "part8tool.js"), "utf8")
+    );
+    ok(
+      "116⑤d 工具描述里不再宣称「user-authorized only」（那个模式没了）",
+      !/user-authorized only/.test(toolsrc),
+      ""
+    );
+  }
+
+  // ── ⑥ 真跑那个探针（行为层，静态判据替代不了）──────────────────────────
+  {
+    const pr = spawnSync(process.execPath, [path.join(HERE, "_probe-d299-extension.mjs")], {
+      encoding: "utf8",
+      timeout: 180000,
+    });
+    const out = String(pr.stdout ?? "");
+    const m = /(\d+) PASS \/ (\d+) FAIL/.exec(out);
+    ok(
+      "116⑥ ★ 探针 _probe-d299-extension 全过（含「传 principles 必须被拒」+「6 种模式全建」）",
+      pr.status === 0 && m !== null && Number(m[2]) === 0,
+      m === null ? String(pr.stderr ?? "").slice(-300) || out.slice(-200) : `PASS ${m[1]} FAIL ${m[2]} status=${pr.status}`
     );
   }
 }

@@ -118,3 +118,13 @@ tools/_compact-v3-entries*
 _调研-*.md
 _计划-*.md
 第三代协议.txt
+
+# 由 dsh-ledger-memory 追加
+# ── dsh-ledger-memory：记忆文件默认不进版本库（含用户原话 / 本机路径 / 私有项目名）──
+# ★ 要公开这些内容，请**显式删掉**下面这几行 —— 默认挡是因为泄露不可撤销。
+GOALS.md
+LESSONS.md
+decisions
+lessons
+goals
+/10.项目台账-ledger-memory/

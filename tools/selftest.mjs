@@ -8672,7 +8672,16 @@ section("情形 27：官方设置面板");
   //       因为它只写 `"lib"` 而不写 `lib/index.js` 这类字面量 ⇒ 本判据的**已知假阴性**。
   //     ⇒ 所以 **+1 不是 +2**。★ 照例：**先看名单再改数字**（上面那份 64 个就是名单，
   //       `_probe-no-cloud-write.mjs` 在列，`_probe-gitignore-leak.mjs` 不在）。
-  const DANGEROUS_EXPECTED = 64;
+  //   ★★ 2026-10-23（D314）：64 → **65**。新增的是 `_probe-private-repo-workflow-reverse.mjs`。
+  //     ★ 它**完全只读生产仓库** —— 但它要给反向验证造 `mkdtemp` 假仓库，
+  //       里面有 `fs.writeFileSync(path.join(dir, "lib", ...))` ⇒ 命中上面第二条宽模式。
+  //     ★ 又一次**同类假阳性**（D252 / D288 同一族：宽模式只看"形状像"）。
+  //     ★ 为什么不改判据绕开：这条判据的语义就是"宁可多报，让人看一眼"——
+  //       放宽它去躲一个已知误报，就会把真危险的那类一起放过（这正是它刻意选的取舍）。
+  //     ⇒ 处置照先例：**改数字 + 记明原因**，不去动判据。
+  //     ★ 同一批新增的 `_probe-private-repo-workflow.mjs` **不在名单里**（它只跑
+  //       `git push --dry-run`，不写任何 lib 文件）⇒ 本次真的只 +1。
+  const DANGEROUS_EXPECTED = 65;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
@@ -9024,8 +9033,17 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //   ★★ 2026-10-23（D311 · 用户拍板去掉「原则型」扩展模式，7 → 6）：新增情形 116
   //     （守"扩展模式里没有 principles + 全系统无 protect:true + 未知模式不崩"）
   //     ⇒ 110 → **111**；带编号 109 → **110**。★ 第二十四次当场变红。
-  eq("★ 口径：section 总数 = 112（情形 93~117）", sectionCalls, 112);
-  eq("★ 口径：其中带「情形 N」编号的 = 111", numbered, 111);
+  //   ★★ 2026-10-23（D313 · GPT 静态审查 001 的 4 条 P1）：新增情形 117（安全边界与失败传播）
+  //     ⇒ 111 → **112**；带编号 110 → **111**。★ 第二十五次当场变红。
+  //   ★★ 2026-10-23（D314 · 用户拍板发布分级）：新增情形 118（先私有后公开）
+  //     ⇒ 112 → **113**；带编号 111 → **112**。★ 第二十六次当场变红。
+  //     ★ 这次变红我**没有直接信手改数字** —— 先按 selftest 自己的正则
+  //       （`^\s*section\(` / `^\s*section\("情形\s*[0-9]`）复算了一遍：
+  //       113 / 112 / 去重 111（情形 1~118，中间有 6b 之类不带数字的）。
+  //     ★ 教训：**口径断言只吃"它自己那套正则"** —— 用别的数法算出来的数对不上，
+  //       不代表它错了（我第一次用 `^section\(` 数出 98/97，那是**另一种尺子**）。
+  eq("★ 口径：section 总数 = 113（情形 1~118）", sectionCalls, 113);
+  eq("★ 口径：其中带「情形 N」编号的 = 112", numbered, 112);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -22535,20 +22553,6 @@ section("情形 116：扩展记忆去掉「原则型」模式（D311 · 用户�
 //  ③ `register*InManifest` 必须**交出写盘结果**，拆卡必须**看**它（F04）；
 //  ④ `isUnderReal` 在「基准还不存在」时**不许把正常新建判成越界**（我修 F01 时引入的回归）。
 // ═══════════════════════════════════════════════════════════════════════════
-//
-// 情形 117（D313 · GPT 静态审查 001 的 4 条 P1）：**安全边界与失败传播**
-//
-// 报告：`docs/GPT静态审查报告001.txt`（审计提交 6dcd05c = v1.6.0）。
-// ★★★ 这四条里有 **两条（F03/F04）针对的是我 2026-10-23 当天写的代码**
-//   （`v3-conformance.js` 的 gitignore 匹配 / `card-ops.js` 的登记调用）
-//   —— 「自己写的东西自己审」有盲区，这是本轮最该记的一件事。
-//
-// 本情形守四件事，每条都对应一个**曾经真的错**的行为：
-//  ① gitignore 的 `!` 是**取消忽略**，不许剥掉后当有效保护（F03）；
-//  ② 镜像落点必须做**真实路径**校验（符号链接可越界）（F02）；
-//  ③ `register*InManifest` 必须**交出写盘结果**，拆卡必须**看**它（F04）；
-//  ④ `isUnderReal` 在「基准还不存在」时**不许把正常新建判成越界**（我修 F01 时引入的回归）。
-// ═══════════════════════════════════════════════════════════════════════════
 section("情形 117：安全边界与失败传播（D313 · GPT 静态审查 001 的 4 条 P1）");
 {
   const v3c = await import(pathToFileURL(path.join(HERE, "..", "lib", "v3-conformance.js")).href);
@@ -22711,6 +22715,193 @@ section("情形 117：安全边界与失败传播（D313 · GPT 静态审查 001
       pr.status === 0 && m !== null && Number(m[2]) === 0,
       m === null ? String(pr.stderr ?? "").slice(-300) || out.slice(-200) : "PASS " + m[1] + " FAIL " + m[2] + " status=" + pr.status
     );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 情形 118（D314 · 用户拍板）：**发布分级 —— 改动先进私有仓库，审查通过才上公开库**
+//
+// 用户原话（逐字）：*"创建一个同样名字的私有仓库，我们的所有改动先发在这个私有仓库…我用其他渠道
+//   进行审查，审查完之后反馈给你…改动的差不多了，我们再上正式仓库，也就是公开仓库。"*
+//
+// ★ 为什么这值得一条**常驻**守卫，而不是"我记住了"：
+//   公开仓库的 git 历史**推上去就永久在公网** —— force-push 删不掉别人的 clone / 镜像 / 搜索缓存。
+//   ⇒ 「推错远端」是**不可撤销**的那一类失误，而它最常见的形态只是"手滑多打了一个 origin"。
+//   ⇒ 靠自律挡不住；必须是**配置 + 钩子**挡住，而且**能看见它挡住了**。
+//
+// 本情形守四件事（每件都对应一个真会出事的形态）：
+//  ① 裸 `git push` 必须默认落私有库（否则"忘了打远端名"= 直发公网）；
+//  ② 显式推公开库必须被拦（"手滑打全名"是最常见的形态）；
+//  ③ 但**必须有解锁路**（只拦不放 = 死锁，机制反而害事）；
+//  ④ 私有库里**不许带记忆面**（台账/决策/日志/文档/存档/交接 —— 含私有项目名与本机路径）。
+//
+// ★ 另加一条**方法论**守卫（118⑤）：探针的结论行不许在"有 SKIP"时说"全部通过"。
+//   本项目栽过：只数 PASS 行 ⇒ 崩溃 / 跳过 / 全绿长得一模一样（情形 117 就是这么骗过我的）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 118：发布分级 —— 先私有后公开（D314）");
+{
+  const gitRun = (args, cwd) =>
+    spawnSync("git", args, { cwd: cwd ?? path.join(HERE, ".."), encoding: "utf8", timeout: 120000 });
+
+  // 只在**源仓库**里查（发布包里没有 .git，如实跳过 —— 与情形 43 的成熟做法一致）
+  const repoRoot = path.join(HERE, "..");
+  const hasGit = fs.existsSync(path.join(repoRoot, ".git"));
+
+  if (!hasGit) {
+    ok("118 ⏭ 发布包形态：没有 .git，跳过远端配置检查（如实跳过，不假装通过）", true, "no .git");
+  } else {
+    // ── ① 裸 push 必须默认落私有库 ─────────────────────────────────────
+    const pd = gitRun(["config", "--get", "remote.pushDefault"]);
+    const pdVal = String(pd.stdout ?? "").trim();
+    ok(
+      "118① a ★★★ 裸 `git push` 默认落私有库（remote.pushDefault = private）",
+      pdVal === "private",
+      `remote.pushDefault = ${JSON.stringify(pdVal)}`
+    );
+    // ★ 反向对照：如果它是 origin，那么"忘了打远端名"就直发公网 —— 这正是要防的那件事。
+    ok(
+      "118① b 反向对照：默认远端**不是** origin（否则裸 push 就直发公网）",
+      pdVal !== "origin",
+      pdVal
+    );
+
+    // ── ②③ 钩子：公开库必须拦、且必须有解锁路 ─────────────────────────
+    const hookPath = path.join(repoRoot, ".git", "hooks", "pre-push");
+    const hasHook = fs.existsSync(hookPath);
+    ok("118② a pre-push 钩子存在（机制装上了，不只写在文档里）", hasHook, hookPath);
+
+    if (!hasHook) {
+      ok("118② b ⏭ 钩子不存在 ⇒ 下面几条无从测起（如实跳过）", true, "skip");
+    } else {
+      // ★ 直接用 git 自带的 sh 调钩子：本机 `sh` 不在 PATH（踩过），用 `sh` 会 ENOENT，
+      //   而 ENOENT 的退出码也是非 0 ⇒ 会造出"拦住了"的假绿。
+      const shCandidates = [
+        "C:/Program Files/Git/bin/sh.exe",
+        "C:/Program Files/Git/usr/bin/sh.exe",
+      ];
+      const shPath = shCandidates.find((p) => fs.existsSync(p));
+      ok(
+        "118② b ★★ 前置：找得到 sh（否则下面所有「退出码」都不可信）",
+        shPath !== undefined,
+        shPath ?? "PATH 与 Git 自带路径都没找到 sh.exe"
+      );
+
+      if (shPath === undefined) {
+        ok("118② c ⏭ 没有 sh ⇒ 钩子行为无从测起（如实跳过）", true, "skip");
+      } else {
+        const runHook = (name, url, env) =>
+          spawnSync(shPath, [hookPath, name, url], {
+            encoding: "utf8", timeout: 20000, env: { ...process.env, ...(env ?? {}) },
+          });
+        const PUB = "https://github.com/18477514055/dsh-ledger-memory.git";
+        const PRIV = "https://github.com/18477514055/dsh-ledger-memory-private.git";
+
+        const hPub = runHook("origin", PUB);
+        ok(
+          "118② c ★★★ 显式推公开库被拦（退出码非 0）",
+          hPub.status !== 0,
+          `status=${hPub.status}`
+        );
+        // ★ 「退出码非 0」单独不够 —— 必须同时看它**说了什么**（否则 ENOENT 也能冒充"拦住了"）。
+        ok(
+          "118② d ★ 而且拦的理由就是「这是公开仓库」（不是 ENOENT / 别的错）",
+          /公开仓库/.test(String(hPub.stdout ?? "") + String(hPub.stderr ?? "")),
+          String(hPub.stdout ?? "").slice(0, 160)
+        );
+        ok(
+          "118② e 拦截话术里给了解锁办法（只拦不说怎么办 = 用户卡死）",
+          /DSH_ALLOW_PUBLIC_PUSH/.test(String(hPub.stdout ?? "") + String(hPub.stderr ?? "")),
+          String(hPub.stdout ?? "").slice(0, 160)
+        );
+
+        const hPriv = runHook("private", PRIV);
+        ok(
+          "118③ a 私有库放行（钩子不误伤该走的那条路）",
+          hPriv.status === 0,
+          `status=${hPriv.status} · ${String(hPriv.stdout ?? "").slice(0, 100)}`
+        );
+
+        // ★★★ 这条是**对称的那一半**：只剩"拦"没有"放" ⇒ 机制变成死锁，反而害事。
+        const hUnlock = runHook("origin", PUB, { DSH_ALLOW_PUBLIC_PUSH: "1" });
+        ok(
+          "118③ b ★★★ 显式解锁后放行公开库（否则这套机制会把正常发布也堵死）",
+          hUnlock.status === 0,
+          `status=${hUnlock.status} · ${String(hUnlock.stdout ?? "").slice(0, 100)}`
+        );
+
+        // ★ 无关远端必须放行 —— 钩子只该管"这个项目的那一条边界"，不越权。
+        const hOther = runHook("backup", "https://example.invalid/some/other/repo.git");
+        ok(
+          "118③ c 无关远端放行（钩子不越权管别的仓库）",
+          hOther.status === 0,
+          `status=${hOther.status}`
+        );
+      }
+    }
+
+    // ── ④ 私有库里不许带记忆面 ─────────────────────────────────────────
+    // ★ 判据：查**远端树上真实存在的文件**（本地跟踪引用），不是本地 .gitignore 写了什么 ——
+    //   .gitignore 只管"下次 add 会不会带上"，管不了"已经推上去的有没有"。
+    const curBranch = String(gitRun(["rev-parse", "--abbrev-ref", "HEAD"]).stdout ?? "").trim();
+    const refName = `refs/remotes/private/${curBranch}`;
+    const refOk = curBranch !== "" && gitRun(["rev-parse", "--verify", "--quiet", refName]).status === 0;
+
+    if (!refOk) {
+      ok(
+        "118④ ⏭ 本机还没有私有库跟踪引用 ⇒ 无从核对内容（如实跳过，不假装通过）",
+        true,
+        refName
+      );
+    } else {
+      const tree = gitRun(["ls-tree", "-r", refName, "--name-only"]);
+      const filesInPrivate = String(tree.stdout ?? "").split("\n").filter((l) => l !== "");
+      ok(
+        "118④ a 私有库确实有源码（不是空仓库 —— 空仓库会让下面的「没漏」变成假绿）",
+        filesInPrivate.length > 50,
+        `${filesInPrivate.length} 个文件`
+      );
+
+      const MEMORY_RE = [
+        /^LEDGER\.md$/, /^JOURNAL\.md$/, /^PRINCIPLES\.md$/, /^GOALS\.md$/, /^LESSONS\.md$/,
+        /^DECISIONS\.md$/, /^decisions\//, /^lessons\//, /^goals\//, /^docs\//,
+        /^_ledger-log\//, /^_ledger-archive\//, /^_handoff\//, /^_stash\//, /^_store-research\//,
+        /^\.dsh-ledger\.json$/, /-ledger-memory\//, /\.tgz$/,
+      ];
+      const leaked = filesInPrivate.filter((f) => MEMORY_RE.some((re) => re.test(f)));
+      ok(
+        "118④ b ★★★ 私有库里一份记忆面都没有（台账/决策/日志/文档/存档/交接/stash）",
+        leaked.length === 0,
+        leaked.slice(0, 10).join(" · ")
+      );
+      // ★ 反向对照：同一套规则必须**认得出**记忆面，否则"没漏"可能只是"模式一个都匹配不上"。
+      const canonical = [
+        "LEDGER.md", "decisions/D1.md", "docs/x.md", "_ledger-log/x.md",
+        "_handoff/x.md", "_stash/x.md", ".dsh-ledger.json", "p-ledger-memory/LEDGER.md",
+      ];
+      const unmatched = canonical.filter((p) => !MEMORY_RE.some((re) => re.test(p)));
+      ok(
+        "118④ c ★ 反向对照：这些模式**认得出**记忆面（不是永远匹配不到）",
+        unmatched.length === 0,
+        `漏认：${unmatched.join(" · ")}`
+      );
+    }
+  }
+
+  // ── ⑤ 方法论守卫：有 SKIP 时不许说"全部通过" ───────────────────────
+  {
+    const probePath = path.join(HERE, "_probe-private-repo-workflow.mjs");
+    const src = fs.existsSync(probePath) ? fs.readFileSync(probePath, "utf8") : "";
+    ok("118⑤ a 发布分级探针存在", fs.existsSync(probePath), probePath);
+    if (src !== "") {
+      // ★ 判据只吃**结构位**：结论分支里必须同时出现 skipped 与「不算全绿」。
+      //   这不是扫正文找关键词 —— 它守的是"结论有两态"这件事本身。
+      ok(
+        "118⑤ b ★★★ 探针的结论行分两态：skipped 为空才说「全部通过」，否则必须说「不算全绿」",
+        /skipped\.length === 0/.test(src) && /不算全绿/.test(src),
+        "missing skipped.length===0 或 不算全绿"
+      );
+    }
   }
 }
 

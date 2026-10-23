@@ -9024,8 +9024,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //   ★★ 2026-10-23（D311 · 用户拍板去掉「原则型」扩展模式，7 → 6）：新增情形 116
   //     （守"扩展模式里没有 principles + 全系统无 protect:true + 未知模式不崩"）
   //     ⇒ 110 → **111**；带编号 109 → **110**。★ 第二十四次当场变红。
-  eq("★ 口径：section 总数 = 111（情形 93~116）", sectionCalls, 111);
-  eq("★ 口径：其中带「情形 N」编号的 = 110", numbered, 110);
+  eq("★ 口径：section 总数 = 112（情形 93~117）", sectionCalls, 112);
+  eq("★ 口径：其中带「情形 N」编号的 = 111", numbered, 111);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -22520,6 +22520,200 @@ section("情形 116：扩展记忆去掉「原则型」模式（D311 · 用户�
     );
   }
 }
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 情形 117（D313 · GPT 静态审查 001 的 4 条 P1）：**安全边界与失败传播**
+//
+// 报告：`docs/GPT静态审查报告001.txt`（审计提交 6dcd05c = v1.6.0）。
+// ★★★ 这四条里有 **两条（F03/F04）针对的是我 2026-10-23 当天写的代码**
+//   （`v3-conformance.js` 的 gitignore 匹配 / `card-ops.js` 的登记调用）
+//   —— 「自己写的东西自己审」有盲区，这是本轮最该记的一件事。
+//
+// 本情形守四件事，每条都对应一个**曾经真的错**的行为：
+//  ① gitignore 的 `!` 是**取消忽略**，不许剥掉后当有效保护（F03）；
+//  ② 镜像落点必须做**真实路径**校验（符号链接可越界）（F02）；
+//  ③ `register*InManifest` 必须**交出写盘结果**，拆卡必须**看**它（F04）；
+//  ④ `isUnderReal` 在「基准还不存在」时**不许把正常新建判成越界**（我修 F01 时引入的回归）。
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 情形 117（D313 · GPT 静态审查 001 的 4 条 P1）：**安全边界与失败传播**
+//
+// 报告：`docs/GPT静态审查报告001.txt`（审计提交 6dcd05c = v1.6.0）。
+// ★★★ 这四条里有 **两条（F03/F04）针对的是我 2026-10-23 当天写的代码**
+//   （`v3-conformance.js` 的 gitignore 匹配 / `card-ops.js` 的登记调用）
+//   —— 「自己写的东西自己审」有盲区，这是本轮最该记的一件事。
+//
+// 本情形守四件事，每条都对应一个**曾经真的错**的行为：
+//  ① gitignore 的 `!` 是**取消忽略**，不许剥掉后当有效保护（F03）；
+//  ② 镜像落点必须做**真实路径**校验（符号链接可越界）（F02）；
+//  ③ `register*InManifest` 必须**交出写盘结果**，拆卡必须**看**它（F04）；
+//  ④ `isUnderReal` 在「基准还不存在」时**不许把正常新建判成越界**（我修 F01 时引入的回归）。
+// ═══════════════════════════════════════════════════════════════════════════
+section("情形 117：安全边界与失败传播（D313 · GPT 静态审查 001 的 4 条 P1）");
+{
+  const v3c = await import(pathToFileURL(path.join(HERE, "..", "lib", "v3-conformance.js")).href);
+  const base = await import(pathToFileURL(path.join(HERE, "..", "lib", "base.js")).href);
+  // ★ 本情形用到的模块：selftest 的惯例是**现用现 import**（相对路径，相对本文件）。
+  const { defineInitTool } = await import("../lib/part4.js");
+  const { inspect, memoryBaseOf } = await import("../lib/part2.js");
+  const osMod = await import("node:os");
+  const osTmp = () => osMod.tmpdir();
+
+
+  // ── ① gitignore 的 `!` 语义 ──────────────────────────────────────────
+  //   ★ 判据只吃**行为**：造一个只含该规则的项目，看合规怎么说。
+  //     不读源码（读源码只能证明"我写了这个分支"，不能证明"它按 Git 语义工作"）。
+  {
+    const mkProj = async (giText) => {
+      const d = fs.mkdtempSync(path.join(osTmp(), "d313-gi-"));
+      const init = defineInitTool();
+      const r = await init.execute(
+        {
+          root: d, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive",
+          decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals", logDir: "_ledger-log",
+          memoryRoot: "mem-memory",
+        },
+        {}
+      );
+      if (r?.ok !== true) throw new Error("117① 夹具没走通");
+      const mem = path.join(d, "mem-memory");
+      for (const i of [1, 2]) fs.writeFileSync(path.join(mem, "decisions", "D19" + i + ".md"), "# D19" + i + "\n\nx\n", "utf8");
+      fs.writeFileSync(path.join(mem, "lessons", "L1.md"), "# 教训 L1\n\nx\n", "utf8");
+      fs.writeFileSync(path.join(mem, "goals", "g1.md"), "# 目标 g1\n\nx\n", "utf8");
+      fs.writeFileSync(path.join(d, ".gitignore"), giText, "utf8");
+      return d;
+    };
+    const giMentions = async (d) => {
+      const g = v3c.v3ConformanceGaps(inspect(d), { memoryBaseOf: memoryBaseOf });
+      return (g.reasons ?? []).some((x) => /gitignore|忽略/i.test(x));
+    };
+
+    const dOk = await mkProj("mem-memory/\n");
+    ok("117① a 正常规则 `mem-memory/` ⇒ **不**报", !(await giMentions(dOk)), "");
+    fs.rmSync(dOk, { recursive: true, force: true });
+
+    const dNeg = await mkProj("!mem-memory/\n");
+    ok(
+      "117① b ★★★ `!mem-memory/`（**取消忽略**）⇒ 必须报（原来剥掉 ! 当保护 = 假绿，F03）",
+      await giMentions(dNeg),
+      ""
+    );
+    fs.rmSync(dNeg, { recursive: true, force: true });
+
+    const dNeg2 = await mkProj("mem-memory/\n!mem-memory/\n");
+    ok(
+      "117① c ★ 先忽略后否定 ⇒ 净效果是不忽略 ⇒ 必须报（顺序/覆盖关系）",
+      await giMentions(dNeg2),
+      ""
+    );
+    fs.rmSync(dNeg2, { recursive: true, force: true });
+  }
+
+  // ── ② 镜像落点的真实路径校验 ──────────────────────────────────────────
+  {
+    const mm = await import(pathToFileURL(path.join(HERE, "..", "lib", "manifest-mirror.js")).href);
+    const root = fs.mkdtempSync(path.join(osTmp(), "d313-mm-"));
+    const outside = fs.mkdtempSync(path.join(osTmp(), "d313-mm-out-"));
+    let linked = false;
+    try {
+      fs.symlinkSync(outside, path.join(root, "linked"), "junction");
+      linked = true;
+    } catch { linked = false; }
+    if (!linked) {
+      ok("117② ★ 镜像落点做真实路径校验（符号链接越界必须拒绝）", false, "符号链接建不出来 ⇒ 本条如实标未测");
+    } else {
+      const man = { memoryRoot: "linked", revision: 1 };
+      const body = JSON.stringify(man, null, 2) + "\n";
+      const r = mm.syncManifestMirror(root, man, body);
+      ok(
+        "117② a ★★★ 镜像落点经符号链接到项目外 ⇒ **拒绝**（F02）",
+        r?.failed !== undefined || r?.skipped === true,
+        r?.failed !== undefined ? "已报 failed" : r?.skipped === true ? "已跳过" : "⛔ 返回正常"
+      );
+      ok(
+        "117② b ★★★ 且项目外**不得出现**镜像文件",
+        !fs.existsSync(path.join(outside, ".dsh-ledger.json")),
+        ""
+      );
+      const v = mm.verifyManifestMirror(root, man, body);
+      ok("117② c ★ 读侧也必须报越界（不许把越界镜像说成 in-sync）", v.state === "unsafe", "state=" + v.state);
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+
+  // ── ③ register* 必须交出结果（F04 的实质）──────────────────────────────
+  {
+    const co = await import(pathToFileURL(path.join(HERE, "..", "lib", "card-ops.js")).href);
+    const d = fs.mkdtempSync(path.join(osTmp(), "d313-reg-"));
+    const init = defineInitTool();
+    await init.execute(
+      {
+        root: d, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive",
+        decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals", logDir: "_ledger-log",
+        memoryRoot: "mem-memory",
+      },
+      {}
+    );
+    const info = inspect(d);
+    const r1 = co.registerCardDirInManifest(d, info, "decisions", "decisions");
+    ok(
+      "117③ a ★ 已登记时 `registerCardDirInManifest` 回 `{ok:true, skipped:true}`（不再返回 undefined）",
+      r1?.ok === true && r1?.skipped === true,
+      JSON.stringify(r1).slice(0, 120)
+    );
+    const manAbs = path.join(d, ".dsh-ledger.json");
+    const bak = manAbs + ".bak";
+    fs.renameSync(manAbs, bak);
+    fs.mkdirSync(manAbs);
+    fs.writeFileSync(path.join(manAbs, "x.txt"), "x", "utf8");
+    let r2;
+    try {
+      r2 = co.registerCardDirInManifest(d, info, "lessons", "lessons");
+    } catch (e) {
+      r2 = { ok: false, threw: String(e?.message ?? e) };
+    }
+    ok(
+      "117③ b ★★★ 清单写不进去时 `registerCardDirInManifest` **必须回 ok:false**（不许静默吞掉，F04）",
+      r2?.ok === false,
+      JSON.stringify(r2).slice(0, 140)
+    );
+    fs.rmSync(manAbs, { recursive: true, force: true });
+    fs.renameSync(bak, manAbs);
+    fs.rmSync(d, { recursive: true, force: true });
+  }
+
+  // ── ④ isUnderReal：基准不存在 ≠ 越界（我修 F01 时引入的回归）────────────
+  {
+    const root = fs.mkdtempSync(path.join(osTmp(), "d313-ur-"));
+    const memBase = path.join(root, "mem-not-yet");
+    const notYet = path.join(memBase, "child");
+    const r = base.isUnderReal(memBase, notYet);
+    ok(
+      "117④ a ★★★ 基准还不存在时，落在它下面的目标**不许**被判成越界（否则新建项目全被拒）",
+      r.ok === true,
+      r.ok + " / " + r.lexical + " / " + String(r.why).slice(0, 80)
+    );
+    const out = base.isUnderReal(memBase, path.join(root, "elsewhere", "x"));
+    ok("117④ b 对照：真越界（词法上就在外）仍必须拒", out.ok === false, String(out.lexical));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // ── ⑤ 真跑那个探针（行为层，静态判据替代不了）──────────────────────────
+  {
+    const pr = spawnSync(process.execPath, [path.join(HERE, "_probe-gpt001-findings.mjs")], {
+      encoding: "utf8", timeout: 180000,
+    });
+    const out = String(pr.stdout ?? "");
+    const m = /PASS (\d+) \/ FAIL (\d+)/.exec(out);
+    ok(
+      "117⑤ ★ 探针 _probe-gpt001-findings 全过（4 条 P1 的完整复现+修复证据）",
+      pr.status === 0 && m !== null && Number(m[2]) === 0,
+      m === null ? String(pr.stderr ?? "").slice(-300) || out.slice(-200) : "PASS " + m[1] + " FAIL " + m[2] + " status=" + pr.status
+    );
+  }
+}
+
 if (failCount > 0) {
   console.log(`  失败清单：`);
   for (const f of failures) console.log(`    - ${f}`);

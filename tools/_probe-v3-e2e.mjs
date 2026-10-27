@@ -21,8 +21,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const HERE = import.meta.dirname;
+const HERE = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
 const LIB = path.join(ROOT, "lib");
 const LIB_URL = `file://${LIB.replace(/\\/g, "/")}/`;

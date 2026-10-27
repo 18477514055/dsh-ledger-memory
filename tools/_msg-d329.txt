@@ -1,0 +1,43 @@
+fix(D329): 修好 F-02「带 scale 的设置项单位串了」—— 修在边界，不在 clampNumber
+
+病灶（010 报告 F-02，实测属实，但它指错了根因）：
+· `clampNumber` 吃**面板单位**、吐**内部单位**，**本来就不该幂等** —— 那不是缺陷。
+· 真病在**调用方把内部值当面板值喂回去**：
+  1. `settings-http.js:622` 的 `{ ...currentSettings(), ...patch }`
+     —— 内部毫秒（1,200,000）与面板分钟（20）两把尺子并进一个对象
+     ⇒ 被当「120 万分钟」按 max:240 夹成 240 ⇒ ×60000 ⇒ **20 分钟变 4 小时**（实测 14400000 ms）。
+  2. `deriveSettingsView` 的 `settings`（两条路）与 `defaults`：把内部毫秒发给面板，
+     而 `specs` 里的 `max` 是 240（面板单位）⇒ 面板显示一个它自己装不下的数。
+  3. `saveSettings` 的回执：保存成功那一刻面板显示 1,200,000，**再保存一次就成 240**。
+
+★ 最毒的是触发条件：**用户改的可以是任何一个别的设置**，这一项一字未提照样被改写。
+★ 第二毒的是自愈性：**盘上那份没坏**（edit 只写 patch），重启就恢复 ⇒ 谁也不会去查它。
+
+修法（判据：边界只留一个换算出口，与 D138 同一条纪律）：
+· 新增 `part1.js#panelUnitsOf(settings)` —— 内部单位 → 面板单位的**唯一出口**。
+  只对**带 scale 的数值项**做除法；其余键（布尔/字符串/数组/无 scale 的数值）原样透传。
+· 入站方向不变：`normalizeSettings` / `clampNumber` 继续 ×scale。
+· 五处出站全部走它；合并时**只换算 `currentSettings()`，不换算 `patch`**（patch 本来就是面板单位）。
+· 否决 010 的 `v > hi`：那是**用数值猜语义** —— 面板填 999（合法越界输入）会被误当成内部值。
+
+验证：
+· `tools/_probe-d329-f02-unit.mjs` 走**真实代码路径**（真调 deriveSettingsView / saveSettings，不复刻实现）。
+  **先在未修代码上跑 ⇒ 7 PASS / 8 FAIL**（病真在）；修后 **17/0**。
+· `tools/_reverse-verify-d329.mjs` 5 个破坏点 **5/5 全检出**（每处都要求 PROBE-COMPLETE 出现，崩溃不算检出）。
+· `tools/_reverse-verify-d329-selftest.mjs` 证明新增的常驻断言**能被证伪**：3 个破坏点 **3/3**。
+· selftest **2293 / 2 SKIP / 0 FAIL**（改前 2287/2/0 ⇒ 新增 6 条，**零回归**）。
+· 21 个模块无一破线（最大 part3.js 244,878 B，余 9,074）。
+
+我这一轮自己的错（记下来，别当成被测代码的问题）：
+· ②c 判据写反：`editor.edit` 的回调是 `{...base, ...patch}`，盘上留着 20 是**正确合并**，不是污染。
+· 第一版修复把 `patch` 也除了 scale ⇒ 面板 20 变 0.0003，探针当场 6 条 FAIL。
+· 两次「漏检」抓的都是**我自己的守卫**：① 有 editor 时初值那行被覆盖 ⇒ 补只读态用例；
+  ② 拿无 scale 的键测「非数值」根本走不到那行除法 ⇒ 改用真有 scale 的键。
+
+环境差异已查清（不是快照差异）：
+· 同一份代码，带 .git 的副本 **2293**（与生产逐字相等）、不带 .git 的副本 **2281**
+  ⇒ 差的 12 条全是情形 118 的 git 断言 vs 1 条如实跳过（`tools/_diag-d329-count.mjs` 可复用）。
+
+新增判据：`_probe-d329-f02-unit` · `_reverse-verify-d329` · `_reverse-verify-d329-selftest` ·
+          `_diag-d329-count` · `_measure-d329-sizes` · `_condense-d329`
+决策卡：`decisions/D329.md`

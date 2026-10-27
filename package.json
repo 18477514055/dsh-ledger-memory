@@ -1,7 +1,7 @@
 {
   "name": "dsh-ledger-memory",
-  "version": "1.6.1",
-  "description": "台账记忆（Ledger Memory）—— 给 DSH 一个项目自己的记忆载体：活跃台账每回合自动注入、只追加的回合流水与活动日志（L0–L4，含逐字存档）、关键决策/目标树/经验教训的卡片化记忆，压缩前抓逐字胶囊、压缩后连台账一起注回，把对话锁定到某个项目目录（跨重启保持），以及跨会话的交接单闭环。可回溯、可追查。★ 1.6.1（安全修复，建议所有 1.6.0 用户升级）：路径边界改用真实路径解析（符号链接不再能写出项目外）；记忆镜像落点同样校验，并新增越界只读状态；.gitignore 按 Git 语义识别 `!` 取消忽略（不再把未受保护的目录误报为已隔离）；卡片登记失败不再谎报成功。★ 1.6.0：记忆目录下沉（记忆集中在 <项目名>-ledger-memory/，与源码物理隔离，V3 项目默认不自动暂存）；新增自定义扩展记忆（6 种模式）；设置面板重做为 4 页（滑块开关 + 拉条数值）；双段式回读与作废卡降权。",
+  "version": "1.6.2",
+  "description": "台账记忆（Ledger Memory）—— 给 DSH 一个项目自己的记忆载体：活跃台账每回合自动注入、只追加的回合流水与活动日志（L0–L4，含逐字存档）、关键决策/目标树/经验教训的卡片化记忆，压缩前抓逐字胶囊、压缩后连台账一起注回，把对话锁定到某个项目目录（跨重启保持），以及跨会话的交接单闭环。可回溯、可追查。★ 1.6.2（安全补全）：1.6.1 的路径边界只覆盖初始化入口，本次补上全部日常读写入口（含链接与越界清单一律拒绝，不再降级写回源码根）；合规检查的「可修」项现在真的会修；扩展记忆（6 种模式）的未知模式不再导致卡片永久删不掉；V3 首轮注入与迁移的指针、忽略规则不再错位。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -40,7 +40,9 @@
   ],
   "scripts": {
     "test": "node tools/selftest.mjs",
-    "probes": "node tools/_probe-assertion-can-fail.mjs && node tools/_probe-dirty-source.mjs && node tools/_probe-capsule-persistence.mjs"
+    "probes": "node tools/_probe-dirty-source.mjs && node tools/_probe-capsule-persistence.mjs",
+    "probes:all": "node tools/_probe-assertion-can-fail.mjs && node tools/_probe-dirty-source.mjs && node tools/_probe-capsule-persistence.mjs",
+    "probes:mutation": "node tools/_probe-assertion-can-fail.mjs"
   },
   "engines": {
     "node": ">=22.19.0"

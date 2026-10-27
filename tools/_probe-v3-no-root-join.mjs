@@ -23,8 +23,9 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const HERE = import.meta.dirname;
+const HERE = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
 const LIB = path.join(ROOT, "lib");
 
@@ -148,7 +149,7 @@ const KNOWN_GOOD = [
     fn: "logFileRel",
     why: "局部 root 已是 memoryBaseOf(...) 的结果（同一函数内上一行赋的）",
   },
-  { file: "part4.js", fn: "cardDirAbs", why: "纯函数，基准由调用方传入（调用方传的都是 memBase）" },
+  { file: "card-ops.js", fn: "cardDirAbs", why: "纯函数（D307 拆到 card-ops.js），基准由调用方传入（调用方传的都是 memBase）" },
   { file: "part6.js", fn: "walkMarkdown", why: "同 cardDirAbs，基准由 scanMemorySurface 按面决定后传入" },
   // ★★★ 2026-10-21（D295 · 阶段 3 迁移器）：**迁移器是唯一「记忆还在项目根」的模块。**
   //
@@ -205,7 +206,7 @@ function functionRange(text, fn) {
 console.log("\n── ⑤ `path.resolve(root, <记忆风格相对路径>)` 只许出现在白名单那三个函数体内 ──");
 {
   const relish =
-    /\bpath\.(?:join|resolve)\(\s*(?:root|projectRoot)\s*,\s*(?:rel|relPath|fileRel|dirRel|rel2|journal|goals|lessons|principles|archiveDir|logDir|decisions|active|value)\b/;
+    /\bpath\.(?:join|resolve)\(\s*(?:root|projectRoot)\s*,\s*(?:[A-Za-z_$][\w$]*\.rel|rel|relPath|fileRel|dirRel|rel2|journal|goals|lessons|principles|archiveDir|logDir|decisions|active|value)\b/;
   const found = [];
   for (const f of files) {
     f.text.split(/\r?\n/).forEach((line, i) => {

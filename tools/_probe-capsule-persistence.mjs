@@ -31,8 +31,10 @@
  */
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const LIB_DIR = path.join(path.resolve(import.meta.dirname, ".."), "lib");
+const __DIR = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
+const LIB_DIR = path.join(path.resolve(__DIR, ".."), "lib");
 
 /**
  * 读**整个 `lib/` 的拼接**（按文件名排序 ⇒ 结果确定，不依赖 readdir 顺序）。
@@ -94,7 +96,18 @@ need(
   wxCount === 2,
   "少一处 ⇒ 撞名那条路会覆盖已有的胶囊（记录就不再是证据）"
 );
-need("★ 且做**路径逃逸检查**（`isUnder`）", /isUnder\(root, abs/.test(pBody));
+// ★★★ 2026-10-25（D317 · Gemini 审查 004 F-06）：**这条断言与代码脱节了，`npm run probes` 一直是红的。**
+//   🔴 病：V3 升级后 `persistCapsule` 已改为 `isUnderReal(memBase, …)`（基准从 `root` 换成 `memBase`、
+//     判据从词法换成真实路径），而这里仍按旧的 `/isUnder\(root, abs/` 匹配 ⇒ **守卫永远匹配不到**。
+//   ★★ 三种错法里这是最坏的一种：不是"守卫太弱"，而是**守卫在报假红** ——
+//     报假红会让人习惯性忽略它，等真出问题时那条红也被当成噪音。
+//   ★ 修法与代码同源：**基准用 `memBase`、判据用 `isUnderReal`**，两处都断言（目录 + 文件各一次）。
+//     ★ 判据：**断言的正则必须跟着被测代码的语义走**；改代码时漏改探针 = 守卫失效。
+need(
+  "★ 且做**路径逃逸检查**（`isUnderReal(memBase, …)`，目录与文件各一处）",
+  /isUnderReal\(memBase,\s*absDir\)\.ok/.test(pBody) && /isUnderReal\(memBase,\s*abs\)\.ok/.test(pBody),
+  "两处都要在：漏一处 ⇒ 胶囊目录或胶囊文件可逃出记忆基准"
+);
 need(
   "★★ 且**没启用日志时不写**（守住「没登记就不写项目」的承诺）",
   /relDir === undefined/.test(pBody) && /没启用活动日志/.test(pBody)

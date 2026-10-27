@@ -13,8 +13,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const LIB = path.join(HERE, "..", "lib", "index.js");
-const src = fs.readFileSync(LIB, "utf8");
+const LIB_DIR = path.join(HERE, "..", "lib");
+const libNames = fs.readdirSync(LIB_DIR).filter((n) => n.endsWith(".js")).sort();
+const src = libNames.map((n) => fs.readFileSync(path.join(LIB_DIR, n), "utf8")).join("\n");
 
 // 从探针文件里把 CASES 的 good/bad 抽出来（不 import，避免它一跑就改文件）。
 const probe = fs.readFileSync(path.join(HERE, "_probe-assertion-can-fail.mjs"), "utf8");
@@ -79,7 +80,7 @@ if (fail === 0) {
 for (const [label, re] of [
   ["FLUSH_GATE_BYPASS_RATIO", /const FLUSH_GATE_BYPASS_RATIO = ([\d.]+);/],
   ["手动捷径旁路", /if \(opts\?\.manual === ([^)]+)\) return \{ ok: true/],
-  ["水位旁路", /if \(typeof opts\?\.ratio === "number" && opts\.ratio >= ([^)]+)\) \{/],
+  ["水位旁路", /if \(!isFull && typeof opts\?\.ratio === "number" && opts\.ratio >= ([^)]+)\) \{/],
 ]) {
   const m = src.match(re);
   console.log(`  ${label} = ${m === null ? "(找不到)" : m[1]}`);

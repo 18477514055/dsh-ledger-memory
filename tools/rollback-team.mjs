@@ -24,8 +24,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+const __DIR = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__DIR, "..");
 const BACKUP_DIR =
   process.env.ROLLBACK_BACKUP ??
   "D:/Deepseek工作区/20-DSH插件/04-其余插件/_备份-项目台账-20261019-213417";

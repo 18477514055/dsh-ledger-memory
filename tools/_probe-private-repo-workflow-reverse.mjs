@@ -96,10 +96,21 @@ function makeFakeRepo(tag, { withHook = true, pushDefault = "private", hookBody 
 
   if (withHook) {
     fs.mkdirSync(path.join(dir, ".git", "hooks"), { recursive: true });
+    // ★★★ 2026-10-23（D315 · Gemini 审查 001 的 F-07①）：**优先读受控模板，不读 `.git/hooks/`。**
+    //   🔴 病：原来直接 `readFileSync(<本项目>/.git/hooks/pre-push)` —— 而 `.git/hooks/*`
+    //      **永远不会被推到任何远端** ⇒ 从远端 clone 出来的环境里它不存在 ⇒
+    //      这个反向探针在**新 clone 的机器上第一步就 ENOENT 崩掉**。
+    //      （作者自己换台机器重 clone 也一样。）
+    //   ⇒ 现在模板入库在 `tools/pre-push.hook.sh`，`.git/hooks/` 只是安装后的副本。
+    //      读模板 ⇒ 任何 clone 都能跑；读 `.git/hooks/` 只是**兜底**（老工作区没装过模板时）。
+    const tplAbs = path.join(ROOT, "tools", "pre-push.hook.sh");
+    const installedAbs = path.join(ROOT, ".git", "hooks", "pre-push");
     const body =
-      hookBody === undefined
-        ? fs.readFileSync(path.join(ROOT, ".git", "hooks", "pre-push"), "utf8")
-        : hookBody;
+      hookBody !== undefined
+        ? hookBody
+        : fs.existsSync(tplAbs)
+          ? fs.readFileSync(tplAbs, "utf8")
+          : fs.readFileSync(installedAbs, "utf8");
     fs.writeFileSync(path.join(dir, ".git", "hooks", "pre-push"), body, "utf8");
   }
   return dir;

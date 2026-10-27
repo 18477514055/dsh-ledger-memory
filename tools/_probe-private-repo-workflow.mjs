@@ -66,6 +66,8 @@ function findSh() {
     "C:/Program Files/Git/bin/sh.exe",
     "C:/Program Files/Git/usr/bin/sh.exe",
     "C:/Program Files (x86)/Git/bin/sh.exe",
+    "/bin/sh",
+    "/usr/bin/sh",
   ];
   for (const c of candidates) if (fs.existsSync(c)) return c;
   // 退路：让系统 PATH 找
@@ -320,6 +322,9 @@ if (tracking.code !== 0 || tracking.out.trim() === "") {
   const tree = run(GIT, ["ls-tree", "-r", TRACKING_REF, "--name-only"]);
   if (tree.code !== 0) {
     console.log(`  ⏭ SKIP：读不到 ${TRACKING_REF} 的文件清单 —— ${tree.err.slice(0, 160)}`);
+    // ★ 2026-10-23（D315 · Gemini 审查 001 的 F-07②）：**每一处 SKIP 都必须记进 `skipped`**。
+    //   我这里原来只打印、没 push ⇒ 结论行会在"有跳过"的情况下说"全部通过"（骗人）。
+    skipped.push("⑤ 私有库文件清单（读不到跟踪引用的 tree）");
   } else {
     const files = tree.out.split("\n").filter((l) => l !== "");
     ok("私有库确实有源码（而不是空仓库）", files.length > 50, `${files.length} 个文件`);
@@ -389,6 +394,8 @@ if (tracking.code !== 0 || tracking.out.trim() === "") {
     );
     if (realMemoryOnDisk.length === 0 && memoryDirsOnDisk.length === 0) {
       console.log("  ⏭ SKIP：这个仓库本地没有任何记忆面（假仓库/空仓库）—— 「干净」无从谈起，如实跳过");
+      // ★ 同上（F-07②）：SKIP 必须记账，否则结论行会假称"全部通过"。
+      skipped.push("⑤ 反向对照（本仓库本地无记忆面）");
     } else {
       ok(
         "★ 反向对照：本仓库本地确有记忆面（「干净」才是个有意义的结果）",

@@ -13,6 +13,9 @@
 import path from "node:path";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const __DIR = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * ★★★★★ 2026-10-18（D270 · 修 review v1.2.7 的 F10③）：**判据读「整个 lib/ 的拼接」，
@@ -34,7 +37,7 @@ import { spawnSync } from "node:child_process";
  *   恢复也按那个文件的名字还原它的原文（原文在内存里逐字留着）。
  *   ★ 这样"多文件"只影响**看得见什么**，不影响**改得对不对**。
  */
-const LIB_DIR = path.join(path.resolve(import.meta.dirname, ".."), "lib");
+const LIB_DIR = path.join(path.resolve(__DIR, ".."), "lib");
 
 /** 读整个 `lib/` 的拼接（按名排序 ⇒ 确定）。与 `selftest.mjs` 的 `readLibSource()` 同口径。 */
 function readLibSource() {
@@ -547,11 +550,11 @@ for (const c of CASES) {
       fs.writeFileSync(abs, patched, "utf8");
     }
     const r = spawnSync(process.execPath, ["tools/selftest.mjs"], {
-      cwd: path.resolve(import.meta.dirname, ".."),
+      cwd: path.resolve(__DIR, ".."),
       encoding: "utf8",
     });
     const out = (r.stdout ?? "") + (r.stderr ?? "");
-    ok1 = /失败 [1-9]\d* 项/.test(out);
+    ok1 = /(?:失败 [1-9]\d* 项|FAIL [1-9]\d*)/.test(out);
     // ★★★★★ 2026-10-18（D270 · F10③）：**"修复冗余"这一档的判定**。
     //   有些修复是**两道防线**（摘掉一处在运行时就会抛错，而不是真的犯错）。
     //   那时"摘了不红"**不是缺陷**，但也不能就这么放过 —— 判据改成：
@@ -612,10 +615,10 @@ if (retiredNames.length > 0) {
 
 // 恢复后再跑一遍，确认回到全绿
 const r2 = spawnSync(process.execPath, ["tools/selftest.mjs"], {
-  cwd: path.resolve(import.meta.dirname, ".."),
+  cwd: path.resolve(__DIR, ".."),
   encoding: "utf8",
 });
-const green = /通过 \d+ 项，失败 0 项/.test(r2.stdout ?? "");
+const green = /(?:通过 \d+ 项，失败 0 项|PASS \d+ · SKIP \d+ · FAIL 0)/.test(r2.stdout ?? "");
 console.log(`  ${green ? "PASS" : "FAIL"}  恢复后自检回到全绿`);
 
 console.log(`\n${allOk && green ? "全部通过" : "失败"}`);

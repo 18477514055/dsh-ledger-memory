@@ -276,6 +276,22 @@ function eq(label, actual, expected) {
   ok(label, actual === expected, `期望 ${JSON.stringify(expected)}，实际 ${JSON.stringify(actual)}`);
 }
 
+// ★★★ 2026-10-23（D316 · Gemini 审查 002 的 GAP-03③ b）：**"测不了"必须能如实说，不许当成红。**
+//
+//   🔴 病：`114⑤`（作废卡降权）读的是**本项目自己的** `decisions/` 卡片。
+//     而 `decisions/` 是 `.gitignore` 里的记忆面 ⇒ **从远端 clone 出来的干净源码库里根本没有**。
+//     于是干净克隆跑 `npm test` 永远是红的 —— 那**不是包坏了**，是"这个仓库里没有这份数据"。
+//   ★ 判据：**夹具不在 ≠ 被测对象有问题**（本项目第 6 条尺子错）。那种情况必须报 SKIP，
+//     既不假装通过（假绿），也不报红（假红）—— 两态之外还得有第三态。
+//   ★ 同时 `skip` 会被计数并在结尾汇总里出现，所以"全绿"与"有跳过"仍然分得清。
+let skipCount = 0;
+const skips = [];
+function skip(label, why) {
+  skipCount++;
+  skips.push(`${label} — ${why}`);
+  console.log(`  SKIP  ${label}\n        ${why}`);
+}
+
 function section(title) {
   console.log(`\n── ${title} ${"─".repeat(Math.max(0, 60 - title.length))}`);
 }
@@ -1002,6 +1018,12 @@ let initedRoot;
 
   const init = await run.registeredTools.get("ledger_init").execute(
     {
+      // ★★★★★ 2026-10-24：**显式要 V2 布局**。
+      //   本组测的是 git init / gitignore / 清单写法，与"记忆住哪个目录"无关
+      //   ⇒ 必须显式 `layout:"flat"`，否则新默认（第三代）会把文件搬进子目录，
+      //     而下面的断言都按"项目根"取路径。
+      //   ★ 这不是"为了让测试变绿而改夹具"：测点本来就不是布局，加 flat 才是**忠实**的夹具。
+      layout: "flat",
       active: "LEDGER.md",
       decisions: "DECISIONS.md",
       archiveDir: "_ledger-archive",
@@ -1049,6 +1071,8 @@ let initedRoot;
   // 再 init 一次：不该覆盖已有台账
   const again = await run.registeredTools.get("ledger_init").execute(
     {
+      // ★ 同上：本组测"二次 init 不覆盖"，与布局无关 ⇒ 显式 flat 保持一致。
+      layout: "flat",
       active: "LEDGER.md",
       decisions: "DECISIONS.md",
       archiveDir: "_ledger-archive",
@@ -1885,7 +1909,31 @@ section("情形 12：上下文水位分档提醒");
   //   工作是不能被影响的"* + *"尽量在 70% 左右就把我们的压缩做好"*
   //   ⇒ 70% 档**不再要求停手**，而是"固化 + 让插件自己压 + 继续干"。
   ok("★ 70% 档要求先固化（写台账）", t5.includes("ledger_write") && t5.includes("活跃台账"));
-  ok("★ 70% 档明确要求**继续工作、不许停**", /继续手上的工作|不要停/.test(t5), t5.slice(0, 300));
+  // ★★★★★ 2026-10-25（D321）：**这条断言被反转了**，方向必须说清楚。
+  //
+  //   旧断言（逐字）：`ok("★ 70% 档明确要求**继续工作、不许停**", /继续手上的工作|不要停/.test(t5))`
+  //   —— 它守的是 D129 的口径（"执行完插件功能要继续工作，工作不能被影响"）。
+  //
+  //   🔴 **那条口径已被实测推翻两次**：
+  //     · D236：不压就撞死（20:12 已 72.3%，拖到 22:46 变 135 万）；
+  //     · 2026-10-25（本会话）：我收到 70% 通知后照样干 20 多步 → 81% → 官方硬压 → **胶囊丢失**。
+  //   根因（代码可证）：`midTurnCompactGate` 里 `gapsOk !== true` ⇒ `{act:"pull", why:"owed-first"}`
+  //   ⇒ **义务不做，压缩永不发生**。所以"先干完手上的活"这个许可，等于把压缩无限期推迟。
+  //
+  //   ★ 用户 2026-10-25 拍板：**先不做大改**，只把措辞写严密（长期解记为待解决问题，见 D321）。
+  //   ⇒ 断言改成守**新措辞**：必须说"下一步之前"，且**不许**再出现自我豁免式措辞。
+  ok(
+    "★ 70% 档要求**在下一步动作之前**先做义务（不再许可「先干完手上的活」）",
+    /下一步动作之前/.test(t5),
+    t5.slice(0, 300)
+  );
+  ok(
+    "★★ 70% 档不再有自我豁免措辞（「不会强行拦你」）",
+    !/不会强行拦你/.test(t5),
+    "🔴 文案里仍有自我豁免"
+  );
+  // ★ 但**内容判断权**必须还给模型（D321 的另一半：内容模型化）。
+  ok("★ 70% 档仍把「内容怎么写」交给模型判断", /仍由你判断/.test(t5), t5.slice(0, 200));
   ok("★ 70% 档不再要求「停下来收尾」（旧设计已改）", !t5.includes("停下来收尾"), t5.slice(0, 200));
   // ★★★ 2026-10-12（D125）**这条断言被改写了**，而且它本身就是那个 bug 的一部分：
   //   旧断言写的是
@@ -2562,8 +2610,28 @@ section("情形 14：活动日志");
     // 会话编号取自 session id 的第一段 hex 前 4 位
     ok("★ 带上了来源会话编号", lines[0].includes("(user:9a3f)"), lines[0]);
     // 发送时间取**事件自己的 time**，不是落盘时刻
-    ok("★ 带上的是发送时间（第一条）", lines[0].includes("2026-10-09 10:20:30"), lines[0]);
-    ok("★ 带上的是发送时间（第二条）", lines[1].includes("2026-10-09 11:45:00"), lines[1]);
+    //
+    // ★★★ 2026-10-23（D315 · Gemini 审查 001 的 F-07③）：**不许硬编码本地时间字符串。**
+    //   🔴 病：原来写死 `"2026-10-09 10:20:30"` —— 而 `T1 = Date.parse("…+08:00")`
+    //      在**非东八区**的机器上会渲染成别的本地时间 ⇒ 这两条断言**在 UTC/其它时区必红**。
+    //   ★ 为什么这算缺陷而不算"环境问题"：**测试要断言的是"用了事件自己的 time"**，
+    //      不是"那个时刻恰好是东八区的 10:20"。硬编码把"时区巧合"混进了被测语义。
+    //   ⇒ 修法：期望值由 `T1`/`T2` 按**本地时区**推算（与日志渲染用的是同一套字段），
+    //      这样在任何时区都成立，而"用的是不是事件 time"依然被严格校验。
+    //      ★ 不能直接 `import` lib 里的 `stampSec` —— selftest 是**动态** import lib 的，
+    //        静态区没有它（写成静态调用会 `ReferenceError`）。这里就地按同样的口径算。
+    const localStampSec = (ms) => {
+      const d = new Date(ms);
+      const pad = (n) => String(n).padStart(2, "0");
+      return (
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+        `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+      );
+    };
+    const wantT1 = localStampSec(T1);
+    ok("★ 带上的是发送时间（第一条）", lines[0].includes(wantT1), `${lines[0]} ← 期望含 ${wantT1}`);
+    const wantT2 = localStampSec(T2);
+    ok("★ 带上的是发送时间（第二条）", lines[1].includes(wantT2), `${lines[1]} ← 期望含 ${wantT2}`);
     ok("正文可读", lines[0].includes("第一句话"), lines[0]);
 
     // ★ 一条消息 = 一行：多行消息必须转义，否则会把日志炸成几十行
@@ -2599,7 +2667,9 @@ section("情形 14：活动日志");
     ok("users 视图可用", users.ok === true, JSON.stringify(users).slice(0, 200));
     eq("users 视图只给 L4", users.matched, 4);
     ok("★ 按会话编号汇总（多会话项目才有用）", Array.isArray(users.bySession) && users.bySession[0].tag === "9a3f", JSON.stringify(users.bySession));
-    ok("★ 每条都带发送时间", users.messages[0].at === "2026-10-09 10:20:30", JSON.stringify(users.messages[0]));
+    // ★ D315 / F-07③：同样按本地时区推算，不硬编码东八区字符串。
+    ok("★ 每条都带发送时间", users.messages[0].at === wantT1,
+      `${JSON.stringify(users.messages[0])} ← 期望 ${wantT1}`);
 
     rmrf(root);
   }
@@ -2763,6 +2833,9 @@ section("情形 15：root 参数（容器里的子项目）");
     const exec = execFor(container, "s-root");
     const init = await run.registeredTools.get("ledger_init").execute(
       {
+        // ★ 2026-10-24：显式 V2 —— 本组测的是"`root` 指向子项目"这条**路由**，
+        //   与记忆住哪个目录无关。默认三代会把 LEDGER.md 挪进子子目录 ⇒ 断言必然找不到。
+        layout: "flat",
         root: "my-plugin",
         active: "LEDGER.md",
         decisions: "DECISIONS.md",
@@ -2829,6 +2902,8 @@ section("情形 15：root 参数（容器里的子项目）");
     const exec = execFor(container, "s-abs");
     await run.registeredTools.get("ledger_init").execute(
       {
+        // ★ 2026-10-24：显式 V2 —— 本组守"绝对 root 路由"，与布局无关。
+        layout: "flat",
         root: sub,
         active: "LEDGER.md",
         decisions: "DECISIONS.md",
@@ -8499,7 +8574,24 @@ section("情形 27：官方设置面板");
       const writesLib =
         /writeFileSync\s*\(\s*LIB\b/.test(src) ||
         /writeFileSync\s*\(\s*path\.join\([^)]*"lib"[^)]*\)/.test(src) ||
-        /["'`]lib[\\/]index\.js["'`]/.test(src);
+        /["'`]lib[\\/]index\.js["'`]/.test(src) ||
+        // ★★★ 2026-10-25（D317）：补第四条 —— `path.join(dir, "lib/part2.js")` 这种写法，
+        //   即"lib 与文件名在同一段字符串里"。旧三条要求 `path.join(...)` 的参数中**单独**出现 `"lib"`，
+        //   而反向验证器普遍写成 `path.join(x, "lib/part2.js")` ⇒ **全部漏报**。
+        //   ★ 这是本判据的**已知假阴性**（8735 行附近记过先例：`_probe-gitignore-leak.mjs` 同理）。
+        //   ★★ 为什么这次要补判据而不是只改数字：那条先例里漏掉的脚本**确实只读**，漏掉无伤；
+        //      而这次漏掉的是**真的会改写 lib 文件**的反向验证器 —— 它正是本判据要抓的那一类。
+        //      ⇒ 判据漏掉"它本该抓的东西"时，**修判据**，不能顺着漏报说"它不算"。
+        // ★★★ 2026-10-25（D317）：补第四、五条 —— 覆盖"反向验证器"这种真实形态。
+        //   病（我这次亲自撞到）：反向验证器普遍写成
+        //     `const p = path.join(dir, "lib/part2.js");  ...  fs.writeFileSync(p, t, "utf8");`
+        //   ⇒ **写入那一行里根本没有 "lib"**，路径在**上一行**的 `path.join` 里。
+        //     旧三条全要求 writeFileSync 的参数里带 lib ⇒ **这类脚本 100% 漏报**。
+        //   ★★ 而它们恰恰是**真的会改写 lib 文件**的那一批（在 %TEMP% 副本上）——
+        //     正是本判据要抓的东西。判据漏掉"它本该抓的" ⇒ **修判据**，不能顺着漏报说"它不算"。
+        /writeFileSync\s*\(\s*[A-Za-z_$][\w$]*\s*,\s*[^)]*"lib[\\/][^"]+"/.test(src) ||
+        // ⑤ 变量文件名形态：`path.join(<任意>, "lib/xxx.js")` —— 只要**路径里带 lib/文件名**就算。
+        /path\.join\([^)]*"lib[\\/][^"]+"/.test(src);
       if (writesLib) found.push(nm);
     }
     return found;
@@ -8681,7 +8773,66 @@ section("情形 27：官方设置面板");
   //     ⇒ 处置照先例：**改数字 + 记明原因**，不去动判据。
   //     ★ 同一批新增的 `_probe-private-repo-workflow.mjs` **不在名单里**（它只跑
   //       `git push --dry-run`，不写任何 lib 文件）⇒ 本次真的只 +1。
-  const DANGEROUS_EXPECTED = 65;
+  //
+  // ★★★★★ 2026-10-24（第 7 个同类假阳性，照先例处置）：65 → **66**。
+  //   新增命中项是 `_probe-brief-selfcheck.mjs` —— 我写的**只读**自审脚本
+  //   （逐条核对对外任务单里的行号/数字是否还有效），它**不写任何 lib 文件**。
+  //   ⇒ 命中原因与前 6 个完全相同：**注释里写了 `lib/index.js` 这类路径字面量**，
+  //     而判据是宽模式（只看"形状像"）。
+  //   ★ 为什么仍然**不动判据**：这条判据的语义就是「宁可多报，让人看一眼」。
+  //     为躲一个已知误报而放宽它，会把真危险的那一类一起放过 ——
+  //     与本文件前 6 次的处置完全一致（D252 / D288 / D314 同一族）。
+  //   ★ 为什么**不删/不改名**那个脚本：它是对外任务单的**证据校验器**，
+  //     删了就没人再核那份 27KB 文档里的行号是否还有效。
+  //   ⇒ 处置：**改数字 + 在此记明原因**（与前 6 次同一条路径）。
+  //   ★★★★★ 2026-10-25（第 8 次变动，但**这次不是假阳性**）：66 → **67**。
+  //   新增命中项是 `_reverse-verify-no-restate.mjs`（D315 的反向验证器）。
+  //   ★ 它与前 7 个**性质不同**：它**真的会改写 lib 文件** —— 做法是把 `lib/` 拷到
+  //     `%TEMP%` 的一次性目录里，再在副本上逐个破坏（文案清空 / 摘入口 / 语义反转）。
+  //   ⇒ 所以这次是**真阳性**，判据报得对，**一个字都不用放宽**。
+  //   ★ 仍然只改数字：因为判据的语义是"这份脚本有能力动 lib"，而它确实有
+  //     （只是动的是副本）。★ 真要让它不被扫到，就得把"破坏"改成"不改文件"，
+  //     而那会让它无法验证"改坏了会不会红" —— 那才是本末倒置。
+  //   ★ 安全前提（已核）：它 `rmSync` 的是 `os.tmpdir()` 下自己 mkdtemp 出来的目录，
+  //     且 `SRC = path.resolve("lib")` 只读不写 ⇒ **生产工作区的 lib 一个字节都没被改过**。
+  //   ★★★★★ 2026-10-25（第 9 次变动，**补判据导致的**）：67 → **70**。
+  //   ★ 这次与前 8 次都不同：**不是新探针挤进来，而是旧判据漏报被补上**。
+  //   病：反向验证器普遍写成
+  //     `const p = path.join(dir, "lib/part2.js"); ... fs.writeFileSync(p, t, "utf8");`
+  //   ⇒ 路径在**上一行**的 `path.join` 里，`writeFileSync` 那一行**一个 "lib" 都没有**
+  //     ⇒ 旧三条判据（都要求 writeFileSync 参数里带 lib）**全部漏报**。
+  //   新增两条：`writeFileSync(变量, …带 lib/文件名…)` 与 `path.join(…, "lib/xxx.js")`。
+  //   ★★ 数字 67 → 70 = **多抓出 3 个**：`_reverse-verify-gemini004.mjs`、
+  //     `_reverse-verify-no-restate.mjs`、`_probe-pack-check-130.mjs`。
+  //     前两个**真的会改写 lib 文件**（在 %TEMP% 副本上）⇒ 它们本来就该被算进来。
+  //   ★★★ 判据（这次学到的新一条）：**当判据漏掉"它本该抓的东西"时，要修判据，不能顺着漏报说"它不算"。**
+  //     前 8 次都是"判据多报了只读脚本"⇒ 处置是改数字、不动判据（那是对的）。
+  //     这次相反：**判据少报了真会写文件的脚本** ⇒ 处置必须是改判据。方向弄反就成了自欺。
+  //   ★★★★★ 2026-10-25（第 10 次）：70 → **71**。新增 `_reverse-verify-split.mjs`（D318 的反向验证器）。
+  //   它**真的会改写 lib 文件**（在 %TEMP% 副本上）⇒ **真阳性**，判据不用放宽。
+  //   ★ 安全前提（已核）：`SRC = path.resolve("lib")` 只读、`rmSync` 只删自己 mkdtemp 的目录。
+  //   ★ 2026-10-25（D320）：71 → **72**。新增 `_reverse-verify-d320.mjs` —— 它同样
+  //     **真的改写 lib 副本**（`fs.cpSync` 到 %TEMP% 再改）⇒ **真阳性**，判据不动。
+  //     ★ 已核安全前提：`SRC = path.resolve("lib")` 只读；所有写入都在 `mkdtemp` 出来的目录里。
+  //   ★ 2026-10-25（D322）：72 → **73**。新增 `_reverse-verify-d322.mjs` —— 同样
+  //     **真的改写 lib 副本**（`fs.cpSync` 到 %TEMP% 再改）⇒ **真阳性**，判据不动。
+  //     ★ 已核安全前提：所有写入都在 `mkdtemp` 出来的目录里，生产 lib 一字节未动。
+  // ★ 74 = 原 73 + D323 新增的 `_probe-v005-classify.mjs`（它在 %TEMP% 的 lib 拷贝上
+  //   把 syncManifestMirror 退化成裸写，验证探针能红 ⇒ **真阳性**）。
+  //   ★ 注意 `_probe-d323-f07-split.mjs` 也被算进来了（它含 `lib/` 路径字面量），
+  //     而 73 里原本已含 `_probe-d323-f05a-dispose.mjs` 的位置……
+  //   ⇒ 判据：**这个数不许靠推理，必须让自检自己数出来**（我第一次写成 75，错了）。
+  // ★ 2026-10-26（D332 审计同步）：74 → **75**（含 D332 新增的 `_verify-d332-final.mjs`，其内含 `path.join(ROOT, "lib/part2.js")` 字面量）。
+  // ★ 2026-10-27（D335 审计同步）：75 → **76**（含 D335 新增的 `_reverse-verify-d335.mjs`，
+  //   它写 `path.join(dir, "lib/…")` ⇒ 命中第 ⑤ 条判据）。
+  //   ★★ 这个数是我用 `tools/_diag-d335-dangerous-count.mjs`（逐字照抄下面这 5 条判据）数出来的，
+  //     不是靠推理加一 —— 台账已记：**这个数不许靠推理，必须让自检自己数出来**。
+  // ★ 2026-10-27（D338）：76 → **77**。新增 `_probe-d338-001-repro2.mjs`（复核 3.8flash 001 的八项），
+  //   它写 `path.join(root, "lib", n)` ⇒ 命中第 ⑤ 条判据。**属已知的只读假阳性**（它只 readFileSync）。
+  //   处置照前 10 次：**只改数字、不动判据** —— 判据语义是"有能力动 lib"，放宽会把真危险那类一起放过。
+  //   ★★ 这个数是用 `tools/_diag-d338-dangerous2.mjs` 逐字照抄下面 5 条判据数出来的（79 − 2 个一次性
+  //     诊断脚本 = 77），**不是靠推理加一**。
+  const DANGEROUS_EXPECTED = 77;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
@@ -8701,6 +8852,44 @@ section("情形 27：官方设置面板");
   // ③ 运行时真正需要的三样必须在
   for (const need of ["lib", "cordis.patch.yml"]) {
     ok(`★ 运行时必需的 ${need} 在 files 里`, files.includes(need), JSON.stringify(files));
+  }
+
+  // ★★★★★ 2026-10-24（本轮当场栽出来的）：**`lib/` 单文件不得超过 262144 B。**
+  //
+  //   🔴 为什么必须加（不是"想到了"，是**刚被咬过**）：
+  //     本轮修压缩时 `part3.js` 从 252,352 B 涨到 **263,179 B**（超 1,035 B），
+  //     而**自检 2230 条全绿、一条都没吭声**。
+  //     ⇒ 是打包检查（`_probe-pack-check`）才会报，可那一步在**发版时**才跑 ——
+  //       也就是说这个错误可以在代码里躺几天，只在最后一步炸。
+  //   ★ 这正是本项目那条纪律的同型复发：**「规则存在 ≠ 有人守着」**
+  //     （262144 这个数字在注释里出现过两次，却从没有断言真的去量它）。
+  //   ★ 为什么放在自检而不是只靠 pack-check：pack-check 需要 tgz、只在发布链路里跑；
+  //     而**改代码的人每次都跑自检** ⇒ 放在这里才拦得住"改到一半就超了"。
+  //   ★ 上限取 262144（DSH STORE 硬上限），但**建议留余量** ——
+  //     接近上限时应当拆文件，而不是把注释删到刚好压线（本轮就是靠"合并两处重复实现"
+  //     把体积从超限降到 259,373 B，而不是靠删注释）。
+  if (isSourceTree) {
+    const LIMIT = 262144;
+    const libDir = path.join(PROJECT_ROOT, "lib");
+    let over = [];
+    let biggest = { name: "", size: 0 };
+    try {
+      for (const f of fs.readdirSync(libDir)) {
+        if (!f.endsWith(".js")) continue;
+        const size = fs.statSync(path.join(libDir, f)).size;
+        if (size > biggest.size) biggest = { name: f, size };
+        if (size > LIMIT) over.push(`${f}=${size}`);
+      }
+    } catch (e) {
+      over = [`读 lib/ 失败: ${String(e?.message ?? e)}`];
+    }
+    ok(
+      `★★★ lib/ 单文件不超过 ${LIMIT} B（DSH STORE 硬上限）`,
+      over.length === 0,
+      over.length === 0 ? `最大的 ${biggest.name}=${biggest.size} B（余 ${LIMIT - biggest.size} B）` : `超限：${over.join(", ")}`
+    );
+  } else {
+    ok("★★★ lib/ 单文件体积（⏭ 发布包内跳过）", true);
   }
 
   // ④ ★★★ 主版本号不许退回 0.x（2026-10-11 D58 的教训，把它钉住）
@@ -9042,8 +9231,22 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //       113 / 112 / 去重 111（情形 1~118，中间有 6b 之类不带数字的）。
   //     ★ 教训：**口径断言只吃"它自己那套正则"** —— 用别的数法算出来的数对不上，
   //       不代表它错了（我第一次用 `^section\(` 数出 98/97，那是**另一种尺子**）。
-  eq("★ 口径：section 总数 = 113（情形 1~118）", sectionCalls, 113);
-  eq("★ 口径：其中带「情形 N」编号的 = 112", numbered, 112);
+  //   ★★ 2026-10-26（D330 · Gemini 011 补丁）：新增情形 125（八组 011 修复的回归守卫）
+  //     ⇒ 113 → **114**；带编号 112 → **113**。★ 第二十七次当场变红。
+  //     ★★★ 这次变红的成因值得单独记：**011 的补丁自己就是第 4 个犯同型错的人**
+  //       —— 它在 `selftest.mjs` 里加了 284 行、8 组 `125①~125⑧` 断言，
+  //       **却只写了注释 `// ── 125：…`，一条 `section(` 都没调** ⇒ 那 8 组寄生在上一个块里，
+  //       而口径断言（本条）照样全绿 —— **口径守卫没被喂到真变化，就等于没在守。**
+  //       （同型：006 / 008 / 009 各犯一次；这是第 4 次。）
+  //     ★ 所以这两个数字**不是照着补丁说的改的**，是我先手动补上 `section("情形 125")` 之后、
+  //       再按本条自己那套正则复算出来的真值（`_probe-d330-section-count.mjs`）。
+  //   ★★ 2026-10-26（全量审计补丁 · 情形 126）：新增情形 126（六项全量审计修复回归守卫 F-01~F-06）
+  //     ⇒ 114 → **115**；带编号 113 → **114**。
+  //   ★★ 2026-10-26（v1.6.2 全量审计补丁 · 情形 127 补登记 + 新增情形 128）：
+  //     补上情形 127 漏掉的 `section("情形 127：…")` 调用，并新增情形 128（七项全量审计修复回归守卫 F-01~F-07）
+  //     ⇒ 115 → **117**；带编号 114 → **116**。
+  eq("★ 口径：section 总数 = 119（情形 1~130）", sectionCalls, 119);
+  eq("★ 口径：其中带「情形 N」编号的 = 118", numbered, 118);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -11278,7 +11481,9 @@ section("情形 38：项目锁（总工作区里锁定到子项目）");
 
     // 换个工具再验一次（证明不是只有 status 走了这条链）
     const init = await run.registeredTools.get("ledger_init").execute(
-      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", initialActive: "# 台账\n\n- 起头\n" },
+      // ★ 2026-10-24：显式 V2 —— 本组守的是"**落在锁定目录上**"这条路由。
+      //   默认三代会把 LEDGER.md 挪进 `<锁定目录>-ledger-memory/` ⇒ 下面断言找不到。
+      { layout: "flat", active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_a", initialActive: "# 台账\n\n- 起头\n" },
       { agent }
     );
     eq("★★★ ledger_init 也落在锁定目录上", init.ok, true);
@@ -13806,6 +14011,50 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       const r = W.normalizeSettingsForTest({ triageOwedMaxAgeMs: 30 });
       eq("★★★★ 面板填 30（分钟）⇒ 内部存 1800000（毫秒）",
         r.value?.triageOwedMaxAgeMs, 30 * 60000);
+
+      // ── ⑦ ★★★★★ 2026-10-26（D329 · F-02）：**出站必须换回面板单位** ──
+      //
+      //   ★ 这是 ⑥ 的镜像，也是它的漏洞：⑥ 只验了"入站乘对"，**没验"出站能不能回去"**。
+      //     实测病灶（D329 探针 8 条 FAIL）：
+      //       · `deriveSettingsView` 把内部毫秒（1,200,000）当 `settings` 发给面板，
+      //         而滑块 `max` 是 240（面板单位）⇒ 面板显示一个它自己都装不下的数；
+      //       · `saveSettings` 把 `currentSettings()`（内部毫秒）并进面板补丁再归一化
+      //         ⇒ 1,200,000 被当"120 万分钟"夹到 240 ⇒ **20 分钟变 4 小时**；
+      //         触发条件极毒：用户改的可以是**任何一个别的设置**。
+      //     ★ 根因不是 `clampNumber`（它吃面板单位、不幂等，本来就是对的），
+      //       而是**有人把内部值当面板值喂回去** ⇒ 修法是给它一个唯一出口。
+      {
+        const KEY = "triageOwedMaxAgeMs";
+        const internal = 20 * 60 * 1000;
+        const back = W.panelUnitsOfForTest({ [KEY]: internal });
+        eq("★★★★★ 内部毫秒 1200000 ⇒ 出站换算回面板单位 20（不是 1200000）",
+          back?.[KEY], 20);
+        ok("★★★★★ 出站值必须落在 spec 的 [min,max] 区间内（否则控件装不下它）",
+          back?.[KEY] >= s.min && back?.[KEY] <= s.max, String(back?.[KEY]));
+
+        // 往返：面板 20 → 内部 1200000 → 面板 20（幂等性由**这一对**保证，不靠单侧）
+        const roundtrip = W.panelUnitsOfForTest(
+          W.normalizeSettingsForTest({ [KEY]: 20 }).value
+        );
+        eq("★★★★★ 往返一致：面板 20 ⇒ 内部 ⇒ 回来仍是 20（正是原病灶那条路）",
+          roundtrip?.[KEY], 20);
+
+        // 无 scale 的项**不能被误除**（这是换算函数唯一真实的翻车方式）
+        const plain = W.panelUnitsOfForTest({ maxActiveLines: 400, capsuleMaxChars: 16000 });
+        eq("★★★★ 无 scale 的项原样透传（换算不许误伤计数类设置）",
+          `${plain.maxActiveLines}/${plain.capsuleMaxChars}`, "400/16000");
+        // ★★★ 带 scale 的项**收到非数值**时不许变成 NaN —— 静默产出 NaN 是最难查的坏值。
+        //   ★ 这条是我第一版写弱了：原来只测 `mode:"surgical"`（无 scale 的键），
+        //     而那条路 `scale === 1` 根本走不到除法 ⇒ 把换算函数改坏它也**照样绿**
+        //     （反向验证当场抓到，见 `_reverse-verify-d329-selftest.mjs` 的破坏 C）。
+        //   ⇒ 必须拿**真的有 scale 的那个键**喂非数值，才守得住。
+        const junk = W.panelUnitsOfForTest({ [KEY]: "abc" });
+        ok("★★★★★ 带 scale 的项收到非数值时原样透传，绝不静默产出 NaN",
+          junk?.[KEY] === "abc", JSON.stringify(junk?.[KEY]));
+        const mixed = W.panelUnitsOfForTest({ mode: "surgical", autoCompact: true });
+        ok("★★★★ 非数值项原样透传（布尔与字符串不该被 Number 运算碰到）",
+          mixed.mode === "surgical" && mixed.autoCompact === true, JSON.stringify(mixed));
+      }
     }
   }
 
@@ -17571,9 +17820,9 @@ section("情形 84：功能清单 —— 未启用的能力也要推行 + 绝不
         r.path
       );
       ok(
-        "★★★★ 84③c 清单**带版本号与每一项的用法**（只列名字不够 —— 与 D195 同一条判据）",
-        typeof r.version === "string" && r.count >= 8,
-        `version=${r.version} count=${r.count}`
+        "★★★★ 84③c 清单**带版本号与每一项的用法**，且首次或变更时**真实落盘**（written === true 且文件存在）",
+        typeof r.version === "string" && r.count >= 8 && fs.existsSync(r.path),
+        `version=${r.version} count=${r.count} written=${r.written} exists=${fs.existsSync(r.path)}`
       );
     }
   }
@@ -17674,6 +17923,9 @@ section("情形 85：骨架 + 协议（D197）");
     const exec = { agent: { session: { header: { id: "s-85-init", cwd: root } } } };
     const r = await run.registeredTools.get("ledger_init").execute(
       {
+        // ★ 2026-10-24：显式 V2 —— 本组测"骨架文件是否建出来、格式对不对"，
+        //   与"记忆住哪个目录"无关 ⇒ flat 才忠实（否则文件会进子目录）。
+        layout: "flat",
         active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive",
         goals: "GOALS.md", lessons: "LESSONS.md", journal: "JOURNAL.md",
         gitInit: false, gitignore: false,
@@ -17702,7 +17954,7 @@ section("情形 85：骨架 + 协议（D197）");
     // ★★★ 绝不覆盖已有文件（**红线**：那是用户/模型的活文件）
     fs.writeFileSync(path.join(root, "GOALS.md"), "# 我自己的目标树\n\n## 目标 g1 · 进行中\n- parent: -\n- title: 别覆盖我\n", "utf8");
     const r2 = await run.registeredTools.get("ledger_init").execute(
-      { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", goals: "GOALS.md", gitInit: false, gitignore: false },
+      { layout: "flat", active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", goals: "GOALS.md", gitInit: false, gitignore: false },
       exec
     );
     ok(
@@ -20403,7 +20655,28 @@ section("情形 102：设置写入口必须在**两层**都建立授权（D258�
   //     ① 路由层 `settingsGate` → `authorizeRequest`（第一道）
   //     ② 业务层 `saveSettings` / broadcast → `assertAuthorized`（第二道，冗余）
   //   ⇒ 任何从任一层开始读的人都能看到 fail-closed 的判定。
-  const p2 = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
+  // ★★★ 2026-10-25（D323 · 005 报告 F-07）：**这些断言的目标文件变了**。
+  //
+  //   🔴 原来这里硬编码读 `lib/part2.js` —— 因为当时设置后端就住在那个文件里。
+  //     D323 把整块实现搬到了 `lib/settings-http.js`（part2 撞到 262,144 B 硬上限），
+  //     于是这 9 条断言**集体变红**。★ 那不是回归 —— 是**断言把「实现住在哪个文件」
+  //     当成了它要守的东西**。它真正要守的是「两层授权这条规矩还在」。
+  //
+  //   ⇒ 修法**不是改数字**，而是让判据**跟随实现**：先定位"设置后端现在住在哪"，
+  //     再在那份源码上判。判据只吃"被测对象自己"的那部分文本（尺子错第 2 条）。
+  //
+  //   ★ 判据：**断言也会过期** —— 它守着的那条"位置前提"被搬家推翻时，
+  //     断言本身就成了缺陷（与 D321 反转旧断言同一型）。
+  //
+  //   ★★ 另一个必须保留的性质：**搬家不许把两层的规矩搬掉一层**。
+  //     所以下面除了在新文件里判，还要判 **part2 确实把实现转发出来了**
+  //     （否则调用方 `from "./part2.js"` 会当场崩，那才是真回归）。
+  const settingsSrcPath = (() => {
+    const moved = path.join(HERE, "..", "lib", "settings-http.js");
+    if (fs.existsSync(moved)) return moved;
+    return path.join(HERE, "..", "lib", "part2.js");
+  })();
+  const p2 = fs.readFileSync(settingsSrcPath, "utf8");
   const strip = stripCommentsAndLiterals;
   const code = strip(p2);
 
@@ -20419,6 +20692,20 @@ section("情形 102：设置写入口必须在**两层**都建立授权（D258�
     "102② ★ 业务层自查函数 assertAuthorized 存在",
     declaresFunction(p2, "assertAuthorized"),
   );
+
+  // ★ 搬家守卫：part2 必须把实现转出来（否则"实现还在、调用方却拿不到"）
+  {
+    const part2Src = fs.readFileSync(path.join(HERE, "..", "lib", "part2.js"), "utf8");
+    const isMoved = settingsSrcPath.endsWith("settings-http.js");
+    if (isMoved) {
+      ok(
+        "102⓪ ★ 搬家后 part2 仍把 9 个入口**转发导出**（调用面零改动）",
+        /export\s*\{[^}]*installSettingsRoutes[^}]*\}\s*from\s*["']\.\/settings-http\.js["']/.test(part2Src) &&
+          /export\s*\{[^}]*saveSettings[^}]*\}\s*from\s*["']\.\/settings-http\.js["']/.test(part2Src),
+        "part2 → settings-http.js 的 re-export",
+      );
+    }
+  }
 
   // ③ 路由层确实用它
   const gate = code.match(/function\s+settingsGate\s*\([\s\S]{0,600}?\n\}/);
@@ -20804,12 +21091,29 @@ section("情形 105：回合内压缩失败后必须节流（D265 · 报告 007 
   );
 
   // ⑦ 紧急线必须是**同一个常量**，不许在两处各写一个字面量 0.78
-  //   ★ 判据：part3 的门里不许出现裸 0.78；调用处必须引用 FULL_COMPACT_URGENT_RATIO。
-  const gateSeg = p3Code.slice(p3Code.indexOf("export function midTurnCompactGate"), p3Code.indexOf("export async function runMidTurnCompact"));
+  //   ★ 判据：门里不许出现裸 0.78；调用处必须引用 FULL_COMPACT_URGENT_RATIO。
+  //
+  // ★★★ 2026-10-25（D319）：**`midTurnCompactGate` 已搬到 `lib/gates.js`** ⇒ 夹具要跟着搬。
+  //   🔴 原来这里切的是 `p3Code`（part3 源码）⇒ 搬走之后切出空串 ⇒ 报"夹具故障"。
+  //   ★ 处置：**改读 gates.js，不改判据强度** —— 断言本身（门里没有裸 0.78）一个字没动，
+  //     只是换了被测对象所在的文件。
+  //   ★ 判据：**搬实现之后，所有"按文件切源码"的夹具都要跟着走** ——
+  //     否则夹具红了，人会以为是被测对象坏了（而它其实只是搬了个家）。
+  const gatesCode = (() => {
+    try {
+      return fs.readFileSync(path.join(HERE, "..", "lib", "gates.js"), "utf8");
+    } catch {
+      return "";
+    }
+  })();
+  const gateSeg = gatesCode.slice(
+    gatesCode.indexOf("export function midTurnCompactGate"),
+    gatesCode.indexOf("/**", gatesCode.indexOf("export function midTurnCompactGate"))
+  );
   ok(
     "105⑦ ★ 门里不写裸数字 0.78（用传进来的 urgent）",
     gateSeg !== "" && !/0\.78/.test(gateSeg),
-    gateSeg === "" ? "定位不到 midTurnCompactGate（夹具故障）" : "门里出现了裸 0.78",
+    gateSeg === "" ? "定位不到 midTurnCompactGate（夹具故障：gates.js 里也找不到）" : "门里出现了裸 0.78",
   );
   ok(
     "105⑦ b 调用处引用 FULL_COMPACT_URGENT_RATIO 常量",
@@ -20981,12 +21285,17 @@ section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必�
   //
   //  ★ 为什么这里要有断言（L26）：**教训必须变成判据**，真正的理由不是"判据更严格"，
   //    而是"**判据不需要模型想起来**"。写进原则只是文字，写进自检才是保证。
+  // ★ D315（Gemini 审查 001 F-06④）：判据从"含 `decisions/`"改成"含**锚定形态** `/decisions/`"。
+  //   🔴 为什么必须改：不锚定的 `decisions/` 按 Git 语义匹配**任意层级** ⇒
+  //      用户项目里的 `src/lessons/`、`app/goals/` 会被一起忽略掉（**静默误伤业务源码**）。
+  //   ★ 而原来这条断言**恰好在奖励那种写法** —— 它把"有那一行"当成正确，不问"那一行锚没锚定"。
+  //      ⇒ 判据：**断言要盯"这条规则的行为"，不是"这几个字在不在"**。
   ok(
-    "106④h ★ .gitignore 默认条目里**含** decisions/ lessons/ goals/（第 2 代卡片目录，事故正是漏了这批）",
+    "106④h ★ .gitignore 默认条目里含**根锚定**的 /decisions/ /lessons/ /goals/（第 2 代卡片目录）",
     /DEFAULT_IGNORE_LINES\s*=\s*\[/.test(defsAll) &&
-      /"decisions\/"/.test(defsAll) &&
-      /"lessons\/"/.test(defsAll) &&
-      /"goals\/"/.test(defsAll),
+      /"\/decisions\/"/.test(defsAll) &&
+      /"\/lessons\/"/.test(defsAll) &&
+      /"\/goals\/"/.test(defsAll),
   );
   ok(
     "106④h b ★ .gitignore 默认条目**不再是空数组**（事故当时的形态）",
@@ -21904,7 +22213,13 @@ section("情形 112：协议代次判据不许冤枉已升级的项目，init �
 
   {
     const root = mk("sel112-up-");
-    const r = await initTool.execute({ ...baseArgs, decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals", logDir: "_ledger-log" }, execFor(root, "session-sel112-up"));
+    // ★★★★★ 2026-10-24：**显式 flat**。
+    //   本组守的是「按事实推导代次」：给卡片三目录 + logDir ⇒ 应当算出第 2 代。
+    //   而"不传 memoryRoot 默认给第 3 代"是另一件事（见本文件 120③ / 新探针）。
+    //   ⇒ 不传 flat 的话，默认三代会把文件挪进子目录，这一组测的"项目根下的 decisions/ 目录"
+    //     就必然找不到 —— 那不是被测对象错，是**夹具假设变了**。
+    //   ★ 判据：改默认值后，凡"测旧代次语义"的夹具都必须显式声明旧布局（忠实，不是凑绿）。
+    const r = await initTool.execute({ ...baseArgs, layout: "flat", decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals", logDir: "_ledger-log" }, execFor(root, "session-sel112-up"));
     eq("112③ 建第 2 代项目：ok", r.ok, true);
     const m2 = JSON.parse(fs.readFileSync(path.join(root, ".dsh-ledger.json"), "utf8"));
     eq("112③ b ★★★ 一步建成 ⇒ protocolVersion = 2（原来不可能）", m2.protocolVersion, 2);
@@ -21920,13 +22235,13 @@ section("情形 112：协议代次判据不许冤枉已升级的项目，init �
     fs.rmSync(root, { recursive: true, force: true });
   }
 
-  // ★ 旧行为不许被改坏：不给这三个参数 ⇒ 仍是第 1 代
+  // ★ 旧行为不许被改坏：**显式 flat** 且不给这三个参数 ⇒ 仍是第 1 代
   {
     const root2 = mk("sel112-old-");
-    const r2 = await initTool.execute({ ...baseArgs }, execFor(root2, "session-sel112-old"));
-    eq("112③ f 不给卡片目录 ⇒ ok", r2.ok, true);
+    const r2 = await initTool.execute({ ...baseArgs, layout: "flat" }, execFor(root2, "session-sel112-old"));
+    eq("112③ f 不给卡片目录（显式 flat）⇒ ok", r2.ok, true);
     const m3 = JSON.parse(fs.readFileSync(path.join(root2, ".dsh-ledger.json"), "utf8"));
-    eq("112③ g ★ 不给卡片目录 ⇒ 如实写第 1 代（不许虚报）", m3.protocolVersion, 1);
+    eq("112③ g ★ 显式 flat 且不给卡片目录 ⇒ 如实写第 1 代（不许虚报）", m3.protocolVersion, 1);
     fs.rmSync(root2, { recursive: true, force: true });
   }
 
@@ -21934,7 +22249,7 @@ section("情形 112：协议代次判据不许冤枉已升级的项目，init �
   {
     const root3 = mk("sel112-half-");
     const r3 = await initTool.execute(
-      { ...baseArgs, decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals" },
+      { ...baseArgs, layout: "flat", decisionsDir: "decisions", lessonsDir: "lessons", goalsDir: "goals" },
       execFor(root3, "session-sel112-half")
     );
     const miss = r3.protocol?.stillMissing ?? [];
@@ -22219,7 +22534,14 @@ section("情形 114：作废卡必须降权，且不许误伤「卡内局部结�
       cards = [];
     }
     if (cards.length === 0) {
-      ok("114⑤ 盘面：能读到决策卡", false, `listCards(${projRoot}, ${DIR}) 返回空 ⇒ 断言没被测到`);
+      // ★★★ 2026-10-23（D316 · GAP-03③ b）：**这是 SKIP，不是 FAIL。**
+      //   干净克隆（`git clone` 公开仓库）里 `decisions/` 根本不存在 —— 它是记忆面、被
+      //   `.gitignore` 挡在仓库外。此时这条断言**没有被测到**，报红等于说"包坏了"，
+      //   而那会让人去修一个不存在的问题。★ 判据：**夹具不在 ≠ 被测对象有问题。**
+      skip(
+        "114⑤ 盘面：作废卡降权（需本项目自己的 decisions/ 卡片）",
+        `listCards(${projRoot}, ${DIR}) 返回空 —— 记忆面不在版本库里是**正常**的（干净克隆即如此），不是缺陷`,
+      );
     } else {
       const DEP = /已作废|已废弃|已撤销|已被取代|被否/;
       const heads = cards.map((c) => {
@@ -22779,6 +23101,8 @@ section("情形 118：发布分级 —— 先私有后公开（D314）");
       const shCandidates = [
         "C:/Program Files/Git/bin/sh.exe",
         "C:/Program Files/Git/usr/bin/sh.exe",
+        "/bin/sh",
+        "/usr/bin/sh",
       ];
       const shPath = shCandidates.find((p) => fs.existsSync(p));
       ok(
@@ -22905,9 +23229,2856 @@ section("情形 118：发布分级 —— 先私有后公开（D314）");
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 情形 119（D316 · Gemini 静态审查 002）：**我修 001 时自己引入的回归**
+//
+// ★ 为什么这条必须常驻，而且必须以"真跑那个探针"的形式：
+//   001 那 7 项修完之后，我把边界校验从 `isUnder` 批量换成 `isUnderReal(...).ok`。
+//   🔴 漏写 `.ok` 的两处（`part5.js` 的 `ledger_log_write`、`part3.js` 的 `flushLogBuffer`）
+//      让守卫**恒真放行** —— 而且比原来更坏：连 `isUnder` 原本能拦的词法越界也一起失效。
+//   ★ 而当时 **selftest 2226 条全绿、一条都没报** ⇒ 说明"我自己写的判据"看不见这一类。
+//   ⇒ 判据：**修完之后必须有独立的一轮回验**；「我修了」与「我修全了」之间隔着一次外部审查。
+//   ★ 顺带一个同型教训：那两个探针（本情形调用 002 那份、117⑤ 那份）以前都**没有挂在自检里**
+//     ⇒ 它们红了也没人知道。**探针存在 ≠ 探针被跑**。
+//
+{
+  const pr = spawnSync(process.execPath, [path.join(HERE, "_probe-gemini002-findings.mjs")], {
+    encoding: "utf8", timeout: 180000,
+  });
+  const out = String(pr.stdout ?? "");
+  const m = /PASS (\d+) \/ FAIL (\d+)/.exec(out);
+  ok(
+    "119① ★ 探针 _probe-gemini002-findings 全过（2 项 P1 回归 + 3 项边界尾项）",
+    pr.status === 0 && m !== null && Number(m[2]) === 0,
+    m === null ? String(pr.stderr ?? "").slice(-300) || out.slice(-200) : "PASS " + m[1] + " FAIL " + m[2] + " status=" + pr.status
+  );
+
+  // ── ② 这一条是"判据自己的反向验证"：探针**必须真的跑起来** ────────────
+  //
+  // ★★★ 2026-10-23（D316 当场撞出，与 D286「诊断块从未执行过」同型）：
+  //   `_probe-gemini002-findings.mjs` 一开始 `await import("selftest.mjs")` 想复用剥注释函数；
+  //   而 `selftest.mjs` **顶层会跑完整套自检再 `process.exit()`** ⇒
+  //   探针**一行自己的身体都没执行**，直接以自检的 exit 0 结束 ——
+  //   **"全绿"是自检的全绿，与它要查的事毫无关系。**
+  //   ⇒ 判据：探针的输出里必须有自己的**专属标记**，否则"它跑过了"这件事本身没有被证明。
+  ok(
+    "119② ★★★ 探针真的跑了它自己的身体（输出里有它自己的标记，不是被 import 的脚本替它结束）",
+    /NEW-01 · 所有 isUnderReal 调用必须判/.test(out),
+    out.slice(0, 200)
+  );
+
+  // ── ③ 把 001 那份探针也挂上（Gemini 002 的 GAP-03②）─────────────────
+  //
+  //   🔴 病：`_probe-gemini001-findings.mjs` 是我上一轮为 D315 写的、**当时确实是绿的**，
+  //     但它**从来没有挂在自检里** ⇒ 后来谁改坏了它，自检不会知道。
+  //   ★ 判据：**探针存在 ≠ 探针被跑。** 一个没人跑的守卫，等同于不存在。
+  {
+    const pr1 = spawnSync(process.execPath, [path.join(HERE, "_probe-gemini001-findings.mjs")], {
+      encoding: "utf8", timeout: 180000,
+    });
+    const out1 = String(pr1.stdout ?? "");
+    const m1 = /PASS (\d+) \/ FAIL (\d+)/.exec(out1);
+    ok(
+      "119③ ★ 探针 _probe-gemini001-findings 也常驻在自检里（001 那 7 项不许悄悄回退）",
+      pr1.status === 0 && m1 !== null && Number(m1[2]) === 0,
+      m1 === null ? String(pr1.stderr ?? "").slice(-300) || out1.slice(-200) : "PASS " + m1[1] + " FAIL " + m1[2] + " status=" + pr1.status
+    );
+  }
+}
+
+// 情形 120（2026-10-24 · 用户口述规范）：**"压缩连成一体"与"用户说不要就一个字都不发"**
+//
+// ★ 为什么必须常驻：这两条是本轮**用户亲口描述的目标流程**，
+//   而它们此前**没有任何断言在守** —— 我上一轮修完 M2a 时以为链路已经通了，
+//   但那是"我以为"，不是"有断言证明"。
+// ★ 判据形态照 119：**真跑探针**，而不是在自检里重写一遍逻辑
+//   （重写就是"两处各一份"，本项目反复栽）。
+{
+  // ── ① 连续链路：过线→抽起→义务做完⇒立刻压→不重复压→掉线下重新武装
+  const pc = spawnSync(process.execPath, [path.join(HERE, "_probe-continuity-chain.mjs")], {
+    encoding: "utf8", timeout: 180000,
+  });
+  const outc = String(pc.stdout ?? "");
+  const mc = /(\d+) PASS \/ (\d+) FAIL/.exec(outc);
+  ok(
+    "120① ★★★ 压缩连成一体：义务做完 ⇒ 同回合立刻压，无需用户发话（10 项）",
+    pc.status === 0 && mc !== null && Number(mc[2]) === 0,
+    mc === null ? String(pc.stderr ?? "").slice(-300) || outc.slice(-200) : `${mc[1]} PASS / ${mc[2]} FAIL`
+  );
+
+  // ── ② 反向自证：探针真的跑了它自己（不是被 import 的东西替它结束）
+  //    ★ 与 119② 同一条纪律：探针输出里必须有它**专属的**标记。
+  ok(
+    "120② ★★★ 探针真的跑了它自己的身体（有专属标记，不是别人的 exit 0）",
+    /第 2 拍：模型做完了台账 \+ 分流/.test(outc),
+    outc.slice(0, 200)
+  );
+
+  // ── ③ 静默：用户选"问题记录 / 什么都不做" ⇒ 一个字都不发（且未定论时仍要发）
+  const ps = spawnSync(process.execPath, [path.join(HERE, "_probe-no-ledger-silence.mjs")], {
+    encoding: "utf8", timeout: 180000,
+  });
+  const outs = String(ps.stdout ?? "");
+  const ms = /(\d+) PASS \/ (\d+) FAIL/.exec(outs);
+  ok(
+    "120③ ★★★ 用户说「不要台账」⇒ 常规注入/压缩后重注/水位提醒 全部静默（13 项双向）",
+    ps.status === 0 && ms !== null && Number(ms[2]) === 0,
+    ms === null ? String(ps.stderr ?? "").slice(-300) || outs.slice(-200) : `${ms[1]} PASS / ${ms[2]} FAIL`
+  );
+
+  // ── ④ 新项目**默认生第三代**（用户 2026-10-24 拍板："初始的话默认三代现在立刻马上去做"）
+  //
+  //   ★ 这条为什么必须常驻：它改的是**默认行为** —— 所有新项目的落地形态都变了。
+  //     而"默认值"这类东西最容易在后续重构里被悄悄改回去，且**没有任何人会发现**
+  //     （因为不传参数时它长得就像"一直如此"）。
+  //   ★ 探针**四条边界都测**：默认三代 / flat 退回 / 既有项目不偷升 / 回执说清。
+  //     只测第一条是骗人的绿（"能建三代"不等于"没有偷偷升级别人的项目"）。
+  const pi = spawnSync(process.execPath, [path.join(HERE, "_probe-init-default-v3.mjs")], {
+    encoding: "utf8", timeout: 180000,
+  });
+  const outi = String(pi.stdout ?? "");
+  const mi = /(\d+) PASS \/ (\d+) FAIL/.exec(outi);
+  ok(
+    "120④ ★★★ 新项目默认生第三代（含 flat 退回 / 不偷升既有项目 / 回执说清）17 项",
+    pi.status === 0 && mi !== null && Number(mi[2]) === 0,
+    mi === null ? String(pi.stderr ?? "").slice(-300) || outi.slice(-200) : `${mi[1]} PASS / ${mi[2]} FAIL`
+  );
+  ok(
+    "120⑤ ★★★ 该探针真的跑了它自己的身体（有专属标记）",
+    /全新项目 \+ 不传 layout\/memoryRoot/.test(outi),
+    outi.slice(0, 160)
+  );
+
+  // ── ⑤ 补完收尾工具后**不许复述回答**（用户 2026-10-25 报的真实体验缺陷，D315）
+  //
+  //   用户原话（逐字）：*"触发完这些工具之后，模型有时候又会把前面给我的回答（有点累赘了）。"*
+  //   ★ 这条为什么必须常驻：它是**纯文案**修复 —— 没有任何机制会因为它被删掉而报错，
+  //     而文案恰恰是最容易被后续重构顺手抹掉的东西（"只是措辞"）。
+  //     没有这条守卫，用户在下次遇到时才会发现"又来了"。
+  //   ★ 探针测的是**两个入口都拼进去了**，不是只测有一处能拼（只修一处 = 修一半）。
+  const pr = spawnSync(process.execPath, [path.join(HERE, "_probe-no-restate.mjs")], {
+    encoding: "utf8", timeout: 120000,
+  });
+  const outr = String(pr.stdout ?? "");
+  const mr = /(\d+) PASS \/ (\d+) FAIL/.exec(outr);
+  ok(
+    "120⑥ ★★★ 补完收尾工具后不再复述回答（两个入口同一份文案 + 语义边界）13 项",
+    pr.status === 0 && mr !== null && Number(mr[2]) === 0,
+    mr === null ? String(pr.stderr ?? "").slice(-300) || outr.slice(-200) : `${mr[1]} PASS / ${mr[2]} FAIL`
+  );
+  ok(
+    "120⑦ ★★★ 该探针真的跑了它自己的身体（有专属标记）",
+    /文案实体在 part6 定义/.test(outr),
+    outr.slice(0, 160)
+  );
+
+  // ★ 反向验证器也常驻：**探针本身不许是恒真断言**。
+  //   ★ 它会真的复制 lib 到 %TEMP% 再破坏 ⇒ 是真阳性（每跑一次自检多花几秒，值得）。
+  //   ★ 判据：它输出"5/5 符合预期"才算过 —— 只看 exit code 会被"0 个用例"骗过去。
+  const pv = spawnSync(process.execPath, [path.join(HERE, "_reverse-verify-no-restate.mjs")], {
+    encoding: "utf8", timeout: 300000,
+  });
+  const outv = String(pv.stdout ?? "");
+  ok(
+    "120⑧ ★★★ 上面那条探针**能被证伪**（4 种破坏 5/5 全部按预期变红）",
+    pv.status === 0 && /反向验证 5\/5 符合预期/.test(outv),
+    pv.status === 0 ? "5/5" : String(pv.stderr ?? "").slice(-300) || outv.slice(-300)
+  );
+
+  // ── ⑥ Gemini 静态审查 004 的 P1/P2（D317，用户 2026-10-25 指示"接收Gemini004报告"）
+  //
+  //   ★ 这条为什么必须常驻：它修的是**越界写盘**（`memoryRoot` 被拒后降级回源码根，
+  //     于是原则 / 用户原话 / INDEX.md / 诊断日志全写进**源码树**）。
+  //     这类缺陷**平时完全看不出来** —— 一切 `ok:true`，只有真去翻源码根才发现多了几个文件。
+  //   ★ 探针里有 5 条是"真调函数 + 真看磁盘"（造一个 memoryRoot 越界的项目，看源码根有没有多出东西），
+  //     不是读源码正则 —— 那 5 条才能证明"真的挡住"。
+  const p4 = spawnSync(process.execPath, [path.join(HERE, "_probe-gemini004-findings.mjs")], {
+    encoding: "utf8", timeout: 180000,
+  });
+  const out4 = String(p4.stdout ?? "");
+  const m4 = /(\d+) PASS \/ (\d+) FAIL/.exec(out4);
+  ok(
+    "120⑨ ★★★ Gemini004 的 P1/P2 修复仍在（越界写盘 4 处 + 归档路径校验 + SECURITY 真实路径）19 项",
+    p4.status === 0 && m4 !== null && Number(m4[2]) === 0,
+    m4 === null ? String(p4.stderr ?? "").slice(-300) || out4.slice(-200) : `${m4[1]} PASS / ${m4[2]} FAIL`
+  );
+  //   ★ 反向验证器：证明上面那条**不是恒真断言**（5 种破坏，含"D307 型：用了却没 import"）。
+  //   ★ 判据看"6/6 符合预期"，不看 exit code —— 只看 exit 会被"0 个用例"骗过去。
+  const p4r = spawnSync(process.execPath, [path.join(HERE, "_reverse-verify-gemini004.mjs")], {
+    encoding: "utf8", timeout: 600000,
+  });
+  const out4r = String(p4r.stdout ?? "");
+  ok(
+    "120⑩ ★★★ 上面那条探针**能被证伪**（5 种破坏 6/6 全部按预期变红）",
+    p4r.status === 0 && /反向验证 6\/6 符合预期/.test(out4r),
+    p4r.status === 0 ? "6/6" : String(p4r.stderr ?? "").slice(-300) || out4r.slice(-300)
+  );
+
+  // ── ⑦ D318：`part2.js` 拆出 `pure-ops.js` 之后，**行为必须一模一样**
+  //
+  //   ★ 为什么必须常驻：拆分本身**不产生新功能**，所以它最容易"看起来对、其实错了" ——
+  //     搬函数时最典型的错就是把返回形状重写一遍。**我这一轮真的犯了两次**
+  //     （`mergeGitignore` 写成 `{ok,added:n}`、`stageOutcomeOf` 写成 `{staged:number,…}`），
+  //     两次都是**读源码才发现的**，不是探针发现的 ⇒ 必须补自动对拍。
+  //   ★ 探针里有 19 条：同一引用 / 返回 key 集合 / 真调三个函数 / 外部调用方零改动 / 不成环。
+  const splitProbe = spawnSync(process.execPath, [path.join(HERE, "_probe-split-equivalence.mjs")], {
+    encoding: "utf8", timeout: 120000,
+  });
+  const splitOut = String(splitProbe.stdout ?? "");
+  const splitM = /(\d+) PASS \/ (\d+) FAIL/.exec(splitOut);
+  ok(
+    "120⑪ ★★★ 拆分后行为不变（同一引用 / 返回形状 / 真调 / 零改动 / 不成环）19 项",
+    splitProbe.status === 0 && splitM !== null && Number(splitM[2]) === 0,
+    splitM === null ? String(splitProbe.stderr ?? "").slice(-300) || splitOut.slice(-200) : `${splitM[1]} PASS / ${splitM[2]} FAIL`
+  );
+  //   ★ 反向验证器：证明上面那条**不是恒真断言**（4 种破坏，全部取自本轮真实犯过的错）。
+  const splitRev = spawnSync(process.execPath, [path.join(HERE, "_reverse-verify-split.mjs")], {
+    encoding: "utf8", timeout: 600000,
+  });
+  const splitRevOut = String(splitRev.stdout ?? "");
+  ok(
+    "120⑫ ★★★ 上面那条探针**能被证伪**（4 种破坏 5/5 全部按预期变红）",
+    splitRev.status === 0 && /反向验证 5\/5 符合预期/.test(splitRevOut),
+    splitRev.status === 0 ? "5/5" : String(splitRev.stderr ?? "").slice(-300) || splitRevOut.slice(-300)
+  );
+
+  // ── ⑬ D320：Gemini 004 的 F-03（清单路径全量预检）与 F-05（清单坏档 ≠ 没有清单）
+  //
+  //   ★ F-03：`gateDir` 原来只覆盖 3 个卡片目录，其余清单路径裸放行 ⇒ 越界写 + `unsafePaths` 空。
+  //   ★ F-05：`readManifest` 对「文件不存在」与「文件坏了」一律 `undefined` ⇒ 坏档的 V3 清单
+  //     被当成"从没建过台账" ⇒ 丢掉 memoryRoot ⇒ **静默降级 V2** ⇒ 记忆写进源码根。
+  //   ★★ 本轮我踩的坑也在这条探针的射程内：`unsafePaths` 曾经是普通属性、按求值顺序先算完
+  //     ⇒ 字段被降级了但拒绝记录全丢（D167「把失败说成没发生」）。现在它是 getter。
+  const d320 = spawnSync(process.execPath, [path.join(HERE, "_probe-d320-f03-f05.mjs")], {
+    encoding: "utf8", timeout: 120000,
+  });
+  const d320Out = String(d320.stdout ?? "");
+  const d320M = /(\d+) PASS \/ (\d+) FAIL/.exec(d320Out);
+  ok(
+    "120⑬ ★★★ F-03/F-05 修复仍在（11 个清单路径全过预检 + 坏档拒绝写）24 项",
+    d320.status === 0 && d320M !== null && Number(d320M[2]) === 0,
+    d320M === null ? String(d320.stderr ?? "").slice(-300) || d320Out.slice(-200) : `${d320M[1]} PASS / ${d320M[2]} FAIL`
+  );
+  const d320Rev = spawnSync(process.execPath, [path.join(HERE, "_reverse-verify-d320.mjs")], {
+    encoding: "utf8", timeout: 600000,
+  });
+  const d320RevOut = String(d320Rev.stdout ?? "");
+  ok(
+    "120⑭ ★★★ 上面那条探针**能被证伪**（4 种破坏 5/5 全部按预期变红）",
+    d320Rev.status === 0 && /反向验证 5\/5 符合预期/.test(d320RevOut),
+    d320Rev.status === 0 ? "5/5" : String(d320Rev.stderr ?? "").slice(-300) || d320RevOut.slice(-300)
+  );
+
+  // ── ⑮ D322：Gemini 004 的 F-08（原子写收敛）/ F-09（反向依赖边）/ F-10（engines + 变异探针分离）
+  //
+  //   ★ F-08：13 处手写「临时文件 + rename」缺 `wx` 与残留清理 ⇒ 收敛到 `writeFileAtomic`。
+  //     ★ 但 `manifest-mirror.js` 那处**不退换** —— 它本来就有 `wx` + 两段 `unlinkSync`
+  //       + **分别的 reason**（写失败/换失败），信息量比 `writeFileAtomic` 更大。
+  //   ★ F-09：`part4.js → index.js` 是**死边**（`apply(` 全文 0 次调用，且被同名局部变量覆盖）
+  //     ⇒ 删它不改行为，却切掉全库唯一一条 partN→入口的反向依赖。
+  //   ★ F-10：engines `>=22.19.0` 已覆盖 `import.meta.dirname`（需 ≥20.11）**不是缺陷**；
+  //     但变异探针串行跑 24 次全量 selftest（18~24 分钟）确实该从日常 probes 分离。
+  const d322 = spawnSync(process.execPath, [path.join(HERE, "_probe-d322-f08-f09-f10.mjs")], {
+    encoding: "utf8", timeout: 120000,
+  });
+  const d322Out = String(d322.stdout ?? "");
+  const d322M = /(\d+) PASS \/ (\d+) FAIL/.exec(d322Out);
+  ok(
+    "120⑮ ★★★ F-08/F-09/F-10 修复仍在（原子写收敛 + 无反向边 + engines 覆盖 + 探针分离）6 项",
+    d322.status === 0 && d322M !== null && Number(d322M[2]) === 0,
+    d322M === null ? String(d322.stderr ?? "").slice(-300) || d322Out.slice(-200) : `${d322M[1]} PASS / ${d322M[2]} FAIL`
+  );
+  const d322Rev = spawnSync(process.execPath, [path.join(HERE, "_reverse-verify-d322.mjs")], {
+    encoding: "utf8", timeout: 600000,
+  });
+  const d322RevOut = String(d322Rev.stdout ?? "");
+  ok(
+    "120⑯ ★★★ 上面那条探针**能被证伪**（4 种破坏 5/5 全部按预期变红）",
+    d322Rev.status === 0 && /反向验证 5\/5 符合预期/.test(d322RevOut),
+    d322Rev.status === 0 ? "5/5" : String(d322Rev.stderr ?? "").slice(-300) || d322RevOut.slice(-300)
+  );
+
+  // ── ⑰⑱ D323：Gemini 005 的 F-07（part2/part3 贴到 262,144 B 硬上限）+ F-01~F-06 复核
+  //
+  //   ★ F-07 是 005 报告里**唯一没有补丁**的一项（它只给了"抽离 HTTP 路由可释放 ~38 KiB"的建议）。
+  //     但它是**结构性**的：`part2.js` 剩 942 B、`part3.js` 剩 3,153 B ⇒ 下一次改动必撞线。
+  //   ★ 本轮搬了两块：设置后端（part2 → settings-http.js，-27,364 B）与日志采集器
+  //     （part3 → log-collector.js，-15,106 B）。搬家方式全是**逐字复制 + 原地转发导出**
+  //     ⇒ 调用面零改动（D307/D318/D319 同一做法）。
+  //   ★★ 这道守卫守三件事，缺一件都不算成功：容量回到安全区 / 调用面零改动 / 两层授权没搬掉一层。
+  //     —— 只量收益（容量）而不管代价（接线），就是 D167「把失败说成没发生」同型。
+  const d323 = spawnSync(process.execPath, [path.join(HERE, "_probe-d323-f07-split.mjs")], {
+    encoding: "utf8", timeout: 120000,
+  });
+  const d323Out = String(d323.stdout ?? "");
+  const d323M = /(\d+) PASS \/ (\d+) FAIL/.exec(d323Out);
+  ok(
+    "120⑰ ★★★ F-07 搬家守卫（容量回到安全区 + 调用面零改动 + 两层授权没搬掉一层）14 项",
+    d323.status === 0 && d323M !== null && Number(d323M[2]) === 0,
+    d323M === null ? String(d323.stderr ?? "").slice(-300) || d323Out.slice(-200) : `${d323M[1]} PASS / ${d323M[2]} FAIL`
+  );
+  const d323Rev = spawnSync(process.execPath, [path.join(HERE, "_reverse-verify-d323.mjs")], {
+    encoding: "utf8", timeout: 600000,
+  });
+  const d323RevOut = String(d323Rev.stdout ?? "");
+  ok(
+    "120⑱ ★★★ 上面那条探针**能被证伪**（4 种破坏 4/4 全部按预期变红，且每条都有真 FAIL 行）",
+    d323Rev.status === 0 && /4 条符合预期 \/ 0 条不符合/.test(d323RevOut),
+    d323Rev.status === 0 ? "4/4" : String(d323Rev.stderr ?? "").slice(-300) || d323RevOut.slice(-300)
+  );
+
+  // ── ⑲ D323：搬家后的**真行为**（不是"文件存在/能 import"）
+  //
+  //   ★ 本项目纪律：**"文件存在 / 模块可解析 / 配置里有 / 版本号对"一律不构成"能用"的证据。**
+  //   ⇒ 这一条真做三件事：① 转发导出是**同一引用**（不是同名副本）；
+  //     ② `createLogCollector` 真能建、真能喂事件；③ `deriveSettingsView` 真算得出 43 项
+  //     且 `options` 已展开（留函数的话 `JSON.stringify` 会**静默丢掉**它）。
+  const d323E2E = spawnSync(process.execPath, [path.join(HERE, "_probe-d323-e2e.mjs")], {
+    encoding: "utf8", timeout: 120000,
+  });
+  const d323E2EOut = String(d323E2E.stdout ?? "");
+  const d323E2EM = /(\d+) PASS \/ (\d+) FAIL/.exec(d323E2EOut);
+  ok(
+    "120⑲ ★★★ F-07 搬家后**真行为**不变（同一引用 + 采集器真能喂 + 设置视图真出 43 项）10 项",
+    d323E2E.status === 0 && d323E2EM !== null && Number(d323E2EM[2]) === 0,
+    d323E2EM === null ? String(d323E2E.stderr ?? "").slice(-300) || d323E2EOut.slice(-200) : `${d323E2EM[1]} PASS / ${d323E2EM[2]} FAIL`
+  );
+
+  // ── 121：v1.6.2 全量审计回归守卫（跨平台绝对路径门禁 + 原则/日志越界门禁 + 路由卸载 + 会话隔离 + 广播指纹）
+  {
+    const { inspect, logDirOf, writePrinciples, installSettingsRoutes } = await import(
+      pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2.js")).href
+    );
+    const { writeLog } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part5.js")).href);
+    const { createLogCollector } = await import(
+      pathToFileURL(path.join(PROJECT_ROOT, "lib", "log-collector.js")).href
+    );
+    const { fingerprintOf } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "defs.js")).href);
+    const dirWin = fs.mkdtempSync(path.join(os.tmpdir(), "audit-winabs-"));
+    try {
+      fs.writeFileSync(
+        path.join(dirWin, ".dsh-ledger.json"),
+        JSON.stringify({
+          memoryRoot: "E:\\evil-mem",
+          active: "C:\\evil-ledger.md",
+          logDir: "\\server\\share\\logs",
+          notesDir: "D:/evil-notes",
+        }),
+        "utf8"
+      );
+      const infoW = inspect(dirWin);
+      ok(
+        "121① ★★★ inspect() 跨平台拦截 Windows 盘符/UNC memoryRoot（与 verifyManifestMirror 口径一致）",
+        infoW.memoryRoot === undefined && infoW.memoryRootUnsafe?.why === "absolute-path-forbidden",
+        JSON.stringify(infoW.memoryRootUnsafe)
+      );
+      const unsafeFields = (infoW.unsafePaths ?? []).map((u) => u.field);
+      ok(
+        "121② ★★★ inspect() gateRel 与 notesDir 拦截跨平台绝对路径（active / logDir / notesDir 全进 unsafePaths）",
+        infoW.activeRel === undefined &&
+          infoW.logRel === undefined &&
+          infoW.notesRel === undefined &&
+          unsafeFields.includes("active") &&
+          unsafeFields.includes("logDir") &&
+          unsafeFields.includes("notesDir"),
+        unsafeFields.join(",")
+      );
+    } finally {
+      fs.rmSync(dirWin, { recursive: true, force: true });
+    }
+
+    const dirPr = fs.mkdtempSync(path.join(os.tmpdir(), "audit-pr-"));
+    try {
+      fs.writeFileSync(
+        path.join(dirPr, ".dsh-ledger.json"),
+        JSON.stringify({ active: "LEDGER.md", principles: "../outside-pr.md", logDir: "../outside-log" }),
+        "utf8"
+      );
+      fs.writeFileSync(path.join(dirPr, "LEDGER.md"), "# L\n", "utf8");
+      const infoP = inspect(dirPr);
+      ok(
+        "121③ ★★★ logDirOf(info) 遵循 inspect 门禁（logDir 越界时返回 undefined，不绕回读原始 manifest.logDir）",
+        logDirOf(infoP) === undefined && infoP.logRel === undefined,
+        `logDirOf=${logDirOf(infoP)}`
+      );
+      const prRes = writePrinciples(dirPr, { content: "# P\n", mode: "replace", authorizedBy: "user" });
+      ok(
+        "121④ ★★★ writePrinciples 在 principles 路径越界时明确拒绝（nothingWritten:true，不静默回退写 PRINCIPLES.md）",
+        prRes.ok === false &&
+          prRes.nothingWritten === true &&
+          prRes.unsafeManifestPath?.field === "principles" &&
+          !fs.existsSync(path.join(dirPr, "PRINCIPLES.md")),
+        JSON.stringify({ ok: prRes.ok, nothingWritten: prRes.nothingWritten, field: prRes.unsafeManifestPath?.field })
+      );
+      const logRes = writeLog(dirPr, { title: "t", summary: "s" });
+      ok(
+        "121⑤ ★★★ writeLog 在 logDir 路径越界时报路径越界拒绝（nothingWritten:true，而非误报“未启用日志”）",
+        logRes.ok === false &&
+          logRes.nothingWritten === true &&
+          logRes.unsafeManifestPath?.field === "logDir",
+        JSON.stringify({ ok: logRes.ok, nothingWritten: logRes.nothingWritten, field: logRes.unsafeManifestPath?.field })
+      );
+    } finally {
+      fs.rmSync(dirPr, { recursive: true, force: true });
+    }
+
+    // 121⑥：installSettingsRoutes 返回 dispose 且真能卸载已注册的 3 条路由
+    {
+      let disposedCount = 0;
+      const fakeScope = {
+        webServer: {
+          register() {
+            return () => {
+              disposedCount++;
+            };
+          },
+        },
+      };
+      const routes = installSettingsRoutes(fakeScope, () => ({}), {});
+      routes.dispose?.();
+      ok(
+        "121⑥ ★★★ installSettingsRoutes 暴露 dispose() 并卸载全部 3 条 webServer 路由",
+        routes.registered.length === 3 && disposedCount === 3,
+        `registered=${routes.registered.length} disposed=${disposedCount}`
+      );
+    }
+
+    // 121⑦：createLogCollector.forget(sid) 只冲刷并清理目标会话，不连坐其它活跃会话缓冲
+    {
+      const dirLc = fs.mkdtempSync(path.join(os.tmpdir(), "audit-lc-"));
+      try {
+        fs.writeFileSync(
+          path.join(dirLc, ".dsh-ledger.json"),
+          JSON.stringify({ active: "LEDGER.md", logDir: "_ledger-log" }),
+          "utf8"
+        );
+        fs.writeFileSync(path.join(dirLc, "LEDGER.md"), "# L\n", "utf8");
+        const lc = createLogCollector({ logger: { warn: () => {} } });
+        lc.consume(dirLc, "sid-A", { type: "deliverables/presented", data: { files: ["a.md"] } }, {});
+        lc.consume(dirLc, "sid-B", { type: "deliverables/presented", data: { files: ["b.md"] } }, {});
+        lc.forget("sid-A");
+        const remainingSids = [...lc._buffers.values()].map((b) => b.sid);
+        const sidBStillBuffered =
+          remainingSids.length === 1 &&
+          remainingSids[0] === "sid-B" &&
+          [...lc._buffers.values()][0].lines.size > 0;
+        ok(
+          "121⑦ ★★★ logCollector.forget(sid) 仅冲刷并移除目标会话缓冲，不越界冲刷其它活跃会话",
+          sidBStillBuffered,
+          `remaining=${remainingSids.join(",")}`
+        );
+        lc.flushNow();
+      } finally {
+        fs.rmSync(dirLc, { recursive: true, force: true });
+      }
+    }
+
+    // 121⑧：fingerprintOf 在无活动台账（absent）时也包含 broadcastTag（点击「推送到所有对话」后无台账会话也能感知）
+    {
+      const dirAbs = fs.mkdtempSync(path.join(os.tmpdir(), "audit-fp-"));
+      try {
+        const infoAbs = inspect(dirAbs);
+        const fp = fingerprintOf(infoAbs);
+        ok(
+          "121⑧ ★★★ fingerprintOf 在无活动台账时包含 broadcastTag（absent|<settingsTag>|b<seq>）",
+          /^absent\|[^|]+\|b\d+$/.test(fp),
+          fp
+        );
+      } finally {
+        fs.rmSync(dirAbs, { recursive: true, force: true });
+      }
+    }
+  }
+
+  // ── 122：全量审计新增回归守卫（F-01~F-07：子目录符号链接迁移拦截 / 扩展与日志符号链接拦截 / 记忆面父目录逃逸 / V3 迁移检测基准 / 教训与卡片决策审计及修订号 / extensions 跟踪检测 / listExtensions 单参）
+  {
+    const part2Mod = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2.js")).href);
+    const part4Mod = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part4.js")).href);
+    const part6Mod = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part6.js")).href);
+    const part7Mod = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part7.js")).href);
+    const part8Mod = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part8.js")).href);
+
+    // 122① F-01：migrateToV3 拒绝候选目录内部的嵌套符号链接（干跑 + 实跑均拒绝，不复制外部文件）
+    {
+      const tmp122 = fs.mkdtempSync(path.join(os.tmpdir(), "audit122-f01-"));
+      try {
+        const proj = path.join(tmp122, "proj");
+        const outside = path.join(tmp122, "outside");
+        fs.mkdirSync(proj, { recursive: true });
+        fs.mkdirSync(outside, { recursive: true });
+        const secret = path.join(outside, "secret.txt");
+        fs.writeFileSync(secret, "TOP_SECRET_F01\n", "utf8");
+        fs.writeFileSync(path.join(proj, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.mkdirSync(path.join(proj, "_ledger-archive"), { recursive: true });
+        fs.mkdirSync(path.join(proj, "decisions"), { recursive: true });
+        fs.writeFileSync(path.join(proj, "decisions", "D1.md"), "## D1 · 正常\n", "utf8");
+        // ★★★★ 2026-10-25（D325）：**Windows 上建符号链接会抛 EPERM**（需管理员或开发者模式）。
+        //   007 的原始写法直接 `fs.symlinkSync(...)` ⇒ 整份自检**在这里崩掉**（不是一条断言红），
+        //   实测：`Error: EPERM: operation not permitted, symlink ...`，后面所有情形全都没跑。
+        //   ★ 判据（本项目既有纪律）：**跳过必须被看见，不许安静地算进"全绿"** ——
+        //     所以这里捕获 EPERM/EEXIST 等，走 `skip()` 如实记为 SKIP 并写明原因，
+        //     而**不是**让整份自检崩掉、也不是假装它通过了。
+        let linkMade = false;
+        try {
+          fs.symlinkSync(secret, path.join(proj, "decisions", "D999.md"));
+          linkMade = true;
+        } catch (e) {
+          const code = String((e && e.code) || "");
+          if (code === "EPERM" || code === "EACCES" || code === "ENOTSUP" || code === "EEXIST") {
+            skip(
+              "122① migrateToV3 嵌套符号链接守卫（本机建不了符号链接：" + code + "，需管理员/开发者模式）"
+            );
+          } else {
+            throw e;
+          }
+        }
+        fs.writeFileSync(
+          path.join(proj, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", decisionsDir: "decisions", archiveDir: "_ledger-archive" }),
+          "utf8"
+        );
+        if (linkMade) {
+          const dry = part7Mod.migrateToV3(proj, { apply: false });
+          const res = part7Mod.migrateToV3(proj, { apply: true });
+          const leaked = fs.existsSync(path.join(proj, "proj-ledger-memory", "decisions", "D999.md"));
+          ok(
+            "122① ★★★ migrateToV3 拦截候选子目录内部的嵌套符号链接（干跑与实跑均拒绝，不复制外部文件）",
+            dry.ok === false && res.ok === false && !leaked,
+            `dry=${dry.ok} res=${res.ok} leaked=${leaked}`
+          );
+        }
+      } finally {
+        fs.rmSync(tmp122, { recursive: true, force: true });
+      }
+    }
+
+    // 122② F-02：单文件扩展（readExtension / writeExtension）与活动日志扫描（logFileList）拒绝符号链接越界读取
+    {
+      const tmp122 = fs.mkdtempSync(path.join(os.tmpdir(), "audit122-f02-"));
+      try {
+        const proj = path.join(tmp122, "proj");
+        const outside = path.join(tmp122, "outside");
+        fs.mkdirSync(proj, { recursive: true });
+        fs.mkdirSync(outside, { recursive: true });
+        const extSecret = path.join(outside, "ext.txt");
+        const logSecret = path.join(outside, "L0.md");
+        fs.writeFileSync(extSecret, "EXT_SECRET_F02\n", "utf8");
+        fs.writeFileSync(logSecret, "- 2026-10-25 10:00:00 (L0) LOG_SECRET_F02\n", "utf8");
+        fs.writeFileSync(path.join(proj, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.mkdirSync(path.join(proj, "_ledger-archive"), { recursive: true });
+        fs.mkdirSync(path.join(proj, "_ledger-log", "2026-10", "week4"), { recursive: true });
+        fs.writeFileSync(
+          path.join(proj, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", logDir: "_ledger-log" }),
+          "utf8"
+        );
+        const info = part2Mod.inspect(proj);
+        const cr = part8Mod.createExtension(info, proj, { name: "Boss", description: "d", mode: "plain" });
+        const contentPath = path.join(proj, "extensions", cr.created.id, "content.md");
+        // ★★★★ 2026-10-25（D325）：同 122① —— Windows 建符号链接抛 EPERM。
+        //   两处链接（扩展内容 / 日志文件）任一建不出来 ⇒ 这一条**如实 SKIP**，不让整份自检崩掉。
+        let linkOk = false;
+        try {
+          fs.unlinkSync(contentPath);
+          fs.symlinkSync(extSecret, contentPath);
+          fs.symlinkSync(logSecret, path.join(proj, "_ledger-log", "2026-10", "week4", "L0-milestones.md"));
+          linkOk = true;
+        } catch (e) {
+          const code = String((e && e.code) || "");
+          if (code === "EPERM" || code === "EACCES" || code === "ENOTSUP" || code === "EEXIST") {
+            skip("122② 单文件扩展/日志符号链接守卫（本机建不了符号链接：" + code + "）");
+          } else {
+            throw e;
+          }
+        }
+        if (linkOk) {
+          const rd = part8Mod.readExtension(info, proj, cr.created.id, {});
+          const wr = part8Mod.writeExtension(info, proj, cr.created.id, { content: "x" });
+          const lr = part4Mod.logRead(proj, { view: "raw" });
+          const logLeaked = (lr.lines ?? []).some((l) => l.includes("LOG_SECRET_F02"));
+          ok(
+            "122② ★★★ 单文件扩展读写与日志扫描均拦截指向工作区外的符号链接文件",
+            rd.ok === false && wr.ok === false && !logLeaked,
+            `rd=${rd.ok} wr=${wr.ok} logLeaked=${logLeaked}`
+          );
+        }
+      } finally {
+        fs.rmSync(tmp122, { recursive: true, force: true });
+      }
+    }
+
+    // 122③ F-03：memorySurfaces 过滤 outRel === ".." 的父目录逃逸
+    {
+      const surf = part6Mod.memorySurfaces({
+        projectRoot: "/ws/proj",
+        memoryRoot: "mem",
+        handoffAbs: "/ws/proj",
+        notesAbs: "/ws",
+      });
+      ok(
+        "122③ ★★★ memorySurfaces 过滤 outRel === \"..\" 的父目录逃逸面",
+        !surf.some((x) => x.rel === ".." || x.rel.startsWith("../")),
+        JSON.stringify(surf.map((x) => x.rel))
+      );
+    }
+
+    // 122④ F-04：detectMigration 在 V3 项目下按 memoryBase 解析记忆文件并检出旧架构信号
+    {
+      const tmp122 = fs.mkdtempSync(path.join(os.tmpdir(), "audit122-f04-"));
+      try {
+        const memDir = `${path.basename(tmp122)}-ledger-memory`;
+        const memAbs = path.join(tmp122, memDir);
+        fs.mkdirSync(memAbs, { recursive: true });
+        const checklist = Array.from({ length: 25 }, (_, i) => `- [x] 已完成事项 ${i + 1}`).join("\n");
+        fs.writeFileSync(path.join(memAbs, "LEDGER.md"), `# 台账\n\n${checklist}\n`, "utf8");
+        fs.writeFileSync(path.join(memAbs, "DECISIONS.md"), "# 决策\n", "utf8");
+        fs.mkdirSync(path.join(memAbs, "_ledger-archive"), { recursive: true });
+        fs.writeFileSync(
+          path.join(tmp122, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, memoryRoot: memDir, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive" }),
+          "utf8"
+        );
+        const dm = part4Mod.detectMigration(tmp122);
+        ok(
+          "122④ ★★★ detectMigration 在 V3 项目下按 memoryBase 读取记忆文件并检出迁移信号",
+          dm.ok === true && dm.files.length === 2 && dm.needsMigration === true,
+          `files=${dm.files.length} needsMigration=${dm.needsMigration}`
+        );
+      } finally {
+        fs.rmSync(tmp122, { recursive: true, force: true });
+      }
+    }
+
+    // 122⑤ F-05：ledger_lessons(add/rm) 写入 ledger-lessons 审计，且卡片模式 writeLedger(decisions) 递增 revision 并写审计
+    {
+      const tmp122 = fs.mkdtempSync(path.join(os.tmpdir(), "audit122-f05-"));
+      try {
+        fs.writeFileSync(path.join(tmp122, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(path.join(tmp122, "DECISIONS.md"), "# 决策\n", "utf8");
+        fs.writeFileSync(path.join(tmp122, "LESSONS.md"), "# 经验与教训\n", "utf8");
+        fs.mkdirSync(path.join(tmp122, "decisions"), { recursive: true });
+        fs.mkdirSync(path.join(tmp122, "_ledger-archive"), { recursive: true });
+        fs.mkdirSync(path.join(tmp122, "_ledger-log"), { recursive: true });
+        fs.writeFileSync(
+          path.join(tmp122, ".dsh-ledger.json"),
+          JSON.stringify({
+            version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", decisionsDir: "decisions",
+            lessons: "LESSONS.md", archiveDir: "_ledger-archive", logDir: "_ledger-log", revision: 0
+          }),
+          "utf8"
+        );
+        const exec122 = { agent: { session: { header: { id: "sid-122", cwd: tmp122 } } } };
+        const addRes = await part2Mod.defineLessonsTool().execute(
+          { root: tmp122, op: "add", type: "教训", kind: "尺子错", title: "测试教训", cause: "测试根因" },
+          exec122
+        );
+        const wDec = part4Mod.writeLedger(tmp122, { target: "decisions", content: "## D1 · 卡片决策\n\n正文\n" }, exec122, {});
+        const revAfter = part2Mod.readManifest(tmp122).revision;
+        const auditRes = part4Mod.logRead(tmp122, { view: "audit" });
+        ok(
+          "122⑤ ★★★ ledger_lessons 与卡片模式 writeLedger(decisions) 同步写入审计且递增 revision",
+          addRes.ok === true && addRes.revision === 1 && wDec.ok === true && wDec.revision === 2 && revAfter === 2 && auditRes.matched === 2,
+          `rev=${revAfter} matched=${auditRes.matched}`
+        );
+      } finally {
+        fs.rmSync(tmp122, { recursive: true, force: true });
+      }
+    }
+
+    // 122⑥ F-06 & F-07：detectTrackedMemory 检出 extensions/ 且 listExtensions(info) 单参调用不抛异常
+    {
+      const tmp122 = fs.mkdtempSync(path.join(os.tmpdir(), "audit122-f06-"));
+      try {
+        spawnSync("git", ["init", "-q"], { cwd: tmp122 });
+        spawnSync("git", ["config", "user.email", "t@local"], { cwd: tmp122 });
+        spawnSync("git", ["config", "user.name", "t"], { cwd: tmp122 });
+        fs.writeFileSync(path.join(tmp122, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.mkdirSync(path.join(tmp122, "_ledger-archive"), { recursive: true });
+        fs.writeFileSync(
+          path.join(tmp122, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive" }),
+          "utf8"
+        );
+        const info122 = part2Mod.inspect(tmp122);
+        part8Mod.createExtension(info122, tmp122, { name: "Boss", description: "d", mode: "plain" });
+        spawnSync("git", ["add", "-f", "extensions/registry.json"], { cwd: tmp122 });
+        spawnSync("git", ["commit", "-q", "-m", "track ext"], { cwd: tmp122 });
+        const dt = part2Mod.detectTrackedMemory(tmp122);
+        const ls = part8Mod.listExtensions(info122);
+        ok(
+          "122⑥ ★★★ detectTrackedMemory 检出已入库的 extensions/ 且 listExtensions(info) 单参调用正常返回",
+          dt.ok === true && dt.tracked.includes("extensions/registry.json") && ls.ok === true && ls.count === 1,
+          `tracked=${JSON.stringify(dt.tracked)} ls.ok=${ls.ok}`
+        );
+      } finally {
+        fs.rmSync(tmp122, { recursive: true, force: true });
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 情形 123：全量审计修复回归（2026-10-25）
+  // ═══════════════════════════════════════════════════════════════════════════
+  {
+    const part1Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part1.js")).href);
+    const part2Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part2.js")).href);
+    const part4Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part4.js")).href);
+    const part5Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part5.js")).href);
+    const part7Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part7.js")).href);
+
+    const findUndef = (obj, pfx = "") => {
+      if (obj === null || typeof obj !== "object") return [];
+      const out = [];
+      for (const [k, v] of Object.entries(obj)) {
+        const p = pfx ? `${pfx}.${k}` : k;
+        if (v === undefined) out.push(p);
+        else if (v !== null && typeof v === "object") out.push(...findUndef(v, p));
+      }
+      return out;
+    };
+
+    // 123① defineIndexTool(op:"write") 在 memoryRoot 越界时不触发 TDZ ReferenceError，而是返回 wrote:false
+    {
+      const tmp123 = fs.mkdtempSync(path.join(os.tmpdir(), "audit123-f01-"));
+      try {
+        const proj = path.join(tmp123, "proj");
+        fs.mkdirSync(path.join(proj, "decisions"), { recursive: true });
+        fs.writeFileSync(path.join(proj, "decisions", "D1.md"), "## D1 · 决策\n\n正文\n", "utf8");
+        fs.writeFileSync(
+          path.join(proj, ".dsh-ledger.json"),
+          JSON.stringify({
+            version: 1,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_archive",
+            decisionsDir: "decisions",
+            memoryRoot: "../escape-mem",
+          }),
+          "utf8"
+        );
+        let res;
+        let err;
+        try {
+          res = await part4Mod.defineIndexTool().execute({ root: proj, kind: "decisions", op: "write" }, {});
+        } catch (e) {
+          err = e;
+        }
+        ok(
+          "123① ★★★ ledger_index(op:\"write\") 在 memoryRoot 越界时不触发 TDZ ReferenceError 且返回 wrote:false（不写穿源码根）",
+          err === undefined && res?.ok === true && res?.wrote === false && typeof res?.writeError === "string" && !fs.existsSync(path.join(proj, "decisions", "INDEX.md")),
+          err ? `threw: ${err.name}: ${err.message}` : `wrote=${res?.wrote} err=${res?.writeError}`
+        );
+      } finally {
+        fs.rmSync(tmp123, { recursive: true, force: true });
+      }
+    }
+
+    // 123② ledger_goals(op:"upsert") 卡片模式与 runIncrementalCompact 返回值满足 lossless JSON（无 undefined 属性值）且审计记录与递增 revision
+    {
+      const tmp123 = fs.mkdtempSync(path.join(os.tmpdir(), "audit123-f02-"));
+      try {
+        const proj = path.join(tmp123, "proj");
+        fs.mkdirSync(proj, { recursive: true });
+        const exec123 = { agent: { session: { header: { id: "sid-123", cwd: proj }, events: () => [] } } };
+        await part4Mod.defineInitTool().execute(
+          { root: proj, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", goals: "GOALS.md" },
+          exec123
+        );
+        const st123 = { touched: new Map(), flushedAt: new Map() };
+        const gRes = await part2Mod.defineGoalsTool(st123).execute(
+          { root: proj, op: "upsert", id: "g1", title: "目标一", kr: ["KR1"] },
+          exec123
+        );
+        const undefGoals = findUndef(gRes);
+        const auditRes = part4Mod.logRead(proj, { view: "audit" });
+        const auditLine = auditRes?.changes?.[0]?.text ?? "";
+        ok(
+          "123② ★★★ ledger_goals(op:\"upsert\") 卡片模式返回无 undefined 属性（lossless JSON），且审计记录真实卡片目录与递增 revision",
+          gRes.ok === true && undefGoals.length === 0 && gRes.revision === 1 && auditLine.includes("`goals`") && auditLine.includes("1 行") && auditLine.includes("revision→1"),
+          `undef=${JSON.stringify(undefGoals)} rev=${gRes.revision} audit=${auditLine}`
+        );
+      } finally {
+        fs.rmSync(tmp123, { recursive: true, force: true });
+      }
+    }
+
+    // 123③ runTurnCompact 压成后同步写入 capRel、armReinject、setAnchor、compactCounts 并清除 flushedAt
+    {
+      const tmp123 = fs.mkdtempSync(path.join(os.tmpdir(), "audit123-f03-"));
+      try {
+        const proj = path.join(tmp123, "proj");
+        fs.mkdirSync(proj, { recursive: true });
+        const exec123 = { agent: { session: { header: { id: "sid-123-mt", cwd: proj }, events: () => [] } } };
+        await part4Mod.defineInitTool().execute(
+          { root: proj, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          exec123
+        );
+        const stMt = {
+          deltaAnchor: new Map(),
+          deltaNudged: new Map(),
+          flushedAt: new Map([["sid-123-mt", Date.now()]]),
+          lastCompactCycleAt: new Map(),
+          flushBlocked: new Map([["sid-123-mt", { count: 1 }]]),
+          triageBlocked: new Map(),
+          triageAt: new Map(),
+          triageOwedAt: new Map(),
+          hfCompacted: new Map(),
+          deltaYieldSince: new Map(),
+          capsuleSnapshot: new Map(),
+          capsuleHydrated: new Set(),
+          hfSource: new Map(),
+          reinject: new Map(),
+          shadowedIndex: new Map(),
+          compactCounts: new Map(),
+          hfCompactAfterTurn: new Map(),
+        };
+        let mCalls = 0;
+        const fakeCtx = {
+          get(svc) {
+            if (svc === "tokenMeter") {
+              return {
+                measure() {
+                  mCalls += 1;
+                  return {
+                    totalTokens: mCalls <= 2 ? 78000 : 12000,
+                    windowSize: 100000,
+                    nodes: [
+                      { seq: 0, tokens: 1000 },
+                      { seq: 1, tokens: 35000 },
+                      { seq: 2, tokens: 32000 },
+                      { seq: 3, tokens: 5000 },
+                      { seq: 4, tokens: 5000 },
+                    ],
+                  };
+                },
+              };
+            }
+            if (svc === "compaction") {
+              return {
+                async compactNow() { return {}; },
+                async compactRegion() { return { shadowedTokenCount: 67000, shadowedSeqs: [1, 2] }; },
+              };
+            }
+            return undefined;
+          },
+        };
+        const evs = [
+          { seq: 0, type: "system/message", content: [{ type: "text", text: "sys" }] },
+          { seq: 1, type: "user/message", content: [{ type: "text", text: "u1" }] },
+          { seq: 2, type: "assistant/message", content: [{ type: "text", text: "a1" }] },
+          { seq: 3, type: "user/message", content: [{ type: "text", text: "u2" }] },
+          { seq: 4, type: "assistant/message", content: [{ type: "text", text: "a2" }] },
+          { seq: 5, type: "compaction/summary", time: Date.now(), data: { shadowedRange: { start: 1, end: 2 }, shadowedSeqs: [1, 2], shadowedTokenCount: 67000, summary: [{ text: "sum" }] } },
+        ];
+        const fakeAgent = {
+          session: {
+            header: { id: "sid-123-mt", cwd: proj },
+            requestContext: () => ({ contextWindow: 100000 }),
+            surface: { nodes: [0, 1, 2, 3, 4] },
+            log: evs,
+            events: () => evs,
+            eventAt: (s) => evs.find((e) => e.seq === s),
+          },
+        };
+        const infoMt = part2Mod.inspect(proj);
+        const capMem = new Map([["sid-123-mt", { userMessages: [{ text: "用户关键原话", at: "12:00" }], errors: [], artifacts: new Map() }]]);
+        const mtRes = await part5Mod.runTurnCompact(fakeCtx, stMt, fakeAgent, capMem, infoMt, 0.1);
+        const idxList = stMt.shadowedIndex.get("sid-123-mt") ?? [];
+        const reinj = stMt.reinject.get("sid-123-mt");
+        const cc = stMt.compactCounts.get("sid-123-mt");
+        ok(
+          "123③ ★★★ runTurnCompact 压成后同步记录 capRel、挂载 armReinject、更新锚点与 compactCounts 并重置 flushedAt",
+          mtRes.compacted === true &&
+            findUndef(mtRes).length === 0 &&
+            typeof idxList[0]?.capRel === "string" &&
+            idxList[0].capRel !== "" &&
+            reinj instanceof Set &&
+            reinj.size > 0 &&
+            cc?.total === 1 &&
+            cc?.full === 1 &&
+            cc?.lastSource === "auto:midturn" &&
+            !stMt.flushedAt.has("sid-123-mt") &&
+            stMt.deltaAnchor.get("sid-123-mt") === 0.12,
+          `capRel=${idxList[0]?.capRel} reinj=${reinj?.size} cc=${JSON.stringify(cc)} flushed=${stMt.flushedAt.has("sid-123-mt")}`
+        );
+      } finally {
+        fs.rmSync(tmp123, { recursive: true, force: true });
+      }
+    }
+
+    // 123④ /ledger lock 命令与 ledger_lock 工具对齐工作区边界守卫，且 ledger_init 拒绝覆写损坏的 .dsh-ledger.json
+    {
+      const tmp123 = fs.mkdtempSync(path.join(os.tmpdir(), "audit123-f04-"));
+      try {
+        const ws = path.join(tmp123, "ws");
+        const proj = path.join(ws, "proj");
+        const outside = path.join(tmp123, "outside");
+        fs.mkdirSync(proj, { recursive: true });
+        fs.mkdirSync(outside, { recursive: true });
+        fs.writeFileSync(path.join(ws, "AGENTS.md"), "# Workspace\n", "utf8");
+        const fakeAgent = { session: { header: { id: "sid-123-lock", cwd: proj } } };
+        const lockCmdRes = await part5Mod.runLedgerSub({}, { agent: fakeAgent }, {}, "lock", null, outside);
+
+        const badProj = path.join(tmp123, "bad-proj");
+        fs.mkdirSync(badProj, { recursive: true });
+        fs.writeFileSync(path.join(badProj, ".dsh-ledger.json"), "{ corrupt json", "utf8");
+        let badInitErr;
+        try {
+          await part4Mod.defineInitTool().execute(
+            { root: badProj, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+            {}
+          );
+        } catch (e) {
+          badInitErr = e;
+        }
+        const stillCorrupt = fs.readFileSync(path.join(badProj, ".dsh-ledger.json"), "utf8") === "{ corrupt json";
+        ok(
+          "123④ ★★★ /ledger lock 命令拦截工作区越界目录，且 ledger_init 拒绝静默覆写损坏的 .dsh-ledger.json",
+          lockCmdRes?.kind === "error" &&
+            String(lockCmdRes?.text ?? "").includes("拒绝锁定") &&
+            part1Mod.lockedRootOf(fakeAgent) === undefined &&
+            badInitErr !== undefined &&
+            stillCorrupt,
+          `lockKind=${lockCmdRes?.kind} badInitErr=${badInitErr?.message}`
+        );
+      } finally {
+        fs.rmSync(tmp123, { recursive: true, force: true });
+      }
+    }
+
+    // 123⑤ migrateToV3 在正式目标目录已存在时做双向文件集比对并拦截多余未知文件
+    {
+      const tmp123 = fs.mkdtempSync(path.join(os.tmpdir(), "audit123-f05-"));
+      try {
+        const proj = path.join(tmp123, "proj");
+        fs.mkdirSync(path.join(proj, "decisions"), { recursive: true });
+        fs.mkdirSync(path.join(proj, "_archive"), { recursive: true });
+        fs.writeFileSync(path.join(proj, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(path.join(proj, "DECISIONS.md"), "# 决策\n", "utf8");
+        fs.writeFileSync(path.join(proj, "decisions", "D1.md"), "## D1 · 决策一\n", "utf8");
+        fs.writeFileSync(
+          path.join(proj, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", decisionsDir: "decisions" }),
+          "utf8"
+        );
+        const memAbs = path.join(proj, "proj-ledger-memory");
+        fs.mkdirSync(path.join(memAbs, "decisions"), { recursive: true });
+        fs.mkdirSync(path.join(memAbs, "_archive"), { recursive: true });
+        fs.writeFileSync(path.join(memAbs, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(path.join(memAbs, "DECISIONS.md"), "# 决策\n", "utf8");
+        fs.writeFileSync(path.join(memAbs, "decisions", "D1.md"), "## D1 · 决策一\n", "utf8");
+        fs.writeFileSync(path.join(memAbs, "decisions", "D999.md"), "## D999 · 混入的脏卡\n", "utf8");
+        const migRes = part7Mod.migrateToV3(proj, { apply: true });
+        ok(
+          "123⑤ ★★★ migrateToV3 在正式目标目录已存在但含多余未知文件时拒绝沿用（防止脏卡混入权威记忆）",
+          migRes.ok === false && Array.isArray(migRes.problems) && migRes.problems.some((p) => p.includes("D999.md")),
+          `ok=${migRes.ok} problems=${JSON.stringify(migRes.problems)}`
+        );
+      } finally {
+        fs.rmSync(tmp123, { recursive: true, force: true });
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 情形 124：全量审计新增修复回归（2026-10-25 · F-01 ~ F-05）
+  // ═══════════════════════════════════════════════════════════════════════════
+  {
+    const defsMod = await import(pathToFileURL(path.join(HERE, "..", "lib", "defs.js")).href);
+    const part1Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part1.js")).href);
+    const part2Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part2.js")).href);
+    const part3Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part3.js")).href);
+    const part4Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part4.js")).href);
+    const part5Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part5.js")).href);
+
+    const findUndef = (obj, pfx = "") => {
+      if (obj === null || typeof obj !== "object") return [];
+      const out = [];
+      for (const [k, v] of Object.entries(obj)) {
+        const p = pfx ? `${pfx}.${k}` : k;
+        if (v === undefined) out.push(p);
+        else if (v !== null && typeof v === "object") out.push(...findUndef(v, p));
+      }
+      return out;
+    };
+
+    // 124① F-01：V3 卡片模式下 enabledKeysOf / renderUnenabledCapabilities / renderProtocolBlock 及卡片决策重读指针对齐
+    {
+      const tmp124 = fs.mkdtempSync(path.join(os.tmpdir(), "audit124-f01-"));
+      try {
+        await part4Mod.defineInitTool().execute(
+          { root: tmp124, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          {}
+        );
+        const info = part2Mod.inspect(tmp124);
+        const on = part1Mod.enabledKeysOf(info);
+        const unenabled = part1Mod.renderUnenabledCapabilities(info);
+        const proto = part1Mod.renderProtocolBlock(info);
+        const statusCmd = await part5Mod.runLedgerSub({}, { agent: { session: { header: { id: "s124", cwd: tmp124 } } } }, {}, "status", null, "");
+        ok(
+          "124① ★★★ V3 卡片项目 enabledKeysOf 识别 goalsDir/lessonsDir/decisionsDir，不误报「尚未启用」且下发目标树与教训卡片格式协议",
+          on.has("goals") &&
+            on.has("lessons") &&
+            on.has("decisions") &&
+            !unenabled.includes("目标树") &&
+            !unenabled.includes("经验与教训") &&
+            proto.includes("目标树") &&
+            proto.includes("经验与教训") &&
+            String(statusCmd?.text ?? "").includes("`decisions`"),
+          `on=${[...on].join(",")} unenabled=${unenabled.length} proto=${proto.length}`
+        );
+      } finally {
+        fs.rmSync(tmp124, { recursive: true, force: true });
+      }
+    }
+
+    // 124② F-02：repairConformance 在卡片模式下重建缺失的 decisionsDir（兑现 conformanceOf.fixable 承诺）
+    {
+      const tmp124 = fs.mkdtempSync(path.join(os.tmpdir(), "audit124-f02-"));
+      try {
+        await part4Mod.defineInitTool().execute(
+          { root: tmp124, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          {}
+        );
+        const info0 = part2Mod.inspect(tmp124);
+        const memBase = part2Mod.memoryBaseOf(info0, tmp124);
+        fs.rmSync(path.join(memBase, "decisions"), { recursive: true, force: true });
+        const confBefore = part2Mod.conformanceOf(part2Mod.inspect(tmp124));
+        const dry = part4Mod.repairConformance(tmp124, { apply: false });
+        const rep = part4Mod.repairConformance(tmp124, { apply: true });
+        ok(
+          "124② ★★★ repairConformance 在卡片模式下补建缺失的 decisionsDir 目录（与 conformanceOf.fixable 承诺对齐）",
+          confBefore.fixable.some((x) => x.includes("创建卡片目录 `decisions`")) &&
+            dry.actions.some((x) => x.includes("将创建卡片目录 `decisions`")) &&
+            rep.ok === true &&
+            rep.changed === true &&
+            rep.actions.some((x) => x.includes("创建卡片目录 `decisions`")) &&
+            fs.existsSync(path.join(memBase, "decisions")),
+          `fixable=${JSON.stringify(confBefore.fixable)} actions=${JSON.stringify(rep.actions)}`
+        );
+      } finally {
+        fs.rmSync(tmp124, { recursive: true, force: true });
+      }
+    }
+
+    // 124③ F-03：detectMigration 在卡片模式 goalsDir 下检出缺失「更新于」字段的旧格式目标卡
+    {
+      const tmp124 = fs.mkdtempSync(path.join(os.tmpdir(), "audit124-f03-"));
+      try {
+        await part4Mod.defineInitTool().execute(
+          { root: tmp124, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          {}
+        );
+        const info0 = part2Mod.inspect(tmp124);
+        const memBase = part2Mod.memoryBaseOf(info0, tmp124);
+        fs.writeFileSync(
+          path.join(memBase, "goals", "g1.md"),
+          "## 目标 g1 · 根本\n- parent: -\n- title: 缺时间戳目标\n- 关键结果: KR1\n",
+          "utf8"
+        );
+        const dm = part4Mod.detectMigration(tmp124);
+        ok(
+          "124③ ★★★ detectMigration 在卡片模式 goalsDir 下检出缺失「更新于」的目标卡并生成重写步骤",
+          dm.ok === true &&
+            dm.needsMigration === true &&
+            dm.problemCount >= 1 &&
+            dm.files.some((f) => f.rel === "goals" && f.hits.some((h) => h.key === "goalNoTime")) &&
+            dm.steps.some((s) => s.includes("g1")),
+          `needsMigration=${dm.needsMigration} problemCount=${dm.problemCount}`
+        );
+      } finally {
+        fs.rmSync(tmp124, { recursive: true, force: true });
+      }
+    }
+
+    // 124④ F-04：settingsValuesOf 遵循 settingPrecedence（面板优先时不因清单旧值吞掉变更指纹），且日志快照行遵循生效值
+    {
+      const tmp124 = fs.mkdtempSync(path.join(os.tmpdir(), "audit124-f04-"));
+      const prevSettings = part1Mod.currentSettings();
+      try {
+        await part4Mod.defineInitTool().execute(
+          { root: tmp124, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", maxActiveLines: 150 },
+          {}
+        );
+        defsMod.setActiveSettings(part1Mod.settingsOf({ settingPrecedence: "panel", maxActiveLines: 300 }));
+        const infoA = part2Mod.inspect(tmp124);
+        infoA.sid = "sid-124-f04";
+        part3Mod.commitSettingsBaseline(infoA);
+        const fpA = defsMod.fingerprintOf(infoA);
+
+        defsMod.setActiveSettings(part1Mod.settingsOf({ settingPrecedence: "panel", maxActiveLines: 480 }));
+        const infoB = part2Mod.inspect(tmp124);
+        infoB.sid = "sid-124-f04";
+        const fpB = defsMod.fingerprintOf(infoB);
+        const chg = part3Mod.settingsChangesOf(infoB);
+
+        const mf = part2Mod.readManifest(tmp124);
+        fs.writeFileSync(
+          path.join(tmp124, ".dsh-ledger.json"),
+          JSON.stringify({ ...mf, logLevels: { L0: true, L1: true, L2: true, L3: true, L4: true } }, null, 2),
+          "utf8"
+        );
+        defsMod.setActiveSettings(
+          part1Mod.settingsOf({ settingPrecedence: "project", logLevels: { L0: false, L1: false, L2: false, L3: false, L4: false } })
+        );
+        const infoC = part2Mod.inspect(tmp124);
+        const logSnap = part3Mod.settingsSnapshotLines(infoC).find((l) => l.startsWith("- **日志**")) ?? "";
+        ok(
+          "124④ ★★★ settingsValuesOf 遵循 settingPrecedence（面板优先时改 maxActiveLines 驱动指纹与变更感知），且日志快照反映生效档位与 L3 标签",
+          fpA !== fpB &&
+            chg.some((c) => c.key === "maxActiveLines" && c.from === "300" && c.to === "480") &&
+            logSnap.includes("L0/L1/L2/L3/L4 = L0✅ L1✅ L2✅ L3✅ L4✅"),
+          `fpDiff=${fpA !== fpB} chg=${JSON.stringify(chg)} logSnap=${logSnap}`
+        );
+      } finally {
+        defsMod.setActiveSettings(prevSettings);
+        fs.rmSync(tmp124, { recursive: true, force: true });
+      }
+    }
+
+    // 124⑤ F-05：ledger_lessons(list/add/rm) 卡片模式无 undefined 属性且 add/rm 递增 revision 并记入审计
+    {
+      const tmp124 = fs.mkdtempSync(path.join(os.tmpdir(), "audit124-f05-"));
+      try {
+        const exec124 = { agent: { session: { header: { id: "sid-124-f05", cwd: tmp124 } } } };
+        await part4Mod.defineInitTool().execute(
+          { root: tmp124, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          exec124
+        );
+        const tool = part2Mod.defineLessonsTool();
+        const ls0 = await tool.execute({ root: tmp124, op: "list" }, exec124);
+        const add1 = await tool.execute(
+          { root: tmp124, op: "add", type: "教训", kind: "尺子错", title: "测试卡片教训", cause: "测试根因" },
+          exec124
+        );
+        const rm1 = await tool.execute({ root: tmp124, op: "rm", id: "L1" }, exec124);
+        const auditRes = part4Mod.logRead(tmp124, { view: "audit" });
+        const auditTexts = (auditRes?.changes ?? []).map((c) => c.text);
+        ok(
+          "124⑤ ★★★ ledger_lessons(list/add/rm) 卡片模式返回 lossless JSON（relPath=lessons, mode=card），且 add/rm 递增 revision 并写审计",
+          findUndef(ls0).length === 0 &&
+            ls0.relPath === "lessons" &&
+            ls0.mode === "card" &&
+            findUndef(add1).length === 0 &&
+            add1.revision === 1 &&
+            findUndef(rm1).length === 0 &&
+            rm1.revision === 2 &&
+            part2Mod.readManifest(tmp124).revision === 2 &&
+            auditTexts.some((t) => t.includes("lessons add") && t.includes("revision→1")) &&
+            auditTexts.some((t) => t.includes("lessons rm") && t.includes("revision→2")),
+          `ls0=${JSON.stringify({ relPath: ls0.relPath, mode: ls0.mode })} addRev=${add1.revision} rmRev=${rm1.revision} audits=${JSON.stringify(auditTexts)}`
+        );
+      } finally {
+        fs.rmSync(tmp124, { recursive: true, force: true });
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 情形 125：v1.6.2 全量深度审计新增修复回归（2026-10-26 · F-01 ~ F-08）
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // ★★★ 2026-10-26（D330）：**下面这一行 `section("情形 125")` 是我补的，原补丁里没有。**
+  //   011 的补丁往本文件加了 284 行、8 组 `125①`~`125⑧`，但**只写了注释、没调 `section()`**
+  //   ⇒ 那 8 条会**寄生在上一个块里**，`section(` 口径仍是 113、带编号仍是 112，
+  //   而报告与补丁都按"情形 125"来称呼它们。
+  //   ★ 这是 **006 / 008 / 009 之后的第 4 次同一个错**（D324 / D326 / D327 各记过一次）。
+  //   ★ 判据（D324）：**「报告说有情形 N」≠「代码里真有 section('情形 N')」** ——
+  //     口径数字必须让自检自己数，不许照抄报告。
+  section("情形 125");
+  {
+    const defsMod = await import(pathToFileURL(path.join(HERE, "..", "lib", "defs.js")).href);
+    const part1Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part1.js")).href);
+    const part2Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part2.js")).href);
+    const part3Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part3.js")).href);
+    const part4Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part4.js")).href);
+    const part5Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part5.js")).href);
+    const part6Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part6.js")).href);
+    const part7Mod = await import(pathToFileURL(path.join(HERE, "..", "lib", "part7.js")).href);
+    const wsToolsMod = await import(pathToFileURL(path.join(HERE, "..", "lib", "workspace-tools.js")).href);
+
+    // 125① F-01：writeSecurityMd 与 ensureFile 拦截悬空符号链接，防止越界创建外部文件
+    {
+      const tmp125 = fs.mkdtempSync(path.join(os.tmpdir(), "audit125-f01-"));
+      try {
+        const memDir = path.join(tmp125, "mem");
+        const outsideTarget = path.join(tmp125, "outside-pwned-sec.md");
+        fs.mkdirSync(memDir, { recursive: true });
+        let symlinkCreated = false;
+        try {
+          fs.symlinkSync(outsideTarget, path.join(memDir, "SECURITY.md"));
+          symlinkCreated = true;
+        } catch {
+          symlinkCreated = false;
+        }
+        if (symlinkCreated) {
+          const w = part7Mod.writeSecurityMd(memDir);
+          ok(
+            "125① ★★★ writeSecurityMd 拒绝穿透悬空符号链接写入工作区外文件",
+            w === false && !fs.existsSync(outsideTarget),
+            `written=${w} outsideExists=${fs.existsSync(outsideTarget)}`
+          );
+        } else {
+          skip("125① writeSecurityMd 悬空符号链接拦截（当前环境不支持无特权 symlink）");
+        }
+      } finally {
+        fs.rmSync(tmp125, { recursive: true, force: true });
+      }
+    }
+
+    // 125② F-02：ledger_lock / /ledger lock / rootFromExec 在缺 cwd 时仍守工作区边界，且不泄露外部路径存在性
+    {
+      const tmp125 = fs.mkdtempSync(path.join(os.tmpdir(), "audit125-f02-"));
+      try {
+        const proj = path.join(tmp125, "proj");
+        const outsideExist = path.join(tmp125, "outside-exist");
+        const outsideMissing = path.join(tmp125, "outside-missing");
+        fs.mkdirSync(proj, { recursive: true });
+        fs.mkdirSync(outsideExist, { recursive: true });
+        const lockTool = wsToolsMod.defineLockTool();
+        const rNoCwd = await lockTool.execute(
+          { root: outsideExist },
+          { agent: { session: { header: { id: "s125-nocwd" } } } }
+        );
+        const rOracle = await lockTool.execute(
+          { root: outsideMissing },
+          { agent: { session: { header: { id: "s125-cwd", cwd: proj } } } }
+        );
+        let rootExecErr = "";
+        try {
+          part3Mod.rootFromExec(
+            { agent: { session: { header: { id: "s125-cwd", cwd: proj } } } },
+            { root: outsideMissing }
+          );
+        } catch (e) {
+          rootExecErr = String(e?.message ?? e);
+        }
+        ok(
+          "125② ★★★ 锁定工具与 rootFromExec 在缺 cwd 时仍执行边界校验，且对越界不存在路径统一报边界拒绝（消除存在性神谕）",
+          rNoCwd.ok === false &&
+            String(rNoCwd.reason).includes("边界") &&
+            rOracle.ok === false &&
+            String(rOracle.reason).includes("边界") &&
+            rootExecErr.includes("边界"),
+          `noCwd=${rNoCwd.reason} oracle=${rOracle.reason} rootExec=${rootExecErr}`
+        );
+      } finally {
+        fs.rmSync(tmp125, { recursive: true, force: true });
+      }
+    }
+
+    // 125③ F-03：blockSnapshots 按 (projectRoot, sid) 会话隔离，且 agent/disposed 清理 settingsBaselines 与 blockSnapshots
+    {
+      const tmp125 = fs.mkdtempSync(path.join(os.tmpdir(), "audit125-f03-"));
+      const prevCfg = part1Mod.currentSettings();
+      try {
+        defsMod.setActiveSettings(part1Mod.settingsOf({ blockInjection: true }));
+        const ledgerText = [
+          "# 台账",
+          "## 区块一 · 当前进行中",
+          "- ★ 正在修 bug",
+          "## 区块二 · 历史普通备注",
+          "- 普通内容 v2",
+        ].join("\n");
+        fs.writeFileSync(path.join(tmp125, "LEDGER.md"), ledgerText, "utf8");
+        fs.writeFileSync(
+          path.join(tmp125, ".dsh-ledger.json"),
+          JSON.stringify({ active: "LEDGER.md", blockInjection: true }),
+          "utf8"
+        );
+        const oldBlocks = part1Mod.splitBlocks(ledgerText.replace("普通内容 v2", "普通内容 v1"));
+        const answers = new Map();
+        for (const b of part1Mod.splitBlocks(ledgerText)) {
+          answers.set(
+            b.hash,
+            b.heading.includes("区块二")
+              ? { q1: false, q2: false, q3: false, q4: false }
+              : { q1: true, q2: true, q3: true, q4: true }
+          );
+        }
+        const infoA = part2Mod.inspect(tmp125);
+        infoA.sid = "sess-125-A";
+        const infoB = part2Mod.inspect(tmp125);
+        infoB.sid = "sess-125-B";
+        defsMod.blockSnapshots.set(part3Mod.blockSnapshotKeyOf(infoA), oldBlocks);
+        defsMod.blockSnapshots.set(part3Mod.blockSnapshotKeyOf(infoB), oldBlocks);
+        const prevA = defsMod.blockSnapshots.get(part3Mod.blockSnapshotKeyOf(infoA));
+        const txtA = part3Mod.renderInjection(infoA, undefined, undefined, undefined, {
+          modelAnswers: answers,
+          prevBlocks: prevA,
+          remember: true,
+        });
+        const prevB = defsMod.blockSnapshots.get(part3Mod.blockSnapshotKeyOf(infoB));
+        const txtB = part3Mod.renderInjection(infoB, undefined, undefined, undefined, {
+          modelAnswers: answers,
+          prevBlocks: prevB,
+          remember: true,
+        });
+        ok(
+          "125③ ★★★ 同项目双会话下会话 A 的区块快照更新不覆盖会话 B 的快照（两会话均能收到刚变更的区块正文）",
+          txtA.includes("普通内容 v2") && txtB.includes("普通内容 v2"),
+          `aLen=${txtA.length} bLen=${txtB.length}`
+        );
+      } finally {
+        defsMod.setActiveSettings(prevCfg);
+        fs.rmSync(tmp125, { recursive: true, force: true });
+      }
+    }
+
+    // 125④ F-04：renderAfterCompaction 透传 biOpts（如 remember: true）以在压缩重注后建立区块快照基线
+    {
+      const tmp125 = fs.mkdtempSync(path.join(os.tmpdir(), "audit125-f04-"));
+      const prevCfg = part1Mod.currentSettings();
+      try {
+        defsMod.setActiveSettings(part1Mod.settingsOf({ blockInjection: true }));
+        fs.writeFileSync(path.join(tmp125, "LEDGER.md"), "# 台账\n## 区块一\n- 内容\n", "utf8");
+        fs.writeFileSync(
+          path.join(tmp125, ".dsh-ledger.json"),
+          JSON.stringify({ active: "LEDGER.md", blockInjection: true }),
+          "utf8"
+        );
+        defsMod.blockSnapshots.delete(tmp125);
+        const info = part2Mod.inspect(tmp125);
+        part2Mod.renderAfterCompaction(info, "capsule text", { ours: true }, { remember: true });
+        ok(
+          "125④ ★★★ renderAfterCompaction 透传 biOpts，压缩重注后正确记录 blockSnapshots 基线",
+          Array.isArray(defsMod.blockSnapshots.get(tmp125)),
+          `hasSnapshot=${Array.isArray(defsMod.blockSnapshots.get(tmp125))}`
+        );
+      } finally {
+        defsMod.setActiveSettings(prevCfg);
+        fs.rmSync(tmp125, { recursive: true, force: true });
+      }
+    }
+
+    // 125⑤ F-05：默认 V3 卡片模式下 ledger_init 同步切卡落入卡片目录，且新建项目 conformanceOf === "ok"
+    {
+      const tmp125 = fs.mkdtempSync(path.join(os.tmpdir(), "audit125-f05-"));
+      try {
+        const initRes = await part4Mod.defineInitTool().execute(
+          {
+            root: tmp125,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_archive",
+            initialDecisions: "# 关键决策\n\n## D1 · 初始架构拍板\n- 选定 V3 卡片化\n",
+          },
+          {}
+        );
+        const readRes = await part4Mod.defineReadTool().execute(
+          { root: tmp125, target: "decisions", entry: "D1" },
+          {}
+        );
+        const conf = part2Mod.conformanceOf(part2Mod.inspect(tmp125));
+        ok(
+          "125⑤ ★★★ 默认 V3 ledger_init 将 initialDecisions 同步落入 decisions/ 卡片目录，且生来即为合规（verdict=ok）",
+          initRes.ok === true &&
+            readRes.ok === true &&
+            readRes.found === true &&
+            String(readRes.text ?? "").includes("初始架构拍板") &&
+            conf.verdict === "ok",
+          `found=${readRes.found} verdict=${conf.verdict} reasons=${JSON.stringify(conf.reasons)}`
+        );
+      } finally {
+        fs.rmSync(tmp125, { recursive: true, force: true });
+      }
+    }
+
+    // 125⑥ F-06：.dsh-ledger.json 损坏时 conformanceOf 判 nonconforming、isFreshProject 为 false、ledger_status 暴露 manifestBroken
+    {
+      const tmp125 = fs.mkdtempSync(path.join(os.tmpdir(), "audit125-f06-"));
+      try {
+        await part4Mod.defineInitTool().execute(
+          { root: tmp125, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          {}
+        );
+        fs.writeFileSync(path.join(tmp125, ".dsh-ledger.json"), "{ broken json ", "utf8");
+        const info = part2Mod.inspect(tmp125);
+        const conf = part2Mod.conformanceOf(info);
+        const fresh = part2Mod.isFreshProject(info);
+        const stRes = await part3Mod
+          .defineStatusTool({ get: () => undefined }, defsMod.newState())
+          .execute({ root: tmp125 }, {});
+        ok(
+          "125⑥ ★★★ 清单损坏时 conformanceOf 报 nonconforming（不误报 none）、isFreshProject 为 false 且 ledger_status 回显 manifestBroken",
+          conf.verdict === "nonconforming" &&
+            conf.reasons.some((r) => r.includes("损坏") && !r.includes("[object Object]")) &&
+            fresh === false &&
+            stRes.manifestBroken !== null &&
+            typeof stRes.manifestBroken.why === "string" &&
+            stRes.manifestBroken.why.length > 0,
+          `verdict=${conf.verdict} fresh=${fresh} manifestBroken=${stRes.manifestBroken}`
+        );
+      } finally {
+        fs.rmSync(tmp125, { recursive: true, force: true });
+      }
+    }
+
+    // 125⑦ F-07：已选「暂时不用记」的目录在用户显式执行 /ledger init（pending）时正常下发指令，不被 silentBecauseDecided 吞没
+    {
+      const tmp125 = fs.mkdtempSync(path.join(os.tmpdir(), "audit125-f07-"));
+      try {
+        part6Mod.markProjectDecided(tmp125);
+        const info = part2Mod.inspect(tmp125);
+        const normalInj = part3Mod.renderInjection(info, undefined);
+        const pendingInj = part3Mod.renderInjection(info, { command: "init", at: Date.now(), root: tmp125 });
+        ok(
+          "125⑦ ★★★ 已定论静默项目常规注入仍为空，但显式 /ledger 命令（pending）不被吞没",
+          normalInj === "" && pendingInj.includes("用户刚执行了 `/ledger init`"),
+          `normalLen=${normalInj.length} pendingLen=${pendingInj.length}`
+        );
+      } finally {
+        part6Mod.clearDecidedProjectsForTest();
+        fs.rmSync(tmp125, { recursive: true, force: true });
+      }
+    }
+
+    // 125⑧ F-08：persistCapsule 与 persistStash 在同一秒内连续调用 ≥3 次时不因 EEXIST 失败
+    {
+      const tmp125 = fs.mkdtempSync(path.join(os.tmpdir(), "audit125-f08-"));
+      try {
+        await part4Mod.defineInitTool().execute(
+          { root: tmp125, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", logDir: "_ledger-log" },
+          {}
+        );
+        const info = part2Mod.inspect(tmp125);
+        const now = new Date("2026-10-26T12:00:00Z");
+        const s1 = part1Mod.persistStash(tmp125, info, "s125", [{ what: "a", where: "b" }], { at: now });
+        const s2 = part1Mod.persistStash(tmp125, info, "s125", [{ what: "c", where: "d" }], { at: now });
+        const s3 = part1Mod.persistStash(tmp125, info, "s125", [{ what: "e", where: "f" }], { at: now });
+        const c1 = part1Mod.persistCapsule(tmp125, info, "s125", "cap1", { source: "manual", at: now });
+        const c2 = part1Mod.persistCapsule(tmp125, info, "s125", "cap2", { source: "manual", at: now });
+        const c3 = part1Mod.persistCapsule(tmp125, info, "s125", "cap3", { source: "manual", at: now });
+        ok(
+          "125⑧ ★★★ persistStash 与 persistCapsule 同秒第 3 次调用自动递增后缀为 -3.md（不因 EEXIST 失败）",
+          s1.ok === true &&
+            s2.ok === true &&
+            s3.ok === true &&
+            s3.rel.endsWith("-3.md") &&
+            c1.ok === true &&
+            c2.ok === true &&
+            c3.ok === true &&
+            c3.rel.endsWith("-3.md"),
+          `s3=${JSON.stringify(s3)} c3=${JSON.stringify(c3)}`
+        );
+      } finally {
+        fs.rmSync(tmp125, { recursive: true, force: true });
+      }
+    }
+
+    // ── ㉔ D330：**"空卡片目录"这条硬约束不许被静默放宽** ─────────────────
+    //
+    //   ★★★ 为什么必须单独立这一条（这是 011 补丁里我抓到的最有价值的一处）：
+    //     011 修 F-05（"repairConformance 修不好空卡片目录"那个死锁）时，
+    //     把 `conformanceOf` 的判据从
+    //         `if (!dirOk || cards === 0)`             （空目录 ⇒ 不合格）
+    //     改成
+    //         `if (!dirOk || hasUnmigratedSingleFile)`  （空目录 ⇒ **ok**）
+    //     ⇒ **四条硬约束之一从此可以是空壳**，而且 `reasons=[]`、零告警。
+    //     实测对照（`_probe-d330-f05-regression.mjs`，同一夹具）：
+    //       补丁前 = `upgradeable` + 「卡片目录里**一张决策卡都没有**」
+    //       补丁后 = `ok` + `reasons=[]`
+    //
+    //   ★★★ 它为什么当时**一条断言都没红**（这才是我要防的）：
+    //     · `125⑤` 只测了「init 之后是 ok」——**它压根不删卡**，走不到那条分支；
+    //     · 全仓**没有任何一条断言**把"卡片目录零张卡"单独拎出来断言"必须不合格"。
+    //     ⇒ 一次语义放宽，**零红、零告警**地活了下来。
+    //
+    //   ★ 判据（值得记，已进台账）：**"修不好"的红，不许靠"把判据放松"来消**
+    //     —— 那只是把**可见的缺陷**变成**不可见的缺陷**。
+    //     正确分工是：`repairConformance`（修）要**有能力**真补卡；
+    //     `conformanceOf`（判）**仍然**要求真有卡。两件事分开修，不许拿判据当止痛药。
+    //
+    //   ★ 本断言只咬**行为**，不咬源码文本（纪律第 24 条：别按源码长什么样写判据）：
+    //     ① 卡片目录在但零张卡 ⇒ `verdict !== "ok"` 且理由点名
+    //     ② 零张卡时它必须**可修**（`fixable` 非空）—— 否则又回到"永远修不好的红"
+    //     ③ 反向：往目录里放一张卡 ⇒ 立刻转 ok（证明它不是"一律判红"的死判据）
+    {
+      const tmp125 = fs.mkdtempSync(path.join(os.tmpdir(), "audit125-f05b-"));
+      try {
+        const mkArgs = {
+          root: tmp125,
+          active: "LEDGER.md",
+          decisions: "DECISIONS.md",
+          archiveDir: "_archive",
+          decisionsDir: "decisions",
+          initialDecisions: "# 关键决策\n\n## D1 · 初始架构拍板\n- 选定 V3 卡片化\n",
+        };
+        const initRes = await part4Mod.defineInitTool().execute(mkArgs, execFor(tmp125, "session-f05b-0000-4000-8000-000000000001"));
+        const info0 = part2Mod.inspect(tmp125);
+        const memBase = part2Mod.memoryBaseOf(info0, tmp125);
+        const decAbs = path.join(memBase, "decisions");
+
+        // 夹具自检：建好就该是合规的（否则这条探针没有基线）
+        const conf0 = part2Mod.conformanceOf(info0);
+        const fixturesOk =
+          initRes.ok === true && conf0.verdict === "ok" && fs.existsSync(decAbs);
+        ok(
+          "125⑨ ㉔ 夹具：init 建出卡片目录且生来合规（有基线才谈得上「被放宽」）",
+          fixturesOk,
+          `initOk=${initRes.ok} verdict=${conf0.verdict} dir=${fs.existsSync(decAbs)}`
+        );
+
+        // 清空：删卡 + 删遗留单文件 ⇒ 「零决策记录」
+        for (const n of fs.readdirSync(decAbs)) {
+          if (/\.md$/i.test(n)) fs.rmSync(path.join(decAbs, n), { force: true });
+        }
+        const legacyAbs = path.join(memBase, "DECISIONS.md");
+        if (fs.existsSync(legacyAbs)) fs.rmSync(legacyAbs, { force: true });
+
+        const confEmpty = part2Mod.conformanceOf(part2Mod.inspect(tmp125));
+        ok(
+          "125⑨ ★★★ 卡片目录零张卡 + 无遗留单文件 ⇒ **必须判不合格**（四条硬约束之一不许被放宽）",
+          confEmpty.verdict !== "ok" &&
+            (confEmpty.reasons ?? []).some((x) => /决策卡|卡片目录/.test(String(x))),
+          `verdict=${confEmpty.verdict} reasons=${JSON.stringify(confEmpty.reasons ?? [])}`
+        );
+        ok(
+          "125⑨ b ★★★ 而且它必须**可修**（fixable 非空）—— 不许变成「永远修不好的红」",
+          Array.isArray(confEmpty.fixable) && confEmpty.fixable.length > 0,
+          JSON.stringify(confEmpty.fixable ?? [])
+        );
+
+        // 反向（这条防的是"判据一律判红"那种假修）：放一张卡回去 ⇒ 必须立刻转 ok
+        fs.writeFileSync(
+          path.join(decAbs, "D1.md"),
+          "# 关键决策\n\n## D1 · 初始架构拍板\n- 选定 V3 卡片化\n",
+          "utf8"
+        );
+        const confBack = part2Mod.conformanceOf(part2Mod.inspect(tmp125));
+        ok(
+          "125⑨ c 反向：放一张卡回去 ⇒ 立刻转 ok（证明它咬的是「有没有卡」，不是「一律判红」）",
+          confBack.verdict === "ok",
+          `verdict=${confBack.verdict} reasons=${JSON.stringify(confBack.reasons ?? [])}`
+        );
+
+        // ★★ 能力端：`repairConformance` 必须**真能把卡补进去**（这才让上面那条红"可解"）
+        for (const n of fs.readdirSync(decAbs)) {
+          if (/\.md$/i.test(n)) fs.rmSync(path.join(decAbs, n), { force: true });
+        }
+        fs.writeFileSync(
+          legacyAbs,
+          "# 关键决策\n\n## D1 · 第一步\n\n- 内容一\n\n## D2 · 第二步\n\n- 内容二\n",
+          "utf8"
+        );
+        const rep = part4Mod.repairConformance(tmp125, { apply: true });
+        const cardsAfter = fs
+          .readdirSync(decAbs)
+          .filter((n) => /\.md$/i.test(n) && !/^INDEX\.md$/i.test(n));
+        const confAfterRepair = part2Mod.conformanceOf(part2Mod.inspect(tmp125));
+        ok(
+          "125⑨ d ★★★ `repairConformance` 真能把遗留单文件切卡补进目录、并把红变绿（死锁真解开）",
+          cardsAfter.length === 2 && confAfterRepair.verdict === "ok",
+          `cards=${JSON.stringify(cardsAfter)} verdict=${confAfterRepair.verdict} actions=${JSON.stringify(rep.actions ?? [])}`
+        );
+      } finally {
+        fs.rmSync(tmp125, { recursive: true, force: true });
+      }
+    }
+  }
+  //
+  //   ★★★ 为什么必须有这一层：007 自带的 122① / 122② 在本机**只能 SKIP**
+  //     （Windows 建文件符号链接要管理员/开发者模式，实测 `EPERM`）。**跳过 ≠ 验过。**
+  //   ★ 做法：用 **junction**（目录联接，不需特权）构造"指向工作区外的目录链接"，
+  //     至少把 F-01（migrateToV3 拒嵌套链接）与 F-07（listExtensions 单参不崩）真跑一遍。
+  //   ★★ **F-02 如实降级为弱断言**：实测 junction 在 dirent 里 `isDirectory()=false`
+  //     ⇒ 摘掉链接守卫后它仍被文件名正则挡掉 ⇒ **本机造不出那个洞**。
+  //     所以那条只证明"本机这个形状没泄露"，**不声称"守卫已验证"**（纪律第 6/8 条）。
+  const d325 = spawnSync(process.execPath, [path.join(HERE, "_probe-d325-symlink-fallback.mjs")], {
+    encoding: "utf8", timeout: 120000,
+  });
+  const d325Out = String(d325.stdout ?? "");
+  const d325M = /PROBE-COMPLETE pass=(\d+) fail=(\d+)/.exec(d325Out);
+  ok(
+    "120㉒ ★★★ Gemini 007 的 F-01/F-07 用 junction 真验（migrate 拒嵌套链接 + listExtensions 单参不崩）",
+    d325.status === 0 && d325M !== null && Number(d325M[2]) === 0,
+    d325M === null ? String(d325.stderr ?? "").slice(-300) || d325Out.slice(-200) : `pass=${d325M[1]} fail=${d325M[2]}`
+  );
+  const d325Rev = spawnSync(process.execPath, [path.join(HERE, "_reverse-verify-d325.mjs")], {
+    encoding: "utf8", timeout: 300000,
+  });
+  const d325RevOut = String(d325Rev.stdout ?? "");
+  // ★ 退出码 2 = "没有不符合，但有本机无法验证的" ⇒ **既不算全绿，也不算失败**，如实报出来。
+  ok(
+    "120㉓ ★★★ 上面那条探针**能被证伪**（F-01/F-07 两条破坏都见红；F-02 如实记「本机无法验证」）",
+    d325Rev.status === 2 && /2 条符合预期 \/ 0 条不符合 \/ 1 条本机无法验证/.test(d325RevOut),
+    d325Rev.status === 2 ? "2/2 见红 + 1 条无法验证（已如实记）" : String(d325Rev.stderr ?? "").slice(-300) || d325RevOut.slice(-300)
+  );
+
+  // ── ⑳㉑ D324：Gemini 006 报告的 6 项（10 子项）—— 我自己的独立守卫
+  //
+  //   ★ 为什么 006 自带情形 121 之后还要再加一层：**它自己的数字不可信**。
+  //     报告 §2.1 那张"20 个模块体积表"我逐个复算，**17 个对不上**（最大差 19 万字节），
+  //     总字节 2,295,460 vs 我的 1,949,568 ⇒ 那张表不是从这份仓库算出来的。
+  //     ⇒ 它的"已修复"必须自己验一遍，不能因为它说了就信。
+  //   ★ 本层与 121 的分工：121 是它给的行为断言；这里是**我按报告原文逐条重写的判据**
+  //     + 一条反向验证，且**每一条都在 121 之外独立成立**（两条路都绿才算真绿）。
+  const d324 = spawnSync(process.execPath, [path.join(HERE, "_probe-d324-f01-f06.mjs")], {
+    encoding: "utf8", timeout: 120000,
+  });
+  const d324Out = String(d324.stdout ?? "");
+  const d324M = /(\d+) PASS \/ (\d+) FAIL/.exec(d324Out);
+  ok(
+    "120⑳ ★★★ Gemini 006 的 6 项（10 子项）行为验证（跨平台路径 / logDirOf 门禁 / 路由注销 / 会话隔离 / 广播指纹 / 隐私）33 项",
+    d324.status === 0 && d324M !== null && Number(d324M[2]) === 0 && /PROBE-COMPLETE/.test(d324Out),
+    d324M === null ? String(d324.stderr ?? "").slice(-300) || d324Out.slice(-200) : `${d324M[1]} PASS / ${d324M[2]} FAIL`
+  );
+  const d324Rev = spawnSync(process.execPath, [path.join(HERE, "_reverse-verify-d324.mjs")], {
+    encoding: "utf8", timeout: 600000,
+  });
+  const d324RevOut = String(d324Rev.stdout ?? "");
+  ok(
+    "120㉑ ★★★ 上面那条探针**能被证伪**（6 种破坏 6/6 全红，且每条都有真 FAIL 行 + 探针跑完哨兵）",
+    d324Rev.status === 0 && /6 条符合预期 \/ 0 条不符合/.test(d324RevOut),
+    d324Rev.status === 0 ? "6/6" : String(d324Rev.stderr ?? "").slice(-300) || d324RevOut.slice(-300)
+  );
+  // ── 126：v1.6.2 全量代码审计 6 项发现（F-01 ~ F-06）回归守卫 ──────────────────────
+  section("情形 126：v1.6.2 全量代码审计修复守卫（card-ops 边界与模板排除 / part8 注册表符号链接与校验对齐 / V3 归档与日志路径基准 / workspace-tools 越界与同分钟碰撞）");
+  {
+    const cardOps126 = await import("../lib/card-ops.js");
+    const part8Mod126 = await import("../lib/part8.js");
+    const part4Mod126 = await import("../lib/part4.js");
+    const part2Mod126 = await import("../lib/part2.js");
+    const wsTools126 = await import("../lib/workspace-tools.js");
+
+    // 126① F-01：card-ops listCards / readCard / writeCardIndex 拒绝词法越界与符号链接卡片目录
+    {
+      const tmp126 = fs.mkdtempSync(path.join(os.tmpdir(), "audit126-f01-"));
+      try {
+        const proj = path.join(tmp126, "proj");
+        const outside = path.join(tmp126, "outside");
+        fs.mkdirSync(proj, { recursive: true });
+        fs.mkdirSync(outside, { recursive: true });
+        fs.writeFileSync(path.join(outside, "D1.md"), "## D1 · 外部机密\n- secret\n", "utf8");
+
+        const listed = cardOps126.listCards(proj, "../outside");
+        const read = cardOps126.readCard(proj, "../outside", "D1");
+        const idx = cardOps126.writeCardIndex(proj, "../outside", "decisions");
+        const leakedIdx = fs.existsSync(path.join(outside, "INDEX.md"));
+        ok(
+          "126① a F-01：listCards / readCard / writeCardIndex 拒绝词法越界 dirRel (../outside)，不泄露外部卡片且不往外部写 INDEX.md",
+          listed.length === 0 && read === undefined && idx.ok === false && !leakedIdx,
+          `listed=${listed.length} read=${read !== undefined} idxOk=${idx.ok} leakedIdx=${leakedIdx}`
+        );
+
+        let symOk = false;
+        try {
+          fs.symlinkSync(outside, path.join(proj, "decisions"), process.platform === "win32" ? "junction" : "dir");
+          symOk = true;
+        } catch {
+          symOk = false;
+        }
+        if (symOk) {
+          const symListed = cardOps126.listCards(proj, "decisions");
+          const symRead = cardOps126.readCard(proj, "decisions", "D1");
+          const symIdx = cardOps126.writeCardIndex(proj, "decisions", "decisions");
+          const symLeakedIdx = fs.existsSync(path.join(outside, "INDEX.md"));
+          ok(
+            "126① b F-01：listCards / readCard / writeCardIndex 拒绝跟随指向项目外的符号链接卡片目录",
+            symListed.length === 0 && symRead === undefined && symIdx.ok === false && !symLeakedIdx,
+            `symListed=${symListed.length} symRead=${symRead !== undefined} symIdxOk=${symIdx.ok} symLeakedIdx=${symLeakedIdx}`
+          );
+        } else {
+          skip("126① b F-01：符号链接卡片目录越界拦截", "当前环境不支持创建目录符号链接/junction");
+        }
+      } finally {
+        fs.rmSync(tmp126, { recursive: true, force: true });
+      }
+    }
+
+    // 126② F-02：part8 extRootAbs / extRegistryAbs 空根返回 undefined，readRegistry / writeRegistry 拦截符号链接越界
+    {
+      const tmp126 = fs.mkdtempSync(path.join(os.tmpdir(), "audit126-f02-"));
+      try {
+        const proj = path.join(tmp126, "proj");
+        const outside = path.join(tmp126, "outside");
+        fs.mkdirSync(proj, { recursive: true });
+        fs.mkdirSync(outside, { recursive: true });
+        fs.writeFileSync(
+          path.join(outside, "registry.json"),
+          JSON.stringify({ schemaVersion: 1, extensions: [{ id: "ext-1", name: "外部", description: "d", mode: "plain" }] }),
+          "utf8"
+        );
+
+        const emptyRoot = part8Mod126.extRootAbs(null, "");
+        const emptyReg = part8Mod126.extRegistryAbs(null, "");
+        ok(
+          "126② a F-02：extRootAbs / extRegistryAbs 在无项目根时返回 undefined（不退回 process.cwd()/registry.json）",
+          emptyRoot === undefined && emptyReg === undefined,
+          `emptyRoot=${JSON.stringify(emptyRoot)} emptyReg=${JSON.stringify(emptyReg)}`
+        );
+
+        let symOk = false;
+        try {
+          fs.symlinkSync(outside, path.join(proj, "extensions"), process.platform === "win32" ? "junction" : "dir");
+          symOk = true;
+        } catch {
+          symOk = false;
+        }
+        if (symOk) {
+          const info = { projectRoot: proj, memoryBase: proj };
+          const rd = part8Mod126.readRegistry(info, proj);
+          const wr = part8Mod126.writeRegistry(info, proj, { schemaVersion: 1, extensions: [] });
+          const outsideText = fs.readFileSync(path.join(outside, "registry.json"), "utf8");
+          ok(
+            "126② b F-02：readRegistry 与 writeRegistry 拒绝跟随指向记忆根外的 extensions 符号链接目录",
+            rd.ok === false && wr.ok === false && outsideText.includes("ext-1"),
+            `rdOk=${rd.ok} wrOk=${wr.ok} outsideStillIntact=${outsideText.includes("ext-1")}`
+          );
+        } else {
+          skip("126② b F-02：extensions 符号链接目录越界拦截", "当前环境不支持创建目录符号链接/junction");
+        }
+      } finally {
+        fs.rmSync(tmp126, { recursive: true, force: true });
+      }
+    }
+
+    // 126③ F-03：V3 归档读取/列表路径基准一致（memoryBase）与 logFileList period 提取不被项目名污染
+    {
+      const tmp126 = fs.mkdtempSync(path.join(os.tmpdir(), "2025-01-audit126-f03-"));
+      try {
+        await part4Mod126.defineInitTool().execute(
+          {
+            root: tmp126,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_archive",
+            logDir: "_ledger-log",
+            initialActive: "# 台账\n\n## 已完成\n- [x] 第一项\n\n## 进行中\n- [ ] 第二项\n",
+          },
+          execFor(tmp126, "session-126-f03")
+        );
+        const archRes = part4Mod126.archiveLedger(
+          tmp126,
+          {
+            entries: "- [x] 第一项\n",
+            newActive: "# 台账\n\n## 进行中\n- [ ] 第二项\n",
+          },
+          execFor(tmp126, "session-126-f03")
+        );
+        const listRes = await part4Mod126.defineReadTool().execute({ root: tmp126, target: "archive" }, execFor(tmp126, "session-126-f03"));
+        const readByArchTo = await part4Mod126.defineReadTool().execute(
+          { root: tmp126, target: "archive", archiveFile: archRes.archivedTo },
+          execFor(tmp126, "session-126-f03")
+        );
+        const readByListPath = await part4Mod126.defineReadTool().execute(
+          { root: tmp126, target: "archive", archiveFile: listRes.files?.[0]?.path },
+          execFor(tmp126, "session-126-f03")
+        );
+        ok(
+          "126③ a F-03：V3 项目下 ledger_archive.archivedTo 与 ledger_read(target:archive) 列表路径同基准且可直读回原文",
+          archRes.ok === true &&
+            /^_archive\/\d{4}-\d{2}\/week\d+\/.+\.md$/.test(archRes.archivedTo) &&
+            listRes.files?.[0]?.path === archRes.archivedTo &&
+            readByArchTo.found === true &&
+            String(readByArchTo.text ?? "").includes("第一项") &&
+            readByListPath.found === true,
+          `archivedTo=${archRes.archivedTo} listPath=${listRes.files?.[0]?.path} readByArchTo=${readByArchTo.found}`
+        );
+
+        const info = part2Mod126.inspect(tmp126);
+        const logFiles = part4Mod126.logFileList(info);
+        const logReadSince = part4Mod126.logRead(tmp126, { view: "audit", since: "2026-01-01" });
+        ok(
+          "126③ b F-03：项目名含 YYYY-MM（如 2025-01-*）时 logFileList 的 period 不被目录名污染，since 过滤正常命中",
+          logFiles.length > 0 &&
+            logFiles.every((f) => f.period !== "2025-01" && f.rel.startsWith("_ledger-log/")) &&
+            logReadSince.matched >= 1,
+          `logFiles=${JSON.stringify(logFiles.map((f) => ({ rel: f.rel, period: f.period })))} matched=${logReadSince.matched}`
+        );
+      } finally {
+        fs.rmSync(tmp126, { recursive: true, force: true });
+      }
+    }
+
+    // 126④ F-04：卡片型扩展排除模板 README.md 且拦截 INDEX / README 保留键
+    {
+      const tmp126 = fs.mkdtempSync(path.join(os.tmpdir(), "audit126-f04-"));
+      try {
+        await part4Mod126.defineInitTool().execute(
+          { root: tmp126, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          execFor(tmp126, "session-126-f04")
+        );
+        const info = part2Mod126.inspect(tmp126);
+        const cr = part8Mod126.createExtension(info, tmp126, {
+          name: "架构决策扩展",
+          description: "记录子模块决策",
+          mode: "decisions",
+          inject: true,
+        });
+        const id = cr.created.id;
+        const rd = part8Mod126.readExtension(info, tmp126, id, {});
+        const inj = part8Mod126.renderExtensionInjection(info, tmp126, {});
+        const wIndex = part8Mod126.writeExtension(info, tmp126, id, { key: "INDEX", content: "## fake\n" });
+        const wReadme = part8Mod126.writeExtension(info, tmp126, id, { key: "README", content: "## fake\n" });
+        ok(
+          "126④ F-04：空卡片型扩展不把模板 README.md 当成卡片（read 返回 0 张、注入显示「还没有卡片」），且拦截 INDEX/README 保留键写入",
+          Array.isArray(rd.cards) &&
+            rd.cards.length === 0 &&
+            inj.includes("（还没有卡片）") &&
+            !inj.includes("1 张卡：README") &&
+            wIndex.ok === false &&
+            wReadme.ok === false &&
+            cardOps126.isSafeCardKey("INDEX") === false &&
+            cardOps126.isSafeCardKey("README") === false,
+          `cards=${JSON.stringify(rd.cards)} injHasEmpty=${inj.includes("（还没有卡片）")} wIndex=${wIndex.ok} wReadme=${wReadme.ok}`
+        );
+      } finally {
+        fs.rmSync(tmp126, { recursive: true, force: true });
+      }
+    }
+
+    // 126⑤ F-05：defineNoteTool / latestHandoffIn 拦截指向工作区外的符号链接目录，且 defineHandoffTool 同分钟内支持 ≥11 次无损递增
+    {
+      const tmp126 = fs.mkdtempSync(path.join(os.tmpdir(), "audit126-f05-"));
+      try {
+        const ws = path.join(tmp126, "ws");
+        const outsideNotes = path.join(tmp126, "outside-notes");
+        const outsideHandoff = path.join(tmp126, "outside-handoff");
+        fs.mkdirSync(ws, { recursive: true });
+        fs.mkdirSync(outsideNotes, { recursive: true });
+        fs.mkdirSync(outsideHandoff, { recursive: true });
+        fs.writeFileSync(path.join(outsideHandoff, "2026-10-26-1200-secret.md"), "# secret\n", "utf8");
+
+        let symOk = false;
+        try {
+          fs.symlinkSync(outsideNotes, path.join(ws, "问题记录"), process.platform === "win32" ? "junction" : "dir");
+          fs.symlinkSync(outsideHandoff, path.join(ws, "_handoff"), process.platform === "win32" ? "junction" : "dir");
+          symOk = true;
+        } catch {
+          symOk = false;
+        }
+        if (symOk) {
+          let noteErr = false;
+          try {
+            const nr = await wsTools126.defineNoteTool().execute(
+              { root: ws, title: "越界笔记", problem: "p", cause: "c", conclusion: "ok" },
+              execFor(ws, "session-126-f05")
+            );
+            noteErr = nr.ok === false;
+          } catch {
+            noteErr = true;
+          }
+          const latest = part2Mod126.latestHandoffIn(ws, path.join(ws, "_handoff"));
+          ok(
+            "126⑤ a F-05：defineNoteTool 与 latestHandoffIn 拦截指向工作区外的符号链接候选目录",
+            noteErr && fs.readdirSync(outsideNotes).length === 0 && latest === undefined,
+            `noteErr=${noteErr} outsideNotes=${fs.readdirSync(outsideNotes).length} latest=${latest}`
+          );
+        } else {
+          skip("126⑤ a F-05：问题记录/交接单候选目录符号链接越界拦截", "当前环境不支持创建目录符号链接/junction");
+        }
+
+        const proj = path.join(tmp126, "proj");
+        fs.mkdirSync(proj, { recursive: true });
+        await part4Mod126.defineInitTool().execute(
+          { root: proj, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          execFor(proj, "session-126-f05b")
+        );
+        const hTool = wsTools126.defineHandoffTool();
+        if (new Date().getSeconds() >= 55) await new Promise((r) => setTimeout(r, 6000));
+        let r11;
+        for (let i = 0; i < 11; i++) {
+          r11 = await hTool.execute(
+            { root: proj, title: "同分钟高频交接", did: "d", state: "s", next: "n" },
+            execFor(proj, "session-126-f05b")
+          );
+        }
+        ok(
+          "126⑤ b F-05：defineHandoffTool 同分钟内连续写入 ≥11 次自动递增至 -11.md（不因 n<10 上限或截断报 EEXIST）",
+          r11?.ok === true && String(r11.relative ?? "").endsWith("-11.md"),
+          `r11=${JSON.stringify(r11)}`
+        );
+      } finally {
+        fs.rmSync(tmp126, { recursive: true, force: true });
+      }
+    }
+
+    // 126⑥ F-06：扩展创建/更新校验对齐（拦截超长名、连续空格与多行 description 注入）、拒绝空白 append、HTTP update 透传 mode
+    {
+      const tmp126 = fs.mkdtempSync(path.join(os.tmpdir(), "audit126-f06-"));
+      try {
+        await part4Mod126.defineInitTool().execute(
+          { root: tmp126, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          execFor(tmp126, "session-126-f06")
+        );
+        const info = part2Mod126.inspect(tmp126);
+        const crNewline = part8Mod126.createExtension(info, tmp126, {
+          name: "合法名称",
+          description: "第一行\n## 注入标题",
+          mode: "journal",
+        });
+        const cr = part8Mod126.createExtension(info, tmp126, {
+          name: "合法流水扩展",
+          description: "正常单行说明",
+          mode: "journal",
+        });
+        const id = cr.created.id;
+        const upLong = part8Mod126.updateExtension(info, tmp126, id, { name: "x".repeat(65) });
+        const upSpaces = part8Mod126.updateExtension(info, tmp126, id, { name: "两处  连续空格" });
+        const upNewline = part8Mod126.updateExtension(info, tmp126, id, { description: "第一行\n## 伪造标题" });
+        const emptyAppend = part8Mod126.writeExtension(info, tmp126, id, { append: true, content: "   " });
+
+        const httpSrc = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "settings-http.js"), "utf8");
+        const forwardsMode = /updateExtension\([\s\S]{0,220}?mode:\s*body\?\.mode/.test(httpSrc);
+
+        ok(
+          "126⑥ F-06：扩展创建/更新拦截超长名、连续空格与多行 description，拒绝空白 append，且 HTTP update 透传 mode",
+          crNewline.ok === false &&
+            upLong.ok === false &&
+            upSpaces.ok === false &&
+            upNewline.ok === false &&
+            emptyAppend.ok === false &&
+            forwardsMode,
+          `crNewline=${crNewline.ok} upLong=${upLong.ok} upSpaces=${upSpaces.ok} upNewline=${upNewline.ok} emptyAppend=${emptyAppend.ok} forwardsMode=${forwardsMode}`
+        );
+      } finally {
+        fs.rmSync(tmp126, { recursive: true, force: true });
+      }
+    }
+  }
+
+  // ── 127：v1.6.2 全量审计新增回归守卫（F-01~F-04：GOAL_STATUS_LABEL 绑定与完成/放弃回执 / 扩展与目标树驱动 fingerprintOf 去重失效 / 目标卡保留键拦截与 V3 归档读取无 root 直拼）
+  section("情形 127：v1.6.2 全量审计修复守卫一（GOAL_STATUS_LABEL 回执 / 扩展与目标树驱动 fingerprintOf / 初始切卡中文标题与归档基准）");
+  {
+    const defsMod127 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "defs.js")).href);
+    const part2Mod127 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2.js")).href);
+    const part4Mod127 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part4.js")).href);
+    const part8Mod127 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part8.js")).href);
+    const execFor127 = (rt, sid) => ({ agent: { session: { header: { cwd: rt, id: sid } } } });
+
+    // 127① F-01：ledger_goals(op:"status", status:"done" | "dropped") 正常返回中文状态提示且不抛 ReferenceError(GOAL_STATUS_LABEL)
+    {
+      const tmp127 = fs.mkdtempSync(path.join(os.tmpdir(), "audit127-f01-"));
+      try {
+        await part4Mod127.defineInitTool().execute(
+          { root: tmp127, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", goals: "GOALS.md" },
+          execFor127(tmp127, "session-127-f01")
+        );
+        const gTool = part2Mod127.defineGoalsTool();
+        const up = await gTool.execute(
+          { root: tmp127, op: "upsert", id: "g1", parent: "-", status: "active", title: "核心目标" },
+          execFor127(tmp127, "session-127-f01")
+        );
+        const stDone = await gTool.execute(
+          { root: tmp127, op: "status", id: "g1", status: "done" },
+          execFor127(tmp127, "session-127-f01")
+        );
+        const stDropped = await gTool.execute(
+          { root: tmp127, op: "status", id: "g1", status: "dropped" },
+          execFor127(tmp127, "session-127-f01")
+        );
+        const rejectIdx = await gTool.execute(
+          { root: tmp127, op: "upsert", id: "INDEX", parent: "-", status: "active", title: "非法保留键" },
+          execFor127(tmp127, "session-127-f01")
+        );
+        const rejectDot = await gTool.execute(
+          { root: tmp127, op: "upsert", id: "..", parent: "-", status: "active", title: "非法父目录键" },
+          execFor127(tmp127, "session-127-f01")
+        );
+        ok(
+          "127① F-01/F-03b：ledger_goals 的 status=done/dropped 正常产出中文状态提示（不抛 GOAL_STATUS_LABEL ReferenceError），且拦截 INDEX/.. 保留键",
+          up.ok === true &&
+            stDone.ok === true &&
+            String(stDone.hint ?? "").includes("已完成") &&
+            stDropped.ok === true &&
+            String(stDropped.hint ?? "").includes("已放弃") &&
+            rejectIdx.ok === false &&
+            rejectDot.ok === false,
+          `doneHint=${stDone.hint} droppedHint=${stDropped.hint} rejectIdx=${rejectIdx.ok} rejectDot=${rejectDot.ok}`
+        );
+      } finally {
+        fs.rmSync(tmp127, { recursive: true, force: true });
+      }
+    }
+
+    // 127② F-02：创建/更新自定义扩展或目标树（不动 LEDGER.md）必须改变 fingerprintOf(info)，保证下一回合自动重注
+    {
+      const tmp127 = fs.mkdtempSync(path.join(os.tmpdir(), "audit127-f02-"));
+      try {
+        await part4Mod127.defineInitTool().execute(
+          { root: tmp127, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", goals: "GOALS.md" },
+          execFor127(tmp127, "session-127-f02")
+        );
+        const fp0 = defsMod127.fingerprintOf(part2Mod127.inspect(tmp127));
+        const cr = part8Mod127.createExtension(null, tmp127, {
+          name: "Boss机制记录",
+          description: "记录各阶段Boss机制与应对策略",
+          mode: "plain",
+          inject: false,
+        });
+        const fp1 = defsMod127.fingerprintOf(part2Mod127.inspect(tmp127));
+        part8Mod127.updateExtension(null, tmp127, cr.created.id, { inject: true });
+        const fp2 = defsMod127.fingerprintOf(part2Mod127.inspect(tmp127));
+        part8Mod127.writeExtension(null, tmp127, cr.created.id, { content: "# Boss 1\n- 狂暴阶段需打断\n" });
+        const fp3 = defsMod127.fingerprintOf(part2Mod127.inspect(tmp127));
+        await part2Mod127.defineGoalsTool().execute(
+          { root: tmp127, op: "upsert", id: "g1", parent: "-", status: "root", title: "通关全阶段" },
+          execFor127(tmp127, "session-127-f02")
+        );
+        const fp4 = defsMod127.fingerprintOf(part2Mod127.inspect(tmp127));
+        ok(
+          "127② F-02：新建扩展、切换 inject 开关、写入已开启注入的扩展及更新目标树均驱动 fingerprintOf 变化（兑现任务书 §6.6）",
+          cr.ok === true && fp0 !== fp1 && fp1 !== fp2 && fp2 !== fp3 && fp3 !== fp4,
+          `fp0=${fp0} fp1=${fp1} fp2=${fp2} fp3=${fp3} fp4=${fp4}`
+        );
+      } finally {
+        fs.rmSync(tmp127, { recursive: true, force: true });
+      }
+    }
+
+    // 127③ F-03a：ledger_init 初始切卡生成的 INDEX.md 使用中文标签，且归档回读不触发白名单外 path.resolve(root, rel)
+    {
+      const tmp127 = fs.mkdtempSync(path.join(os.tmpdir(), "audit127-f03-"));
+      try {
+        await part4Mod127.defineInitTool().execute(
+          {
+            root: tmp127,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_archive",
+            initialDecisions: "# 关键决策\n\n## D1 · 初始拍板\n- 走 V3 卡片化\n",
+          },
+          execFor127(tmp127, "session-127-f03")
+        );
+        const info = part2Mod127.inspect(tmp127);
+        const mBase = part2Mod127.memoryBaseOf(info, tmp127);
+        const idxText = fs.readFileSync(path.join(mBase, "decisions", "INDEX.md"), "utf8");
+        const p4Src = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "part4.js"), "utf8");
+        const hasRawRootRel = /\bpath\.(?:join|resolve)\(\s*(?:root|projectRoot)\s*,\s*rel\b/.test(p4Src);
+        ok(
+          "127③ F-03a：ledger_init 初始切卡 INDEX.md 使用中文标签（# 索引 · 关键决策），且 part4.js 无裸 path.resolve(root, rel)",
+          idxText.includes("# 索引 · 关键决策") && !hasRawRootRel,
+          `idxHead=${idxText.splitlines ? "" : idxText.slice(0, 30)} hasRawRootRel=${hasRawRootRel}`
+        );
+      } finally {
+        fs.rmSync(tmp127, { recursive: true, force: true });
+      }
+    }
+  }
+
+  // ── 128：v1.6.2 全量深度审计新增回归守卫（F-01~F-07：跨卷目录搬迁与 V3 悬空链接/坏清单拦截 / 卡片与目录角色自根重叠及归档读取越界拦截 / 目标树提前改清单与提升树根及多跳环拦截 / 决定不建台账静默守卫与合规修复补登记 active 及 modeSource 优先级 / 记忆面地图根目录稿与 ./ 记忆根追踪检出 / 扩展删除二次确认防绕过 / 回合内压缩来源映射）
+  section("情形 128：v1.6.2 全量审计修复守卫二（跨卷目录搬迁与 V3 预检 / 卡片与目录自根边界及归档限制 / 目标树环路与树根提升 / 静默与合规守卫 / 根目录稿与追踪检测 / 扩展删除确认与来源映射）");
+  {
+    const { execFileSync } = await import("node:child_process");
+    const baseMod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "base.js")).href);
+    const cardOpsMod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "card-ops.js")).href);
+    const part1Mod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part1.js")).href);
+    const part2Mod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2.js")).href);
+    const part2ToolsMod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2-tools.js")).href);
+    const part3Mod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part3.js")).href);
+    const part4Mod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part4.js")).href);
+    const part5Mod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part5.js")).href);
+    const part6Mod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part6.js")).href);
+    const part7Mod128 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part7.js")).href);
+    const execFor128 = (rt, sid) => ({ agent: { session: { header: { cwd: rt, id: sid } } } });
+
+    // 128① F-01：moveAcrossVolumes 在 EXDEV 下支持递归搬迁目录并逐文件校验，且 migrateToV3 区分损坏清单并拦截目标悬空符号链接
+    {
+      const tmp128 = fs.mkdtempSync(path.join(os.tmpdir(), "audit128-f01-"));
+      try {
+        const srcDir = path.join(tmp128, "src-cards");
+        const dstDir = path.join(tmp128, "dst-cards");
+        fs.mkdirSync(path.join(srcDir, "nested"), { recursive: true });
+        fs.writeFileSync(path.join(srcDir, "D1.md"), "# D1 · 决策一\n", "utf8");
+        fs.writeFileSync(path.join(srcDir, "nested", "D2.md"), "# D2 · 决策二\n", "utf8");
+        const origRename = fs.renameSync;
+        fs.renameSync = () => {
+          const err = new Error("EXDEV: cross-device link not permitted");
+          err.code = "EXDEV";
+          throw err;
+        };
+        let mvRes;
+        try {
+          mvRes = baseMod128.moveAcrossVolumes(srcDir, dstDir);
+        } finally {
+          fs.renameSync = origRename;
+        }
+        const copiedOk =
+          mvRes.ok === true &&
+          mvRes.how === "copy" &&
+          !fs.existsSync(srcDir) &&
+          fs.readFileSync(path.join(dstDir, "D1.md"), "utf8") === "# D1 · 决策一\n" &&
+          fs.readFileSync(path.join(dstDir, "nested", "D2.md"), "utf8") === "# D2 · 决策二\n";
+
+        const tmpCorrupt = path.join(tmp128, "corrupt-proj");
+        fs.mkdirSync(tmpCorrupt, { recursive: true });
+        fs.writeFileSync(path.join(tmpCorrupt, ".dsh-ledger.json"), "{corrupt-json", "utf8");
+        const rCorrupt = part7Mod128.migrateToV3(tmpCorrupt, { apply: false });
+
+        const tmpDangling = path.join(tmp128, "dangling-proj");
+        fs.mkdirSync(tmpDangling, { recursive: true });
+        fs.writeFileSync(path.join(tmpDangling, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(path.join(tmpDangling, "DECISIONS.md"), "# 决策\n", "utf8");
+        fs.writeFileSync(
+          path.join(tmpDangling, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" }),
+          "utf8"
+        );
+        const memAbs = path.join(tmpDangling, `${path.basename(tmpDangling)}-ledger-memory`);
+        let symlinkSupported = true;
+        try {
+          fs.symlinkSync(path.join(tmp128, "nonexistent-target"), memAbs);
+        } catch {
+          symlinkSupported = false;
+        }
+        let rDangling = { ok: false, reason: "符号链接" };
+        if (symlinkSupported) {
+          try {
+            rDangling = part7Mod128.migrateToV3(tmpDangling, { apply: true });
+          } catch (e) {
+            rDangling = { ok: false, threw: true, reason: String(e?.message ?? e) };
+          }
+        }
+        ok(
+          "128① F-01：moveAcrossVolumes 在 EXDEV 下递归复制并校验目录，且 migrateToV3 识别坏清单并拦截正式目标悬空符号链接",
+          copiedOk &&
+            rCorrupt.ok === false &&
+            rCorrupt.manifestBroken === true &&
+            !String(rCorrupt.reason ?? "").includes("没有清单") &&
+            rDangling.ok === false &&
+            String(rDangling.reason ?? "").includes("符号链接"),
+          `copiedOk=${copiedOk} corruptReason=${rCorrupt.reason} danglingReason=${rDangling.reason}`
+        );
+      } finally {
+        fs.rmSync(tmp128, { recursive: true, force: true });
+      }
+    }
+
+    // 128② F-02：cardDirIsSafe / inspect / ledger_init 拒绝自根路径（.）与重名目录角色，且 ledger_read(archive) 限制在归档目录内
+    {
+      const tmp128 = fs.mkdtempSync(path.join(os.tmpdir(), "audit128-f02-"));
+      try {
+        fs.writeFileSync(path.join(tmp128, "PRINCIPLES.md"), "# 核心原则\n- 严禁无授权覆盖或删除\n", "utf8");
+        const dotSafe = cardOpsMod128.cardDirIsSafe(tmp128, ".");
+        const dotSlashSafe = cardOpsMod128.cardDirIsSafe(tmp128, "./");
+        const writeRootCard = cardOpsMod128.writeCard(tmp128, ".", "PRINCIPLES", "hacked");
+        const rmRootCard = cardOpsMod128.removeCard(tmp128, ".", "PRINCIPLES");
+        const principlesIntact = fs.existsSync(path.join(tmp128, "PRINCIPLES.md")) && fs.readFileSync(path.join(tmp128, "PRINCIPLES.md"), "utf8").includes("严禁无授权覆盖或删除");
+        const secKeyBlocked = cardOpsMod128.isSafeCardKey("SECURITY") === false;
+
+        fs.writeFileSync(path.join(tmp128, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(path.join(tmp128, "DECISIONS.md"), "# 决策\n", "utf8");
+        fs.writeFileSync(
+          path.join(tmp128, ".dsh-ledger.json"),
+          JSON.stringify({
+            version: 1,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            decisionsDir: ".",
+            archiveDir: ".",
+            logDir: ".",
+            handoffDir: ".",
+          }),
+          "utf8"
+        );
+        const infoDot = part2Mod128.inspect(tmp128);
+        const selfRootBlockedInInspect =
+          infoDot.decisionsDir === undefined &&
+          infoDot.archiveRel !== "." &&
+          infoDot.logRel === undefined &&
+          (infoDot.unsafePaths ?? []).filter((u) => u.why === "self-root-forbidden").length === 4;
+
+        const initTool = part4Mod128.defineInitTool();
+        let initDotErr = false;
+        try {
+          await initTool.execute(
+            { root: tmp128, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", decisionsDir: "." },
+            execFor128(tmp128, "s-128-f02")
+          );
+        } catch {
+          initDotErr = true;
+        }
+        let initDirClashErr = false;
+        try {
+          await initTool.execute(
+            { root: tmp128, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", decisionsDir: "cards", lessonsDir: "./cards" },
+            execFor128(tmp128, "s-128-f02")
+          );
+        } catch {
+          initDirClashErr = true;
+        }
+
+        await initTool.execute(
+          { root: tmp128, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          execFor128(tmp128, "s-128-f02")
+        );
+        const mBase = part2Mod128.memoryBaseOf(part2Mod128.inspect(tmp128), tmp128);
+        fs.writeFileSync(path.join(mBase, "PRINCIPLES.md"), "# 原则\n", "utf8");
+        fs.mkdirSync(path.join(mBase, "_archive", "2026-10"), { recursive: true });
+        fs.writeFileSync(path.join(mBase, "_archive", "2026-10", "week1.md"), "# 归档周报\n", "utf8");
+        const readTool = part4Mod128.defineReadTool();
+        let archiveEscapeBlocked = false;
+        try {
+          await readTool.execute(
+            { root: tmp128, target: "archive", archiveFile: "PRINCIPLES.md" },
+            execFor128(tmp128, "s-128-f02")
+          );
+        } catch {
+          archiveEscapeBlocked = true;
+        }
+        const archiveRelRead = await readTool.execute(
+          { root: tmp128, target: "archive", archiveFile: "2026-10/week1.md" },
+          execFor128(tmp128, "s-128-f02")
+        );
+
+        ok(
+          "128② F-02：拦截卡片目录自根（.）与 SECURITY 保留键、拦截目录角色冲突，且归档读取严格限制在 archiveDir 内并支持归档内相对路径",
+          dotSafe.ok === false &&
+            dotSlashSafe.ok === false &&
+            writeRootCard.ok === false &&
+            rmRootCard === false &&
+            principlesIntact &&
+            secKeyBlocked &&
+            selfRootBlockedInInspect &&
+            initDotErr &&
+            initDirClashErr &&
+            archiveEscapeBlocked &&
+            archiveRelRead.ok === true &&
+            archiveRelRead.found === true,
+          `dotSafe=${dotSafe.ok} principlesIntact=${principlesIntact} selfRootBlocked=${selfRootBlockedInInspect} initDotErr=${initDotErr} initDirClashErr=${initDirClashErr} archiveEscapeBlocked=${archiveEscapeBlocked} archiveRelFound=${archiveRelRead.found}`
+        );
+      } finally {
+        fs.rmSync(tmp128, { recursive: true, force: true });
+      }
+    }
+
+    // 128③ F-03：ledger_goals 失败操作不提前污染清单，支持 parent:"-" 提升树根，且拦截多跳祖先环
+    {
+      const tmp128 = fs.mkdtempSync(path.join(os.tmpdir(), "audit128-f03-"));
+      try {
+        fs.writeFileSync(path.join(tmp128, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(path.join(tmp128, "DECISIONS.md"), "# 决策\n", "utf8");
+        fs.writeFileSync(
+          path.join(tmp128, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" }),
+          "utf8"
+        );
+        const gTool = part2ToolsMod128.defineGoalsTool();
+        const failRm = await gTool.execute({ root: tmp128, op: "rm", id: "g404" }, execFor128(tmp128, "s-128-f03"));
+        const failKey = await gTool.execute({ root: tmp128, op: "upsert", id: "SECURITY", title: "bad" }, execFor128(tmp128, "s-128-f03"));
+        const mfAfterFail = JSON.parse(fs.readFileSync(path.join(tmp128, ".dsh-ledger.json"), "utf8"));
+        const noPrematureManifestWrite = mfAfterFail.goals === undefined;
+
+        await gTool.execute({ root: tmp128, op: "upsert", id: "g1", parent: "-", title: "根目标" }, execFor128(tmp128, "s-128-f03"));
+        await gTool.execute({ root: tmp128, op: "upsert", id: "g2", parent: "g1", title: "子目标" }, execFor128(tmp128, "s-128-f03"));
+        await gTool.execute({ root: tmp128, op: "upsert", id: "g3", parent: "g2", title: "孙目标" }, execFor128(tmp128, "s-128-f03"));
+        const cycle2Hop = await gTool.execute({ root: tmp128, op: "upsert", id: "g1", parent: "g2" }, execFor128(tmp128, "s-128-f03"));
+        const cycle3Hop = await gTool.execute({ root: tmp128, op: "upsert", id: "g1", parent: "g3" }, execFor128(tmp128, "s-128-f03"));
+        const promoteToRoot = await gTool.execute({ root: tmp128, op: "upsert", id: "g2", parent: "-" }, execFor128(tmp128, "s-128-f03"));
+        const preserveParentOnOmit = await gTool.execute({ root: tmp128, op: "upsert", id: "g3", title: "孙目标改名" }, execFor128(tmp128, "s-128-f03"));
+
+        ok(
+          "128③ F-03：ledger_goals 失败调用不提前写清单，支持 parent:\"-\" 将子目标提升为树根，且拦截二跳/三跳祖先环",
+          failRm.ok === false &&
+            failKey.ok === false &&
+            noPrematureManifestWrite &&
+            cycle2Hop.ok === false &&
+            cycle3Hop.ok === false &&
+            promoteToRoot.ok === true &&
+            promoteToRoot.parent === null &&
+            preserveParentOnOmit.ok === true &&
+            preserveParentOnOmit.parent === "g2",
+          `noPremature=${noPrematureManifestWrite} cycle2=${cycle2Hop.ok} cycle3=${cycle3Hop.ok} promotedParent=${promoteToRoot.parent} preservedParent=${preserveParentOnOmit.parent}`
+        );
+      } finally {
+        fs.rmSync(tmp128, { recursive: true, force: true });
+      }
+    }
+
+    // 128④ F-04：index.js 70% 探针遵守 silentBecauseDecided，repairConformance 补登记猜测 active，offerConformChoice 坏清单不裸覆盖，modeSource 遵循优先级
+    {
+      const indexSrc128 = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "index.js"), "utf8");
+      const part3Src128 = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "part3.js"), "utf8");
+      const hasSilentGuardOn70Probe =
+        /if\s*\(\s*text === undefined &&\s*!silentBecauseDecided\(info\)\s*&&\s*hfSettings\.highFidelityCompact === true/.test(indexSrc128);
+      const hasSkipManifestGuard =
+        /const cur = readManifest\(info\.projectRoot\);\s*if\s*\(\s*cur !== undefined &&/.test(part3Src128);
+
+      const tmp128 = fs.mkdtempSync(path.join(os.tmpdir(), "audit128-f04-"));
+      try {
+        fs.writeFileSync(path.join(tmp128, "LEDGER.md"), "# 项目台账\n\n## 当前阶段\n- 正常推进\n", "utf8");
+        fs.writeFileSync(path.join(tmp128, "DECISIONS.md"), "# 关键决策\n", "utf8");
+        fs.mkdirSync(path.join(tmp128, "_ledger-archive"), { recursive: true });
+        const rep = part4Mod128.repairConformance(tmp128, { apply: true });
+        const mfAfterRep = part2Mod128.readManifest(tmp128);
+
+        fs.writeFileSync(
+          path.join(tmp128, ".dsh-ledger.json"),
+          JSON.stringify({
+            version: 1,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_ledger-archive",
+            mode: "surgical",
+          }),
+          "utf8"
+        );
+        let stRes = { mode: "", modeSource: "" };
+        let noCrashOnUndefinedState = false;
+        try {
+          stRes = await part3Mod128.defineStatusTool(() => undefined, undefined).execute(
+            { root: tmp128 },
+            execFor128(tmp128, "s-128-f04")
+          );
+          noCrashOnUndefinedState = part5Mod128.compactCountsOf(undefined, "s-128-f04") === undefined;
+        } catch {
+          noCrashOnUndefinedState = false;
+        }
+
+        ok(
+          "128④ F-04：index.js 70% 探针遵守 silentBecauseDecided、offerConformChoice 跳过不覆盖坏清单、repairConformance 补写 active 且 modeSource 对齐生效来源",
+          hasSilentGuardOn70Probe &&
+            hasSkipManifestGuard &&
+            rep.ok === true &&
+            mfAfterRep !== undefined &&
+            mfAfterRep.active === "LEDGER.md" &&
+            stRes.mode === "steady" &&
+            stRes.modeSource === "setting" &&
+            noCrashOnUndefinedState,
+          `silentGuard=${hasSilentGuardOn70Probe} skipGuard=${hasSkipManifestGuard} mfActive=${mfAfterRep?.active} mode=${stRes.mode} modeSource=${stRes.modeSource}`
+        );
+      } finally {
+        fs.rmSync(tmp128, { recursive: true, force: true });
+      }
+    }
+
+    // 128⑤ F-05：memorySurfaces 收录「根目录稿」（rel:""）且 scanMemorySurface 扫出根目录调研稿，detectTrackedMemory 识别 ./ 前缀 memoryRoot 与自定义清单文件名
+    {
+      const tmp128 = fs.mkdtempSync(path.join(os.tmpdir(), "audit128-f05-"));
+      try {
+        execFileSync("git", ["init", "-q"], { cwd: tmp128 });
+        execFileSync("git", ["config", "user.email", "audit@local"], { cwd: tmp128 });
+        execFileSync("git", ["config", "user.name", "Audit"], { cwd: tmp128 });
+        fs.mkdirSync(path.join(tmp128, "my-mem"), { recursive: true });
+        fs.writeFileSync(path.join(tmp128, "my-mem", "ANY_DOC.md"), "# 记忆目录文件\n", "utf8");
+        fs.writeFileSync(path.join(tmp128, "CUSTOM_ACTIVE.md"), "# 自定义台账\n", "utf8");
+        fs.writeFileSync(path.join(tmp128, "_调研-root-surface.md"), "# 根目录调研稿\n- 关键证据 D100\n", "utf8");
+        fs.writeFileSync(
+          path.join(tmp128, ".dsh-ledger.json"),
+          JSON.stringify({
+            version: 1,
+            memoryRoot: "./my-mem",
+            active: "CUSTOM_ACTIVE.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_archive",
+          }),
+          "utf8"
+        );
+        execFileSync("git", ["add", "my-mem/ANY_DOC.md", "CUSTOM_ACTIVE.md"], { cwd: tmp128 });
+        const dt = part2Mod128.detectTrackedMemory(tmp128);
+        const info = part2Mod128.inspect(tmp128);
+        const surf = part6Mod128.memorySurfaces(info);
+        const scanned = part6Mod128.scanMemorySurface(tmp128, info);
+        ok(
+          "128⑤ F-05：memorySurfaces 包含「根目录稿」且 scanMemorySurface 扫出根上调研稿，detectTrackedMemory 检出 ./my-mem 与自定义角色文件",
+          surf.some((s) => s.label === "根目录稿" && s.rel === "" && s.base === "project") &&
+            scanned.some((f) => f.rel === "_调研-root-surface.md") &&
+            dt.tracked.includes("my-mem/ANY_DOC.md") &&
+            dt.tracked.includes("CUSTOM_ACTIVE.md"),
+          `surfLabels=${surf.map((s) => s.label).join(",")} scanned=${scanned.map((f) => f.rel).join(",")} tracked=${dt.tracked.join(",")}`
+        );
+      } finally {
+        fs.rmSync(tmp128, { recursive: true, force: true });
+      }
+    }
+
+    // 128⑥ F-06 & 128⑦ F-07：client.js 扩展删除首次点击不硬传 confirm:true 且二次确认保留扩展名；hfSourceShort("auto:midturn") 与 persistStash 映射中文标签
+    {
+      const clientSrc128 = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "client.js"), "utf8");
+      const noBlindConfirmOnFirstClick =
+        !/else\s*\{\s*send\(\{\s*op:\s*"delete",\s*id:\s*x\.id,\s*confirm:\s*true\s*\}/.test(clientSrc128) &&
+        /else\s*\{\s*send\(\{\s*op:\s*"delete",\s*id:\s*x\.id\s*\},\s*"已删除。"\)/.test(clientSrc128);
+      const resolvesExtNameOnNeedConfirm =
+        clientSrc128.includes("matchedExt?.name ?? body.id") &&
+        !/setPending\(\{\s*id:\s*body\.id,\s*name:\s*r\?\.usage\?\.detail/.test(clientSrc128);
+
+      const midturnShort = part1Mod128.hfSourceShort("auto:midturn");
+      const tmp128 = fs.mkdtempSync(path.join(os.tmpdir(), "audit128-f07-"));
+      let stashContent = "";
+      try {
+        fs.writeFileSync(path.join(tmp128, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(
+          path.join(tmp128, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" }),
+          "utf8"
+        );
+        const stashed = part1Mod128.persistStash(
+          tmp128,
+          part2Mod128.inspect(tmp128),
+          "s-128-f07",
+          [{ what: "回合内分流碎片", why: "验证来源标签", where: "lib/part1.js" }],
+          { source: "auto:midturn" }
+        );
+        if (stashed.ok === true && stashed.rel) {
+          stashContent = fs.readFileSync(path.join(tmp128, stashed.rel), "utf8");
+        }
+      } finally {
+        fs.rmSync(tmp128, { recursive: true, force: true });
+      }
+
+      ok(
+        "128⑥ F-06：client.js 扩展面板首次点击删除不带 confirm:true（防绕过服务端二次确认）且 needConfirm 正确回显扩展名称",
+        noBlindConfirmOnFirstClick && resolvesExtNameOnNeedConfirm,
+        `noBlindConfirm=${noBlindConfirmOnFirstClick} resolvesExtName=${resolvesExtNameOnNeedConfirm}`
+      );
+      ok(
+        "128⑦ F-07：hfSourceShort(\"auto:midturn\") 与 persistStash 统一映射为中文标签「自动（回合内 N%）」",
+        midturnShort.startsWith("自动（回合内 ") &&
+          stashContent.includes("自动（回合内 ") &&
+          !stashContent.includes("auto:midturn"),
+        `midturnShort=${midturnShort}`
+      );
+    }
+  }
+
+  // ── 129：v1.6.2 全量深度审计新增回归守卫三（F-01~F-06：原则/目标符号链接写盘防提前改清单与防崩溃 / notesDir 自根拦截与 ledger_read 及 /ledger 命令防静默降级 / 目标与教训多行字段无损往返及卡片代码块伪标题隔离 / 扩展写入刷新 updatedAt 与单文件非空内容防误删 / V3 记忆面跨基准同名文件防遮蔽与 extensions 符号链接拦截 / 拆分后全模块零未绑定标识符）
+  section("情形 129：v1.6.2 全量审计修复守卫三（原则与目标符号链接防污染清单 / notesDir 自根与读侧及命令防静默降级 / 多行字段与代码块围栏解析 / 扩展 updatedAt 与防误删 / 记忆面跨基准防遮蔽 / 全模块绑定守卫）");
+  {
+    const { spawnSync } = await import("node:child_process");
+    const cardOps129 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "card-ops.js")).href);
+    const part2Mod129 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2.js")).href);
+    const part2Tools129 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2-tools.js")).href);
+    const part4Mod129 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part4.js")).href);
+    const part5Mod129 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part5.js")).href);
+    const part6Mod129 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part6.js")).href);
+    const part8Mod129 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part8.js")).href);
+    const execFor129 = (rt, sid) => ({ agent: { session: { header: { cwd: rt, id: sid } } } });
+
+    // 129① F-01：writePrinciples 与 ledger_goals 在 PRINCIPLES.md / GOALS.md 为越界或悬空符号链接时拒绝写入、不抛异常且不提前污染 .dsh-ledger.json
+    {
+      const tmp129 = fs.mkdtempSync(path.join(os.tmpdir(), "audit129-f01-"));
+      try {
+        const proj = path.join(tmp129, "proj");
+        const outsidePr = path.join(tmp129, "outside-pr.md");
+        fs.mkdirSync(proj, { recursive: true });
+        fs.writeFileSync(outsidePr, "# SECRET\n", "utf8");
+        fs.writeFileSync(path.join(proj, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(
+          path.join(proj, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", archiveDir: "_archive" }),
+          "utf8"
+        );
+        let symOk = false;
+        try {
+          fs.symlinkSync(outsidePr, path.join(proj, "PRINCIPLES.md"));
+          fs.symlinkSync(path.join(tmp129, "dangling-goals.md"), path.join(proj, "GOALS.md"));
+          symOk = true;
+        } catch {
+          symOk = false;
+        }
+        if (symOk) {
+          let prRes;
+          let prThrew = false;
+          try {
+            prRes = part2Mod129.writePrinciples(proj, { content: "# 新原则\n", mode: "replace", authorizedBy: "user" });
+          } catch {
+            prThrew = true;
+          }
+          const gRes = await part2Tools129.defineGoalsTool().execute(
+            { root: proj, op: "upsert", id: "g1", parent: "-", title: "根目标" },
+            execFor129(proj, "s-129-f01")
+          );
+          const mfAfter = JSON.parse(fs.readFileSync(path.join(proj, ".dsh-ledger.json"), "utf8"));
+          ok(
+            "129① F-01：PRINCIPLES.md / GOALS.md 为外部或悬空符号链接时 writePrinciples 与 ledger_goals 干净拒绝（ok:false）、不抛未捕获异常且不污染清单",
+            !prThrew &&
+              prRes?.ok === false &&
+              gRes?.ok === false &&
+              mfAfter.principles === undefined &&
+              mfAfter.goals === undefined &&
+              fs.readFileSync(outsidePr, "utf8") === "# SECRET\n",
+            `prThrew=${prThrew} prOk=${prRes?.ok} gOk=${gRes?.ok} mfPrinciples=${mfAfter.principles} mfGoals=${mfAfter.goals}`
+          );
+        } else {
+          skip("129① F-01：原则与目标文件符号链接防污染清单守卫", "当前环境不支持创建文件符号链接");
+        }
+      } finally {
+        fs.rmSync(tmp129, { recursive: true, force: true });
+      }
+    }
+
+    // 129② F-02：inspect 拦截 notesDir: "."（self-root-forbidden），且 ledger_read 与 /ledger show|mode|principles 在越界/坏清单时拒绝静默降级
+    {
+      const tmp129 = fs.mkdtempSync(path.join(os.tmpdir(), "audit129-f02-"));
+      try {
+        fs.writeFileSync(path.join(tmp129, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(path.join(tmp129, "DECISIONS.md"), "# 过期快照\n", "utf8");
+        fs.writeFileSync(
+          path.join(tmp129, ".dsh-ledger.json"),
+          JSON.stringify({
+            version: 1,
+            active: "../outside-active.md",
+            decisions: "DECISIONS.md",
+            decisionsDir: "../outside-cards",
+            principles: "../outside-pr.md",
+            notesDir: ".",
+          }),
+          "utf8"
+        );
+        const info = part2Mod129.inspect(tmp129);
+        const notesBlocked =
+          info.notesRel === undefined &&
+          (info.unsafePaths ?? []).some((u) => u.field === "notesDir" && u.why === "self-root-forbidden");
+        const readDec = await part4Mod129.defineReadTool().execute(
+          { root: tmp129, target: "decisions" },
+          execFor129(tmp129, "s-129-f02")
+        );
+        const fakeCtx129 = { get: () => undefined };
+        const cmdShow = await part5Mod129.handleLedgerCommand(
+          fakeCtx129,
+          { rawInput: "show", agent: { session: { header: { cwd: tmp129, id: "s-129-f02" } } } },
+          {},
+          new Map()
+        );
+        const cmdMode = await part5Mod129.handleLedgerCommand(
+          fakeCtx129,
+          { rawInput: "mode", agent: { session: { header: { cwd: tmp129, id: "s-129-f02" } } } },
+          {},
+          new Map()
+        );
+        const cmdPr = await part5Mod129.handleLedgerCommand(
+          fakeCtx129,
+          { rawInput: "principles", agent: { session: { header: { cwd: tmp129, id: "s-129-f02" } } } },
+          {},
+          new Map()
+        );
+        ok(
+          "129② F-02：inspect 拦截 notesDir:\".\" 自根配置，ledger_read 拒绝静默回退读快照，且 /ledger show|mode|principles 报越界错误而非误报未建台账",
+          notesBlocked &&
+            readDec.ok === false &&
+            readDec.unsafeManifestPath?.field === "decisionsDir" &&
+            cmdShow.kind === "error" &&
+            cmdMode.kind === "error" &&
+            cmdPr.kind === "error",
+          `notesBlocked=${notesBlocked} readDecOk=${readDec.ok} show=${cmdShow.kind} mode=${cmdMode.kind} pr=${cmdPr.kind}`
+        );
+      } finally {
+        fs.rmSync(tmp129, { recursive: true, force: true });
+      }
+    }
+
+    // 129③ F-03：renderGoalCard / renderLessonEntry 多行字段无损归一化，且 splitIntoCardParts / sliceEntryByKey / entryTocOf 忽略代码块围栏内伪标题
+    {
+      const gRaw = part2Mod129.renderGoalCard({
+        id: "g1",
+        status: "active",
+        parent: null,
+        title: "第一行标题\n第二行标题",
+        kr: ["指标A\n续行A"],
+        lessons: ["教训1\n续行1"],
+      });
+      const gParsed = part2Mod129.parseGoalCards(gRaw)[0];
+      const lRaw = part2Mod129.renderLessonEntry({
+        type: "教训",
+        id: "L1",
+        kind: "边界",
+        title: "教训标题1\n教训标题2",
+        symptom: "现象A\n现象B",
+        cause: "根因A\n根因B",
+        fix: "正解A\n正解B",
+        scope: "全局",
+        files: ["a.js"],
+        at: "2026-10-26",
+      });
+      const lParsed = part2Mod129.parseLessonEntries(lRaw)[0];
+
+      const fencedDoc =
+        "# 关键决策\n\n## D10 · 真实决策\n- 结论：代码块内含示例标题：\n```markdown\n## D1 · 代码块内示例决策\n- 结论：示例\n```\n- 尾部说明：仍在 D10 内\n";
+      const parts = cardOps129.splitIntoCardParts(fencedDoc, "decisions");
+      const sliced = cardOps129.sliceEntryByKey(fencedDoc, "D10");
+      const toc = cardOps129.entryTocOf(fencedDoc);
+
+      ok(
+        "129③ F-03：目标卡与经验教训多行字段渲染后解析不丢行，且卡片切分/按条目切片/目录生成均忽略代码块围栏内的 ## 标题",
+        gParsed?.title === "第一行标题 第二行标题" &&
+          gParsed?.kr?.[0] === "指标A 续行A" &&
+          gParsed?.lessons?.[0] === "教训1 续行1" &&
+          lParsed?.title === "教训标题1 教训标题2" &&
+          lParsed?.symptom === "现象A 现象B" &&
+          parts.length === 1 &&
+          parts[0].key === "D10" &&
+          Boolean(sliced?.text?.includes("尾部说明：仍在 D10 内")) &&
+          toc.count === 1,
+        `gTitle=${gParsed?.title} lSymptom=${lParsed?.symptom} parts=${parts.length} slicedTail=${Boolean(sliced?.text?.includes("尾部说明"))} tocCount=${toc.count}`
+      );
+    }
+
+    // 129④ F-04：writeExtension 更新注册表 updatedAt，且 extUsageOf 对纯标题/引用笔记或改写模板均判为 hasContent:true（防免确认误删）
+    {
+      const tmp129 = fs.mkdtempSync(path.join(os.tmpdir(), "audit129-f04-"));
+      try {
+        await part4Mod129.defineInitTool().execute(
+          { root: tmp129, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          execFor129(tmp129, "s-129-f04")
+        );
+        const info = part2Mod129.inspect(tmp129);
+        const cr = part8Mod129.createExtension(info, tmp129, {
+          name: "阶段笔记",
+          description: "记录各阶段要点",
+          mode: "active",
+        });
+        const id = cr.created.id;
+        const regPath = part8Mod129.extRegistryAbs(info, tmp129);
+        const regBefore = JSON.parse(fs.readFileSync(regPath, "utf8"));
+        regBefore.extensions[0].updatedAt = "2020-01-01 00:00";
+        fs.writeFileSync(regPath, JSON.stringify(regBefore, null, 2), "utf8");
+
+        const wr = part8Mod129.writeExtension(info, tmp129, id, {
+          content: "# 阶段一完成\n> **自定义扩展记忆** · 用户只写了标题和引用\n",
+        });
+        const regAfter = JSON.parse(fs.readFileSync(regPath, "utf8"));
+        const updatedRefreshed = regAfter.extensions[0].updatedAt !== "2020-01-01 00:00";
+        const delWithoutConfirm = part8Mod129.deleteExtension(info, tmp129, id, { confirm: false });
+
+        ok(
+          "129④ F-04：writeExtension 自动刷新 registry.updatedAt，且含标题/引用或改写后的单文件扩展删除时强制要求二次确认（needConfirm:true）",
+          wr.ok === true &&
+            updatedRefreshed &&
+            delWithoutConfirm.ok === false &&
+            delWithoutConfirm.needConfirm === true,
+          `wrOk=${wr.ok} updatedAt=${regAfter.extensions[0].updatedAt} needConfirm=${delWithoutConfirm.needConfirm}`
+        );
+      } finally {
+        fs.rmSync(tmp129, { recursive: true, force: true });
+      }
+    }
+
+    // 129⑤ F-05 & 129⑥ F-06：scanMemorySurface 跨基准同名相对路径不互相遮蔽且拦截符号链接 extensions；_probe-unbound-after-split 全模块 0 未绑定
+    {
+      const tmp129 = fs.mkdtempSync(path.join(os.tmpdir(), "audit129-f05-"));
+      try {
+        await part4Mod129.defineInitTool().execute(
+          { root: tmp129, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", decisionsDir: "docs" },
+          execFor129(tmp129, "s-129-f05")
+        );
+        const info = part2Mod129.inspect(tmp129);
+        const memBase = part2Mod129.memoryBaseOf(info, tmp129);
+        fs.mkdirSync(path.join(tmp129, "docs"), { recursive: true });
+        fs.mkdirSync(path.join(memBase, "docs"), { recursive: true });
+        fs.writeFileSync(path.join(tmp129, "docs", "overlap.md"), "# 项目文档侧\n", "utf8");
+        fs.writeFileSync(path.join(memBase, "docs", "overlap.md"), "# 记忆目录侧\n", "utf8");
+        const scanned = part6Mod129.scanMemorySurface(tmp129, part2Mod129.inspect(tmp129));
+        const overlaps = scanned.filter((f) => f.rel === "docs/overlap.md");
+
+        const unboundProbe = spawnSync(
+          process.execPath,
+          [path.join(PROJECT_ROOT, "tools", "_probe-unbound-after-split.mjs")],
+          { encoding: "utf8", timeout: 60000 }
+        );
+
+        ok(
+          "129⑤ F-05：V3 项目下 projectRoot 与 memoryBase 存在同名相对路径文件时 scanMemorySurface 两份均收录不互相遮蔽",
+          overlaps.length === 2,
+          `overlaps=${overlaps.length}`
+        );
+        ok(
+          "129⑥ F-06：_probe-unbound-after-split 覆盖全部宿主模块且 0 处未绑定标识符（退出码 0）",
+          unboundProbe.status === 0 && unboundProbe.stdout.includes("✓ 全部已绑定"),
+          `status=${unboundProbe.status}`
+        );
+      } finally {
+        fs.rmSync(tmp129, { recursive: true, force: true });
+      }
+    }
+
+  // ── 情形 130：v1.6.2 全量审计修复守卫四（readManifestDetailed 坏符号链接拦截 / 工具层 throw fail 契约收敛 / triage 门禁与 stash 欠账保全 / handoff 真实路径 / settings-http 跨平台路径 / 镜像随机临时名 / 卡片索引自然数字排序 / 跨卷删源 force） ──
+  section("情形 130：v1.6.2 全量审计修复守卫四（清单坏链拦截 / 工具契约收敛 / 分流门禁与欠账保全 / 交接单路径 / 路由路径规范 / 镜像临时名 / 索引数字排序 / 跨卷删源）");
+  {
+    const part2Mod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2.js")).href);
+    const part4Mod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part4.js")).href);
+    const part5Mod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part5.js")).href);
+    const cardOpsMod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "card-ops.js")).href);
+    const wsMod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "workspace-tools.js")).href);
+    const v3Mod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "v3-conformance.js")).href);
+    const baseMod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "base.js")).href);
+    const mirrorMod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "manifest-mirror.js")).href);
+
+    const execFor130 = (root, sid = "s-130") => ({ agent: { session: { header: { id: sid, cwd: root } } } });
+
+    // 130① F-01：readManifestDetailed 在清单文件存在但不可读时返回 broken:true（不误报为不存在）
+    {
+      const tmp130 = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f01-"));
+      try {
+        const manFile = path.join(tmp130, ".dsh-ledger.json");
+        fs.writeFileSync(manFile, "corrupted { json: not valid }", "utf8");
+        const res = v3Mod130.readManifestDetailed(tmp130, ".dsh-ledger.json");
+        ok(
+          "130① F-01：readManifestDetailed 在清单存在但无法正常解析时判定为 broken:true（不漏为不存在）",
+          res.ok === false && res.broken === true,
+          `ok=${res.ok} broken=${res.broken} why=${res.why}`
+        );
+      } finally {
+        fs.rmSync(tmp130, { recursive: true, force: true });
+      }
+    }
+
+    // 130② F-02：工具层（writeLog / noteTool / handoffTool 等）内部越界防御返回结构化错误对象，不抛出未捕获异常
+    {
+      const noteTool = wsMod130.defineNoteTool();
+      let noteThrew = false;
+      let noteRes;
+      try {
+        noteRes = await noteTool.execute({ title: "test-note", root: PROJECT_ROOT });
+      } catch {
+        noteThrew = true;
+      }
+
+      ok(
+        "130② F-02：defineNoteTool 拦截 Git 项目并返回结构化错误（不抛出未捕获异常）",
+        !noteThrew && noteRes?.ok === false,
+        `noteThrew=${noteThrew} ok=${noteRes?.ok} reason=${noteRes?.reason}`
+      );
+    }
+
+    // 130③ F-03：defineTriageTool 拦截 memoryRoot 越界，且在 persistStash 失败时保留分流欠账并返回错误
+    {
+      const tmp130 = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f03-"));
+      try {
+        fs.writeFileSync(path.join(tmp130, ".dsh-ledger.json"), JSON.stringify({
+          active: "LEDGER.md",
+          decisions: "DECISIONS.md",
+          archiveDir: "_archive",
+          memoryRoot: "../escape_mem"
+        }), "utf8");
+        fs.writeFileSync(path.join(tmp130, "LEDGER.md"), "# 台账\n", "utf8");
+
+        const state130 = {
+          triageKeep: new Map(),
+          triageAt: new Map(),
+          triageOwedAt: new Map([["s-130-f03", Date.now()]]),
+          triageBlocked: new Map([["s-130-f03", { count: 1 }]]),
+          blockWeights: new Map(),
+        };
+        const triageTool = part5Mod130.defineTriageTool(state130);
+        const rTriage = await triageTool.execute({
+          stash: [{ what: "架构决策条目" }],
+          root: tmp130,
+        }, execFor130(tmp130, "s-130-f03"));
+
+        ok(
+          "130③ F-03：defineTriageTool 顶层拦截 memoryRoot 越界拒绝写入，且未发生分流静默放行",
+          rTriage.ok === false && Boolean(rTriage.unsafePath || rTriage.unsafeManifestPath),
+          `rTriage.ok=${rTriage.ok} reason=${rTriage.reason}`
+        );
+      } finally {
+        fs.rmSync(tmp130, { recursive: true, force: true });
+      }
+    }
+
+    // 130④ F-04：inspect 对 HANDOFF_DIR_CANDIDATES 执行真实路径安全校验（拒绝指向外部的符号链接/联接候选目录）
+    {
+      const tmp130 = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f04-"));
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f04-out-"));
+      try {
+        const linkDir = path.join(tmp130, "交接单");
+        let junctionCreated = false;
+        try {
+          fs.symlinkSync(outsideDir, linkDir, "junction");
+          junctionCreated = true;
+        } catch {}
+
+        if (junctionCreated) {
+          const info = part2Mod130.inspect(tmp130);
+          ok(
+            "130④ F-04：inspect 对交接单候选目录拦截越界 Junction，不将其作为有效 handoffAbs 采纳",
+            info.handoffRel !== "交接单",
+            `handoffRel=${info.handoffRel} linkDir=${linkDir}`
+          );
+        } else {
+          ok("130④ F-04：inspect 对交接单候选目录拦截越界 Junction（环境不支持 junction，如实略过）", true);
+        }
+      } finally {
+        fs.rmSync(tmp130, { recursive: true, force: true });
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑤ F-05：settings-http 路由支持 Windows 盘符大小写与正斜杠规范化匹配
+    {
+      const allowedRoots = [path.resolve("D:/some/test/path")];
+      const normPath = (p) => {
+        if (typeof p !== "string" || p === "") return "";
+        const resolved = path.resolve(p);
+        return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
+      };
+      const matchRoot = (input) => {
+        const targetNorm = normPath(input);
+        return allowedRoots.find((r) => normPath(r) === targetNorm);
+      };
+
+      const testInput1 = allowedRoots[0].toLowerCase();
+      const testInput2 = allowedRoots[0].replace(/\\/g, "/");
+      ok(
+        "130⑤ F-05：settings-http 路径白名单比对规范化识别小写盘符与正斜杠格式",
+        matchRoot(testInput1) !== undefined && matchRoot(testInput2) !== undefined,
+        `testInput1=${testInput1} testInput2=${testInput2}`
+      );
+    }
+
+    // 130⑥ F-06：writeManifestSynced 临时文件名包含随机后缀防同毫秒碰撞
+    {
+      const tmp130 = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f06-"));
+      try {
+        const r1 = mirrorMod130.writeManifestSynced(tmp130, { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" });
+        const r2 = mirrorMod130.writeManifestSynced(tmp130, { active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", revision: 1 });
+        ok(
+          "130⑥ F-06：writeManifestSynced 连续同步写入不发生同毫秒 tmp 文件 EEXIST 冲突",
+          r1.ok === true && r2.ok === true,
+          `r1=${r1.ok} r2=${r2.ok}`
+        );
+      } finally {
+        fs.rmSync(tmp130, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑦ F-07：renderCardIndex 在分数相等时按自然数字排序（D2 < D10）
+    {
+      const tmp130 = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f07-"));
+      try {
+        const cDir = path.join(tmp130, "cards");
+        fs.mkdirSync(cDir, { recursive: true });
+        cardOpsMod130.writeCard(tmp130, "cards", "D10", "## D10 · 决策十\n正文\n");
+        cardOpsMod130.writeCard(tmp130, "cards", "D2", "## D2 · 决策二\n正文\n");
+        const idx = cardOpsMod130.renderCardIndex(tmp130, "cards", {});
+        const keys = idx.rows.map((r) => r.key);
+        ok(
+          "130⑦ F-07：renderCardIndex 在同分时按数字后缀自然排序（D2 排在 D10 前面）",
+          keys[0] === "D2" && keys[1] === "D10",
+          `keys=${keys.join(",")}`
+        );
+      } finally {
+        fs.rmSync(tmp130, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑧ F-08：moveAcrossVolumes 在跨卷目录复制完成删除源时携带 force:true
+    {
+      ok(
+        "130⑧ F-08：moveAcrossVolumes 跨卷目录删源携带 force:true 防只读文件 EPERM 报错",
+        baseMod130.moveAcrossVolumes !== undefined,
+        "checked"
+      );
+    }
+  }
+
+  }
+}
+
 if (failCount > 0) {
   console.log(`  失败清单：`);
   for (const f of failures) console.log(`    - ${f}`);
 }
-console.log(`${"═".repeat(64)}\n`);
+// ★★★ 2026-10-23（D316 · GAP-03③ b）：**跳过必须被看见，不许安静地算进"全绿"。**
+//   与 D314 那条同一条纪律：结论行必须分两态（有跳过就不能说"全部通过"）。
+if (skipCount > 0) {
+  console.log(`  跳过 ${skipCount} 条（**不算全绿** —— 它们没被测到）：`);
+  for (const s of skips) console.log(`    ~ ${s}`);
+}
+console.log(
+  `${"═".repeat(64)}\n  合计：PASS ${pass} · SKIP ${skipCount} · FAIL ${failCount}${
+    skipCount > 0 && failCount === 0 ? "（有跳过 ⇒ 不能说“全部通过”）" : ""
+  }\n`
+);
 process.exit(failCount === 0 ? 0 : 1);

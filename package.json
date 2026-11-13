@@ -1,7 +1,7 @@
 {
   "name": "dsh-ledger-memory",
   "version": "1.6.2",
-  "description": "台账记忆（Ledger Memory）—— 给 DSH 一个项目自己的记忆载体：活跃台账每回合自动注入、只追加的回合流水与活动日志（L0–L4，含逐字存档）、关键决策/目标树/经验教训的卡片化记忆，压缩前抓逐字胶囊、压缩后连台账一起注回，把对话锁定到某个项目目录（跨重启保持），以及跨会话的交接单闭环。可回溯、可追查。★ 1.6.2（安全补全）：1.6.1 的路径边界只覆盖初始化入口，本次补上全部日常读写入口（含链接与越界清单一律拒绝，不再降级写回源码根）；合规检查的「可修」项现在真的会修；扩展记忆（6 种模式）的未知模式不再导致卡片永久删不掉；V3 首轮注入与迁移的指针、忽略规则不再错位。",
+  "description": "台账记忆（Ledger Memory）—— DSH 的项目级记忆：活跃台账自动注入，决策、目标树与经验教训卡片化，回合流水和活动日志（L0–L4）只追加；压缩前保存逐字胶囊，压缩后恢复记忆与回查指针，支持跨会话交接、持久项目锁定及扩展记忆（6 种模式）。项目台账看板提供六类核心记忆搜索、逐条字段编辑、协议格式预览与冲突保护；原则只读，流水独立追加。V3 记忆目录隔离，读写检查路径边界，编辑器提供备份与审计线索。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -40,6 +40,7 @@
   ],
   "scripts": {
     "test": "node tools/selftest.mjs",
+    "test:board": "node tools/board-backend.test.mjs && node tools/board-tool-parity.test.mjs && node tools/board-client-contract.test.mjs && node tools/board-core-boundaries.test.mjs && node tools/board-shutdown.test.mjs && node tools/board-mutation.test.mjs",
     "probes": "node tools/_probe-dirty-source.mjs && node tools/_probe-capsule-persistence.mjs",
     "probes:all": "node tools/_probe-assertion-can-fail.mjs && node tools/_probe-dirty-source.mjs && node tools/_probe-capsule-persistence.mjs",
     "probes:mutation": "node tools/_probe-assertion-can-fail.mjs"

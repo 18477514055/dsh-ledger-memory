@@ -8832,7 +8832,32 @@ section("情形 27：官方设置面板");
   //   处置照前 10 次：**只改数字、不动判据** —— 判据语义是"有能力动 lib"，放宽会把真危险那类一起放过。
   //   ★★ 这个数是用 `tools/_diag-d338-dangerous2.mjs` 逐字照抄下面 5 条判据数出来的（79 − 2 个一次性
   //     诊断脚本 = 77），**不是靠推理加一**。
-  const DANGEROUS_EXPECTED = 77;
+  // ★ 2026-10-29（D358）：77 → **78**。新增 `_probe-d358-scope.mjs`（指纹**边界守卫**：
+  //   证明"别人的文件一个都不加指纹"），它的用例表里写了 `lib/index.js` 字面量 ⇒ 命中第 ⑤ 条判据。
+  //   ★ **它不会改写源码**（纯只读），属**已知的只读假阳性**。
+  //   ★★ 处置照前 11 次：**只改数字、不动判据** —— 判据语义是"有能力动 lib"，
+  //     放宽会把真危险那一类一起放过；多记一个假阳性的代价远小于那个。
+  // ★ 2026-10-29（D359）：**仍是 78**（没有增减）。本轮新增的三个 D359 探针里，
+  //   只有 `_probe-d359-reread2.mjs` 曾命中第 ⑤ 条判据（注释里写了 `lib/index.js` 有 147 KB），
+  //   而它**是排查过程的中间产物、提交前已删**（与 D358 清理 13 个一次性探针同一处置）。
+  //   留下来的 `_probe-d359-{recent,e2e,size,l1,restate,waste,window}.mjs` 与
+  //   `_reverse-verify-d359.mjs` 都不含 `lib/` 路径字面量 ⇒ 扫描数不动。
+  //   ★★ 这个数**是我实测出来的**（先按上面判断改成 79、跑自检当场红、看到"实际扫到 78"才改回来），
+  //     不是靠推理 —— 台账已记：**这个数不许靠推理，必须让自检自己数出来。**
+  //
+  // ★ 2026-11-09（D377）：**78 → 79**（+1，真新增，不是假阳性）。
+  //   新增的 `tools/_probe-d377-principles.mjs` **确实会写文件** —— 它用 `writePrinciples`
+  //   往 `os.tmpdir()` 里造临时项目来验「append 剥重复文档头」（端到端那两段）。
+  //   ⇒ 扫到它**是对的**，不是误报；按本条纪律同步改数字。
+  //   ★ 判据仍是那条：**加/删探针 ⇒ 让自检重新数一遍，不许凭推理填。**
+  // ★ 2026-11-10（D378）：**79 → 80**（+1，真新增）。
+  //   新增的 `tools/_probe-audit-024.mjs`（接收 Gemini 024 的取证器，10 条子断言）**确实会写文件**
+  //   —— 它用 `mkdtemp` 造临时项目来复现 F-01~F-06。⇒ 扫到它**是对的**。
+  //   ★ 同轮新增的 `tools/_probe-d378-f05b.mjs` **没有**被扫到：它虽然也 `mkdirSync`/`writeFileSync`，
+  //     但不含 `lib/index.js` 这类路径字面量 ⇒ 不命中第 ⑤ 条判据。**这是判据的正常表现，不是漏扫。**
+  //   ★★ 这个数**是我实测出来的**（先按推测填 81、跑自检当场红、看到"实际扫到 80"才改回），
+  //     不是靠推理 —— 台账已记：**这个数不许靠推理，必须让自检自己数出来。**
+  const DANGEROUS_EXPECTED = 80;
   ok(
     isSourceTree
       ? `★★★ 自发现扫到的「会改写源码的探针」数 = ${DANGEROUS_EXPECTED}（加/删探针时须同步改这里）`
@@ -9245,8 +9270,8 @@ section("情形 43：口径自检（文档写的数字必须与代码一致）")
   //   ★★ 2026-10-26（v1.6.2 全量审计补丁 · 情形 127 补登记 + 新增情形 128）：
   //     补上情形 127 漏掉的 `section("情形 127：…")` 调用，并新增情形 128（七项全量审计修复回归守卫 F-01~F-07）
   //     ⇒ 115 → **117**；带编号 114 → **116**。
-  eq("★ 口径：section 总数 = 119（情形 1~130）", sectionCalls, 119);
-  eq("★ 口径：其中带「情形 N」编号的 = 118", numbered, 118);
+  eq("★ 口径：section 总数 = 121（情形 1~132）", sectionCalls, 121);
+  eq("★ 口径：其中带「情形 N」编号的 = 120", numbered, 120);
 
   // ── ⑤ 工具名形态一致性 ───────────────────────────────────────────────────
   //   ★ D192：判据要认**两种写法**（字面量 + 常量）——
@@ -14307,6 +14332,15 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
     //     会被别的文件里的同名片段污染（本项目第 2/9 条尺子错反复栽过）。
     //     ⇒ 要断言"它住在哪个文件"，就得**只读那个文件**。
     const part1Src = fs.readFileSync(path.join(HERE, "..", "lib", "part1.js"), "utf8");
+    // ★★★ 2026-11-03（D376）：`part1.js` 的「磁盘 store 与路径」簇已拆到 `lib/part1-store.js`
+    //   （用户要求"按规则拆分模块"，因为 part1.js 距 241,664 紧线只剩 8,113 B）。
+    //   ⇒ `owedStorePath` / `writeOwedStore` 现在住在 part1-store.js 里。
+    //   ★ 断言口径**跟着代码走**：它要守的是「欠账只许落在 plugin-data 里」这个**行为**，
+    //     不是"它必须住在 part1.js 这个文件"。所以把两个文件拼起来判。
+    //   ★ 但**不能**直接换成全库 `src`（那会让同名片段从别处混进来 —— 本文件上方那段注释
+    //     正是在讲这个坑，第 2/9 条尺子错）。⇒ 只拼这两份，不多不少。
+    const part1StoreSrc = fs.readFileSync(path.join(HERE, "..", "lib", "part1-store.js"), "utf8");
+    const part1OrStoreSrc = `${part1Src}\n${part1StoreSrc}`;
     // ★★★★★ 情形 63（D157/D158）：**逐回合义务** 与 **分流单累积**
     // ═══════════════════════════════════════════════════════════════════════════
     //   两条都是用户当场定的规矩，必须由断言钉住（否则下次改动会静默改掉行为）：
@@ -14364,8 +14398,8 @@ section("情形 52：先写台账、后收到提醒 ⇒ 压缩仍须放行（D12
       "★ 只写不读 = 那份记录永远没有消费者（用户要的正是「结束后回来还能看到」）");
     ok("★★★★ D231：欠账记在 `plugin-data`（**绝不写进用户工作区**），且落盘走吞错",
       /export function owedStorePath\(\) \{\s*return path\.join\(path\.dirname\(lockStorePath\(\)\), OWED_STORE_FILE\)/.test(
-        part1Src
-      ) && /export function writeOwedStore\(store\)/.test(part1Src),
+        part1OrStoreSrc
+      ) && /export function writeOwedStore\(store\)/.test(part1OrStoreSrc),
       "★ 红线：落盘只许在 $DSH_HOME\\plugin-data\\<包名>\\，绝不写进用户的工作区");
     // ★★★ D158：keep 桶必须**累积**（原来是 `set(sid, {items: keep})` 单槽覆盖）
     ok("★★★★★ 63⑤ ★ 分流单**累积**而不是覆盖（D158 用户当场指出的缺陷）——" +
@@ -21158,7 +21192,11 @@ section("情形 106：第三方审查 v1.2.7 的 P1 六项（D266 · 承诺必�
   //   判据要验的是「这个边界判据存在」，不是「它住在 part4」⇒ 把新模块并进来。
   //   🔴 不并的后果（本轮实测）：拆完当场 1 条红，而实现完全正常 —— **假红**。
   const cardsAll = fs.readFileSync(path.join(HERE, "..", "lib", "card-ops.js"), "utf8");
-  const p4 = `${fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8")}\n${cardsAll}`;
+  // ★★★★ 2026-10-30（D368）：`defineInitTool` 已搬到 `lib/init-tool.js`（part4 超紧线）。
+  //   `106③ c` 要判的是「ledger_init 会不会拒绝把原则文件登记成普通角色」—— 守的是**这件事**，
+  //   不是「它住在哪」。⇒ 读取面必须跟着实现走。🔴 不并 = 假红（本轮实测）。
+  const initToolAll = fs.readFileSync(path.join(HERE, "..", "lib", "init-tool.js"), "utf8");
+  const p4 = `${fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8")}\n${cardsAll}\n${initToolAll}`;
   // ★ 2026-10-21（D288）：本条原则的机检要看 defs.js（`DEFAULT_IGNORE_LINES` 在那）。
   const defsAll = fs.readFileSync(path.join(HERE, "..", "lib", "defs.js"), "utf8");
   const stripAll = stripCommentsAndLiterals;
@@ -21454,7 +21492,12 @@ section("情形 108：P2 后两项（D269）—— init 先预检后执行 · �
   // ★ 这段守 review 的 F07 / F08，与 106 那六项**同一个形状**：
   //   F07 = 「顺序错」：校验排在副作用之后 ⇒ 被拒时磁盘上已留下一堆没登记的文件。
   //   F08 = 「身份判错」：角色冲突按**原始字符串**比 ⇒ `./LEDGER.md` 逃过检查。
-  const p4 = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
+  // ★★★★ 2026-10-30（D368）：`defineInitTool` 已搬到 `lib/init-tool.js`（part4 超紧线）。
+  //   本情形守的是「init 先预检后执行」这件**事**，不是「它住在哪个文件」⇒ 判据的读取面
+  //   必须跟着实现走。🔴 **不并的后果（本轮实测）：一次 12 条假红，而实现完全正常。**
+  //   ★ 判据：**拆模块之后，"读源码文本"的断言要把新模块并进读取面** ——
+  //     这与 D307 拆 card-ops、D332 拆 base 时是同一个动作（本项目第四次）。
+  const p4 = `${fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8")}\n${fs.readFileSync(path.join(HERE, "..", "lib", "init-tool.js"), "utf8")}`;
 
   // ── 108① F07：预检区在副作用之前，且区内**零写盘** ──────────────────
   const iDef = p4.indexOf("export function defineInitTool");
@@ -21871,7 +21914,9 @@ section("情形 110：记忆协议代次（D272）—— 判定、注入、以�
     eq("110② d 空字符串不算「有」", satisfiedProtocolVersion({ decisionsDir: "", lessonsDir: "l", goalsDir: "g" }), 1);
 
     // ★★ 这一条守的是 ①：**init 的版本号必须由事实推导**
-    const p4 = fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8");
+    // ★★★★ 2026-10-30（D368）：`defineInitTool` 已搬到 `lib/init-tool.js` ⇒ 读取面并进去。
+    //   🔴 不并 = 假红（本轮实测）。判据守的是"init 有没有按事实推导版本号"，与住哪个文件无关。
+    const p4 = `${fs.readFileSync(path.join(HERE, "..", "lib", "part4.js"), "utf8")}\n${fs.readFileSync(path.join(HERE, "..", "lib", "init-tool.js"), "utf8")}`;
     ok(
       "110② e ★★ ledger_init 用 satisfiedProtocolVersion 算代次（不是无条件写常量）",
       /protocolVersion:\s*honestProtoVersion/.test(p4) &&
@@ -22683,7 +22728,8 @@ section("情形 115：V3 §3.1 自动暂存默认关闭，且不能被旧配置�
 
   // ── ⑥ 行为：V3 的 init 默认值必须是 false ─────────────────────────────
   //   ★ 清单里写 true 也是假的（④ 已证明它无效），但**写 false 才不会误导人**。
-  const p4code = stripJsComments(readLib("part4.js"));
+  // ★★★★ 2026-10-30（D368）：init 实现已搬到 `init-tool.js` ⇒ 读取面并进去（不并 = 假红）。
+  const p4code = stripJsComments(`${readLib("part4.js")}\n${readLib("init-tool.js")}`);
   ok(
     "115⑥ ★ ledger_init 里 autoGitAdd 的默认值按项目形态定（V3 ⇒ false）",
     /memRootRel === undefined && typeof prev\.memoryRoot !== "string"/.test(p4code)
@@ -25916,20 +25962,26 @@ section("情形 118：发布分级 —— 先私有后公开（D314）");
 
     // 130② F-02：工具层（writeLog / noteTool / handoffTool 等）内部越界防御返回结构化错误对象，不抛出未捕获异常
     {
-      const noteTool = wsMod130.defineNoteTool();
-      let noteThrew = false;
-      let noteRes;
+      const tmpGit130 = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f02-"));
       try {
-        noteRes = await noteTool.execute({ title: "test-note", root: PROJECT_ROOT });
-      } catch {
-        noteThrew = true;
-      }
+        fs.mkdirSync(path.join(tmpGit130, ".git"), { recursive: true });
+        const noteTool = wsMod130.defineNoteTool();
+        let noteThrew = false;
+        let noteRes;
+        try {
+          noteRes = await noteTool.execute({ title: "test-note", root: tmpGit130 });
+        } catch {
+          noteThrew = true;
+        }
 
-      ok(
-        "130② F-02：defineNoteTool 拦截 Git 项目并返回结构化错误（不抛出未捕获异常）",
-        !noteThrew && noteRes?.ok === false,
-        `noteThrew=${noteThrew} ok=${noteRes?.ok} reason=${noteRes?.reason}`
-      );
+        ok(
+          "130② F-02：defineNoteTool 拦截 Git 项目并返回结构化错误（不抛出未捕获异常）",
+          !noteThrew && noteRes?.ok === false,
+          `noteThrew=${noteThrew} ok=${noteRes?.ok} reason=${noteRes?.reason}`
+        );
+      } finally {
+        fs.rmSync(tmpGit130, { recursive: true, force: true });
+      }
     }
 
     // 130③ F-03：defineTriageTool 拦截 memoryRoot 越界，且在 persistStash 失败时保留分流欠账并返回错误
@@ -25995,13 +26047,17 @@ section("情形 118：发布分级 —— 先私有后公开（D314）");
       }
     }
 
-    // 130⑤ F-05：settings-http 路由支持 Windows 盘符大小写与正斜杠规范化匹配
+    // 130⑤ F-05：settings-http 路由支持跨平台盘符大小写与正斜杠规范化匹配，且写操作统一传入 matchedRoot
     {
       const allowedRoots = [path.resolve("D:/some/test/path")];
       const normPath = (p) => {
         if (typeof p !== "string" || p === "") return "";
-        const resolved = path.resolve(p);
-        return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
+        const s = p.replace(/\\/g, "/");
+        if (/^[A-Za-z]:\//.test(s)) return path.win32.resolve(s).replace(/\\/g, "/").toLowerCase();
+        const resolved = path.resolve(s);
+        return process.platform === "win32" || process.platform === "darwin" || /[A-Za-z]:[\\/]/.test(p)
+          ? resolved.toLowerCase()
+          : resolved;
       };
       const matchRoot = (input) => {
         const targetNorm = normPath(input);
@@ -26010,10 +26066,15 @@ section("情形 118：发布分级 —— 先私有后公开（D314）");
 
       const testInput1 = allowedRoots[0].toLowerCase();
       const testInput2 = allowedRoots[0].replace(/\\/g, "/");
+      const shSrc130 = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "settings-http.js"), "utf8");
+      const usesMatchedRoot =
+        shSrc130.includes("createExtension(info, matchedRoot,") &&
+        shSrc130.includes("updateExtension(info, matchedRoot,") &&
+        shSrc130.includes("deleteExtension(info, matchedRoot,");
       ok(
-        "130⑤ F-05：settings-http 路径白名单比对规范化识别小写盘符与正斜杠格式",
-        matchRoot(testInput1) !== undefined && matchRoot(testInput2) !== undefined,
-        `testInput1=${testInput1} testInput2=${testInput2}`
+        "130⑤ F-05：settings-http 路径白名单比对规范化识别小写盘符与正斜杠格式且写操作传入 matchedRoot",
+        matchRoot(testInput1) !== undefined && matchRoot(testInput2) !== undefined && usesMatchedRoot,
+        `testInput1=${testInput1} testInput2=${testInput2} usesMatchedRoot=${usesMatchedRoot}`
       );
     }
 
@@ -26061,9 +26122,2233 @@ section("情形 118：发布分级 —— 先私有后公开（D314）");
         "checked"
       );
     }
+
+    // 130⑨ 全量审计修复：readEntryUnified 对 lessons / goals 卡片支持按指纹兜底找回且三载体指纹不破坏卡片标题与解析器
+    {
+      const fpMod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "fingerprint.js")).href);
+      const tmp130 = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f09-"));
+      try {
+        const pid = fpMod130.newProjectId();
+        const memDir = path.join(tmp130, "my-mem");
+        fs.mkdirSync(path.join(memDir, "lessons"), { recursive: true });
+        fs.mkdirSync(path.join(memDir, "goals"), { recursive: true });
+        fs.writeFileSync(
+          path.join(tmp130, ".dsh-ledger.json"),
+          JSON.stringify({
+            version: 1,
+            projectId: pid,
+            memoryRoot: "my-mem",
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_archive",
+            decisionsDir: "decisions",
+            lessonsDir: "lessons",
+            goalsDir: "goals",
+          }),
+          "utf8"
+        );
+        fpMod130.clearProjectCache();
+        // 验证 V3 下镜像尚未生成时 projectOf(memDir) 仍能从父目录清单反查出 projectId
+        const pidFromMem = fpMod130.projectOf(memDir);
+        const info = part2Mod130.inspect(tmp130);
+
+        const lessonRaw = part2Mod130.renderLessonEntry({
+          type: "教训",
+          id: "L1",
+          kind: "边界",
+          title: "三载体指纹与代码块围栏",
+          symptom: "现象说明",
+          cause: "根因说明",
+          fix: "正解说明",
+          scope: "全模块",
+          files: ["lib/card-ops.js"],
+          at: "2026-10-28",
+        }) + "\n```markdown\n## 教训 L99 · 代码块内伪教训\n- 标题: 伪标题\n```\n";
+        cardOpsMod130.writeKindCard(tmp130, info, "lessons", "L1", lessonRaw);
+
+        const goalRaw = part2Mod130.renderGoalCard({
+          id: "g1",
+          status: "active",
+          parent: null,
+          title: "根目标A",
+          kr: ["指标1"],
+          lessons: ["L1"],
+        }) + "\n```markdown\n## 目标 g99 · done\n- title: 伪目标\n```\n";
+        cardOpsMod130.writeKindCard(tmp130, info, "goals", "g1", goalRaw);
+
+        const tocL = cardOpsMod130.renderCardToc(memDir, "lessons", 20, "经验与教训");
+        const idxL = cardOpsMod130.renderCardIndex(memDir, "lessons", {});
+        const readL1 = cardOpsMod130.readEntryUnified(tmp130, info, "lessons", "L1");
+        const parsedLessons = part2Mod130.parseLessonEntries(readL1.text);
+        const readG1 = cardOpsMod130.readEntryUnified(tmp130, info, "goals", "g1");
+        const parsedGoals = part2Mod130.parseGoalCards(readG1.text);
+
+        // 改名后验证 lessons 与 goals 均可按指纹找回（不再硬编码 decisions）
+        fs.renameSync(path.join(memDir, "lessons", "L1.md"), path.join(memDir, "lessons", "renamed-lesson.md"));
+        fs.renameSync(path.join(memDir, "goals", "g1.md"), path.join(memDir, "goals", "renamed-goal.md"));
+        const byFpL = cardOpsMod130.readEntryUnified(tmp130, info, "lessons", "L1");
+        const byFpG = cardOpsMod130.readEntryUnified(tmp130, info, "goals", "g1");
+
+        ok(
+          "130⑨ 全量审计：V3 记忆目录 projectOf 反查、三载体指纹卡片标题提取、lessons/goals 解析器抗指纹与围栏、以及改名后按指纹兜底找回全部成立",
+          pidFromMem === pid &&
+            tocL.cards[0]?.title === "教训 L1 · 边界" &&
+            idxL.rows[0]?.heading === "教训 L1 · 边界" &&
+            readL1.heading === "教训 L1 · 边界" &&
+            parsedLessons.length === 1 &&
+            parsedLessons[0]?.kind === "边界" &&
+            parsedGoals.length === 1 &&
+            parsedGoals[0]?.id === "g1" &&
+            byFpL.found === true &&
+            byFpL.resolvedBy === "fingerprint" &&
+            byFpL.heading === "教训 L1 · 边界" &&
+            byFpG.found === true &&
+            byFpG.resolvedBy === "fingerprint" &&
+            byFpG.heading.startsWith("目标 g1"),
+          `pidFromMem=${pidFromMem} tocTitle=${tocL.cards[0]?.title} lKind=${parsedLessons[0]?.kind} byFpL=${byFpL.found} byFpG=${byFpG.found}`
+        );
+      } finally {
+        fs.rmSync(tmp130, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑩ 全量审计修复：mergeGitignore / writeManifestSynced / guessArchiveDir / guessLogDir 拦截符号链接越界
+    {
+      const pureMod130 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "pure-ops.js")).href);
+      const tmp130 = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f10-"));
+      const out130 = fs.mkdtempSync(path.join(os.tmpdir(), "audit130-f10-out-"));
+      try {
+        const extGi = path.join(out130, "ext-gitignore");
+        const extMf = path.join(out130, "ext-manifest.json");
+        fs.writeFileSync(extGi, "# outside\n", "utf8");
+        fs.writeFileSync(extMf, "{}\n", "utf8");
+        let symCreated = false;
+        try {
+          fs.symlinkSync(extGi, path.join(tmp130, ".gitignore"));
+          fs.symlinkSync(extMf, path.join(tmp130, ".dsh-ledger.json"));
+          fs.symlinkSync(out130, path.join(tmp130, "_archive"), process.platform === "win32" ? "junction" : "dir");
+          fs.symlinkSync(out130, path.join(tmp130, "_log"), process.platform === "win32" ? "junction" : "dir");
+          symCreated = true;
+        } catch {}
+
+        if (symCreated) {
+          let giThrew = false;
+          try {
+            pureMod130.mergeGitignore(tmp130, ["LEDGER.md"]);
+          } catch {
+            giThrew = true;
+          }
+          const mfRes = mirrorMod130.writeManifestSynced(tmp130, { active: "LEDGER.md" });
+          const gArch = part2Mod130.guessArchiveDir(tmp130);
+          const gLog = part2Mod130.guessLogDir(tmp130);
+          ok(
+            "130⑩ 全量审计：mergeGitignore 与 writeManifestSynced 拒绝覆盖符号链接，且 guessArchiveDir / guessLogDir 忽略符号链接目录",
+            giThrew && mfRes.ok === false && gArch === undefined && gLog === undefined && fs.readFileSync(extGi, "utf8") === "# outside\n",
+            `giThrew=${giThrew} mfOk=${mfRes.ok} gArch=${gArch} gLog=${gLog}`
+          );
+        } else {
+          ok("130⑩ 全量审计：符号链接防御（环境不支持 symlink，如实略过）", true);
+        }
+      } finally {
+        fs.rmSync(tmp130, { recursive: true, force: true });
+        fs.rmSync(out130, { recursive: true, force: true });
+      }
+    }
+
+    // ── 130⑪~130⑯：v1.6.2 全量审计修复守卫五（三载体自证位篡改拦截 / 三载体全链路扫描与校验 / 仅行内信标存活韧性 / 同项目串卡拦截与 BOM+CRLF 幂等 / identityOfPath 兼容 inspect / 原子写防碰撞与拒覆软链） ──
+    const fpMod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "fingerprint.js")).href);
+    const cardOpsMod131 = cardOpsMod130;
+    const part2Mod131 = part2Mod130;
+    const baseMod131 = baseMod130;
+
+    // 130⑪ F-01：三载体 check 自证位被外部篡改时，resolveByIdentity 必须拒绝按老文件放行，且 scanBlind / rebuildFromFingerprints 必须将其记入 bad
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f01-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        const raw = fpMod131.applyFingerprint3("# 台账\n正文\n", { kind: "active", project: pid, key: "-" }).text;
+        // 模拟外部伪造：把三处的 project 同步替换为另一个 ID，但 check 位未重算
+        const fakePid = "f".repeat(16);
+        const forged = raw.replaceAll(pid, fakePid);
+        fs.writeFileSync(path.join(tmp131, "LEDGER.md"), forged, "utf8");
+
+        const resByName = fpMod131.resolveByIdentity(tmp131, { name: "LEDGER.md", kind: "active", project: fakePid });
+        const blind = fpMod131.scanBlind(tmp131, { project: fakePid });
+        // ★ 标题承诺了 rebuildFromFingerprints，就必须真的测它（原来只写了标题、没有断言）
+        const rb = fpMod131.rebuildFromFingerprints(tmp131);
+        const rbSurface = [
+          ...(Array.isArray(rb?.warnings) ? rb.warnings : []),
+          ...(Array.isArray(rb?.bad) ? rb.bad.map((b) => b?.reason) : []),
+          rb?.reason,
+        ].filter((x) => typeof x === "string");
+
+        ok(
+          "130⑪ F-01：三载体 check 自证位不符时 resolveByIdentity 拒绝按无指纹老文件放行，且 scanBlind 将其记入 bad",
+          resByName.ok === false &&
+            String(resByName.reason).includes("自证位") &&
+            blind.bad.length === 1 &&
+            (blind.byKind.get("active") ?? []).length === 0,
+          `resOk=${resByName.ok} reason=${resByName.reason} badLen=${blind.bad.length}`
+        );
+        ok(
+          "130⑪b F-01：唯一文件被自证位拒掉时，rebuildFromFingerprints 必须如实说「被拒」而不是「未找到任何指纹」",
+          rbSurface.some((w) => w.includes("自证位")) && !String(rb?.reason ?? "").includes("未找到任何指纹文件"),
+          `reason=${String(rb?.reason ?? "").slice(0, 200)}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑫ F-02：verifySeal / scanFingerprints / locateProjectRoots 完整支持三载体指纹（且兼容 >4KB 文件文末 link 载体）
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f02-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        const projDir = path.join(tmp131, "subproj");
+        fs.mkdirSync(projDir, { recursive: true });
+        const stamped = fpMod131.applyFingerprint3("# 标题\n\n原始正文内容\n", { kind: "active", project: pid, key: "-" }).text;
+        fs.writeFileSync(path.join(projDir, "LEDGER.md"), stamped, "utf8");
+
+        const p3 = fpMod131.readFingerprint3(stamped);
+        const sealOk1 = fpMod131.verifySeal(stamped, p3);
+        const sealOk2 = fpMod131.verifySeal(stamped);
+        const tamperedBody = stamped.replace("原始正文内容", "被偷偷篡改的正文");
+        const sealBad = fpMod131.verifySeal(tamperedBody, fpMod131.readFingerprint3(tamperedBody));
+
+        const scanFp = fpMod131.scanFingerprints(projDir, { project: pid });
+        const loc = fpMod131.locateProjectRoots(projDir, pid, { upLevels: 1 });
+
+        // >4KB 文件仅保留文末 [dsh-fp-link] 载体时 scanBlind 仍可识别
+        const bigBody = "# 大文件\n" + "内容行\n".repeat(900);
+        const bigStamped = fpMod131.applyFingerprint3(bigBody, { kind: "journal", project: pid, key: "-" }).text;
+        const onlyTailLink = bigStamped
+          .replace(/^---\n[\s\S]*?\n---\n/, "")
+          .replace(/\s*<!--dsh-id:[^>]+-->/, "");
+        fs.writeFileSync(path.join(projDir, "JOURNAL.md"), onlyTailLink, "utf8");
+        const blindBig = fpMod131.scanBlind(projDir, { project: pid });
+
+        ok(
+          "130⑫ F-02：verifySeal / scanFingerprints / locateProjectRoots 全面支持三载体指纹，且 scanBlind 支持 >4KB 文件尾块 link 载体",
+          sealOk1.ok === true &&
+            sealOk2.ok === true &&
+            sealBad.ok === false &&
+            (scanFp.byKind.get("active") ?? []).length === 1 &&
+            loc.roots.length >= 1 &&
+            loc.roots[0].abs === projDir &&
+            (blindBig.byKind.get("journal") ?? []).length === 1,
+          `sealOk1=${sealOk1.ok} sealBad=${sealBad.ok} scanFp=${(scanFp.byKind.get("active") ?? []).length} loc=${loc.roots.length} bigJournal=${(blindBig.byKind.get("journal") ?? []).length}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑬ F-03：仅行内信标（<!--dsh-id:project:key-->）存活时，readCard / resolveByIdentity / stampDir 均不报错且能正确恢复
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f03-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        fs.mkdirSync(path.join(tmp131, "decisions"), { recursive: true });
+        fs.writeFileSync(
+          path.join(tmp131, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, projectId: pid, active: "LEDGER.md", decisions: "DECISIONS.md", decisionsDir: "decisions", archiveDir: "_archive" }),
+          "utf8"
+        );
+        fpMod131.clearProjectCache();
+        const info = part2Mod131.inspect(tmp131);
+
+        // 构造仅剩行内信标的卡片文件
+        const inlineOnly = "## D195 · 仅行内信标存活 <!--dsh-id:" + pid + ":D195-->\n\n正文内容\n";
+        const cardPath = path.join(tmp131, "decisions", "D195.md");
+        fs.writeFileSync(cardPath, inlineOnly, "utf8");
+
+        // ① 按名字读取卡片不拒绝
+        const readByName = cardOpsMod131.readEntryUnified(tmp131, info, "decisions", "D195");
+        // ② 改名后按行内信标盲扫仍能找回
+        const renamedPath = path.join(tmp131, "decisions", "moved-d195.md");
+        fs.renameSync(cardPath, renamedPath);
+        const readByFp = cardOpsMod131.readEntryUnified(tmp131, info, "decisions", "D195");
+        // ③ stampDir 对仅剩行内信标的文件补全三载体时不抛异常
+        const stampRes = fpMod131.stampDir(tmp131, (rel) => {
+          const id = fpMod131.identityOfPath(info, path.join(tmp131, rel));
+          return id ? { ...id, project: pid } : undefined;
+        });
+        const afterStamp = fpMod131.readFingerprint3(fs.readFileSync(renamedPath, "utf8"));
+
+        ok(
+          "130⑬ F-03：仅行内信标存活时按名读取、改名盲扫找回、以及 stampDir 自动补全三载体均正常生效且不崩溃",
+          readByName.found === true &&
+            readByFp.found === true &&
+            readByFp.resolvedBy === "fingerprint" &&
+            stampRes.failed.length === 0 &&
+            afterStamp.ok === true &&
+            afterStamp.sources.length === 3 &&
+            afterStamp.id.kind === "decisions",
+          `byName=${readByName.found} byFp=${readByFp.found} stampFailed=${stampRes.failed.length} sources=${afterStamp.sources?.length}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+      }
+    }
+
+    // 131④ F-04：同项目不同卡片覆盖同名文件（如 D196 覆盖 D195.md）被精确拦截 + UTF-8 BOM 与 CRLF 下三载体读写幂等不重复叠加 frontmatter
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f04-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        fs.mkdirSync(path.join(tmp131, "decisions"), { recursive: true });
+        fs.writeFileSync(
+          path.join(tmp131, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, projectId: pid, active: "LEDGER.md", decisions: "DECISIONS.md", decisionsDir: "decisions", archiveDir: "_archive" }),
+          "utf8"
+        );
+        fpMod131.clearProjectCache();
+        const info = part2Mod131.inspect(tmp131);
+
+        // 把 D196 的内容+指纹错写进 D195.md，而真正的 D195 在别处
+        cardOpsMod131.writeKindCard(tmp131, info, "decisions", "D195", "## D195 · 真卡片\n真内容\n");
+        cardOpsMod131.writeKindCard(tmp131, info, "decisions", "D196", "## D196 · 串门卡片\n假内容\n");
+        fs.renameSync(path.join(tmp131, "decisions", "D195.md"), path.join(tmp131, "decisions", "backup-195.md"));
+        fs.copyFileSync(path.join(tmp131, "decisions", "D196.md"), path.join(tmp131, "decisions", "D195.md"));
+
+        // 读 D195 时：按名发现 D195.md 里装的是 key=D196 ⇒ 必须拒绝按名误认并报 key 不符（绝不把 D196 内容当成 D195 返回）
+        const read195 = cardOpsMod131.readEntryUnified(tmp131, info, "decisions", "D195");
+        const rResolve = fpMod131.resolveByIdentity(tmp131, {
+          name: "decisions/D195.md",
+          kind: "decisions",
+          project: pid,
+          key: "D195",
+        });
+
+        // 测试 BOM + CRLF 下 readFingerprint3 与 applyFingerprint3 的幂等性
+        const s1 = "\uFEFF" + fpMod131.applyFingerprint3("# 标题\n正文\n", { kind: "active", project: pid, key: "-" }).text.replace(/\n/g, "\r\n");
+        const rBomCrlf = fpMod131.readFingerprint3(s1);
+        const s2 = fpMod131.applyFingerprint3(s1, { kind: "active", project: pid, key: "-" }).text;
+        const fmCount = (s2.replace(/^\uFEFF/, "").match(/^---$/gm) || []).length;
+
+        ok(
+          "130⑭ F-04：同项目不同卡片覆盖同名文件（key=D196 覆盖 D195.md）被精确拦截，且 BOM+CRLF 文件读写不重复叠加 frontmatter",
+          read195.found === false &&
+            String(read195.reason).includes("key=D196") &&
+            rResolve.ok === false &&
+            String(rResolve.reason).includes("key=D196") &&
+            rBomCrlf.ok === true &&
+            rBomCrlf.sources.includes("frontmatter") &&
+            fmCount === 2,
+          `found=${read195.found} reason=${read195.reason} rResolveOk=${rResolve.ok} rBomCrlf=${rBomCrlf.ok} fmCount=${fmCount}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑮ F-05：identityOfPath 直接传入 inspect(root) 返回对象时，正确识别 activeRel / journalRel / principlesRel 及自定义归档/日志/交接目录
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f05-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        fs.writeFileSync(
+          path.join(tmp131, ".dsh-ledger.json"),
+          JSON.stringify({
+            version: 1,
+            projectId: pid,
+            active: "LEDGER.md",
+            journal: "JOURNAL.md",
+            principles: "PRINCIPLES.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "custom-arch",
+            logDir: "custom-log",
+            handoffDir: "custom-handoff",
+          }),
+          "utf8"
+        );
+        const info = part2Mod131.inspect(tmp131);
+        const idAct = fpMod131.identityOfPath(info, path.join(tmp131, "LEDGER.md"));
+        const idJrn = fpMod131.identityOfPath(info, path.join(tmp131, "JOURNAL.md"));
+        const idPrn = fpMod131.identityOfPath(info, path.join(tmp131, "PRINCIPLES.md"));
+        const idDec = fpMod131.identityOfPath(info, path.join(tmp131, "DECISIONS.md"));
+        const idArc = fpMod131.identityOfPath(info, path.join(tmp131, "custom-arch", "a1.md"));
+        const idLog = fpMod131.identityOfPath(info, path.join(tmp131, "custom-log", "l1.md"));
+        const idHnd = fpMod131.identityOfPath(info, path.join(tmp131, "custom-handoff", "h1.md"));
+
+        ok(
+          "130⑮ F-05：identityOfPath 完整兼容 inspect(root) 返回结构（*Rel 单例字段与自定义归档/日志/交接目录）",
+          idAct?.kind === "active" &&
+            idJrn?.kind === "journal" &&
+            idPrn?.kind === "principles" &&
+            idDec?.kind === "decisions" &&
+            idArc?.kind === "archive" &&
+            idLog?.kind === "log" &&
+            idHnd?.kind === "handoff",
+          `act=${idAct?.kind} jrn=${idJrn?.kind} prn=${idPrn?.kind} dec=${idDec?.kind} arc=${idArc?.kind} log=${idLog?.kind} hnd=${idHnd?.kind}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑯ F-06：writeFileAtomic 连续同毫秒写入不碰撞且拒绝覆盖符号链接目标，checkNoNestedSymlink 异常时 fail-closed
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f06-"));
+      const out131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f06-out-"));
+      try {
+        const target = path.join(tmp131, "rapid.md");
+        let allRapidOk = true;
+        for (let i = 0; i < 20; i += 1) {
+          if (!baseMod131.writeFileAtomic(target, `v${i}\n`).ok) allRapidOk = false;
+        }
+
+        const extTarget = path.join(out131, "outside.md");
+        fs.writeFileSync(extTarget, "safe-outside\n", "utf8");
+        const symPath = path.join(tmp131, "sym.md");
+        let symCreated = false;
+        try {
+          fs.symlinkSync(extTarget, symPath);
+          symCreated = true;
+        } catch {}
+
+        const symRes = symCreated ? baseMod131.writeFileAtomic(symPath, "hijack\n") : { ok: false };
+        const p7Src = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "part7.js"), "utf8");
+        const failClosed = /const checkNoNestedSymlink = \(dirAbs\) => \{[\s\S]*?catch \{\s*return false;\s*\}/.test(p7Src);
+
+        ok(
+          "130⑯ F-06：writeFileAtomic 高频同毫秒写入无碰撞、拒绝替换符号链接目标，且 checkNoNestedSymlink 在读取异常时 fail-closed 返回 false",
+          allRapidOk && symRes.ok === false && fs.readFileSync(extTarget, "utf8") === "safe-outside\n" && failClosed,
+          `allRapidOk=${allRapidOk} symOk=${symRes.ok} failClosed=${failClosed}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+        fs.rmSync(out131, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑰ 全量审计守卫六（F-01）：client.js ExtensionsPage 中 cur 必须在 send 的 useCallback 依赖数组求值前声明，防首次挂载 TDZ ReferenceError
+    {
+      const clientSrc = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "client.js"), "utf8");
+      const extStart = clientSrc.indexOf("function ExtensionsPage(");
+      const extSlice = extStart >= 0 ? clientSrc.slice(extStart, extStart + 4500) : "";
+      const curIdx = extSlice.indexOf("const cur = projects.find");
+      const sendIdx = extSlice.indexOf("const send = useCallback");
+      const usesCurRoot = extSlice.includes("const effectiveRoot = cur?.root ?? root") && extSlice.includes("Object.assign({ root: effectiveRoot }, body)");
+      ok(
+        "130⑰ 全量审计：client.js ExtensionsPage 在 useCallback 引用 cur?.root 前声明 cur，且请求体使用 cur?.root ?? root",
+        curIdx > 0 && sendIdx > curIdx && usesCurRoot,
+        `curIdx=${curIdx} sendIdx=${sendIdx} usesCurRoot=${usesCurRoot}`
+      );
+    }
+
+    // 130⑱ 全量审计守卫六（F-02）：三载体标记存在但载荷损坏时拒按无指纹老文件放行、行内信标不冒充单例文件、同目录有其他完整卡时仍可凭行内信标找回改名卡且重名告警
+    {
+      const tmp132 = fs.mkdtempSync(path.join(os.tmpdir(), "audit132-f02-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        const goodAct = fpMod131.applyFingerprint3("# 活跃台账\n正文\n", { kind: "active", project: pid, key: "-" }).text;
+        const corruptedFront = goodAct
+          .replace(/check=[0-9a-f]{8}/, "check=zzzzzzzz")
+          .replace(/\n\[dsh-fp-link\]:[^\n]*\n?/, "\n")
+          .replace(/\s*<!--dsh-id:[^>]+-->/, "");
+        fs.writeFileSync(path.join(tmp132, "LEDGER.md"), corruptedFront, "utf8");
+        const r3Corrupt = fpMod131.readFingerprint3(corruptedFront);
+        const resCorrupt = fpMod131.resolveByIdentity(tmp132, { name: "LEDGER.md", kind: "active", project: pid });
+        const scanCorrupt = fpMod131.scanFingerprints(tmp132, { project: pid });
+        const blindCorrupt = fpMod131.scanBlind(tmp132, { project: pid });
+
+        // 2b：仅留卡片行内信标时写入 LEDGER.md，不许冒充单例 active
+        fs.writeFileSync(path.join(tmp132, "LEDGER.md"), `## D195 · 卡片标题 <!--dsh-id:${pid}:D195-->\n正文\n`, "utf8");
+        const resImpersonate = fpMod131.resolveByIdentity(tmp132, { name: "LEDGER.md", kind: "active", project: pid });
+        fs.rmSync(path.join(tmp132, "LEDGER.md"), { force: true });
+
+        // 2c：decisions/ 下有完整卡 D196，且 D195 改名后仅剩行内信标 ⇒ 仍应在步骤 ②b 找回；若两份同 key 行内信标 ⇒ 报身份不唯一
+        const decDir = path.join(tmp132, "decisions");
+        fs.mkdirSync(decDir, { recursive: true });
+        const d196 = fpMod131.applyFingerprint3("## D196 · 完整卡\n正文\n", { kind: "decisions", project: pid, key: "D196" }).text;
+        fs.writeFileSync(path.join(decDir, "D196.md"), d196, "utf8");
+        fs.writeFileSync(path.join(decDir, "renamed-195.md"), `## D195 · 仅行内信标 <!--dsh-id:${pid}:D195-->\n正文\n`, "utf8");
+        const resInlineCard = fpMod131.resolveByIdentity(tmp132, { name: "decisions/D195.md", kind: "decisions", project: pid, key: "D195" });
+        fs.writeFileSync(path.join(decDir, "dup-195.md"), `## D195 · 重复行内信标 <!--dsh-id:${pid}:D195-->\n正文2\n`, "utf8");
+        const resDupInline = fpMod131.resolveByIdentity(tmp132, { name: "decisions/D195.md", kind: "decisions", project: pid, key: "D195" });
+
+        ok(
+          "130⑱ 全量审计：载体标记损坏拒绝按老文件放行、卡片行内信标不冒充单例、且同目录共存完整卡时仍可找回改名行内信标卡并拦截重复信标",
+          r3Corrupt.ok === false &&
+            String(r3Corrupt.reason).includes("载体格式损坏") &&
+            resCorrupt.ok === false &&
+            scanCorrupt.bad.length === 1 &&
+            blindCorrupt.bad.length === 1 &&
+            resImpersonate.ok === false &&
+            resInlineCard.ok === true &&
+            resInlineCard.rel === "decisions/renamed-195.md" &&
+            resDupInline.ok === false &&
+            Array.isArray(resDupInline.candidates) &&
+            resDupInline.candidates.length === 2,
+          `r3=${r3Corrupt.reason} resCorrupt=${resCorrupt.ok} mm=${scanCorrupt.bad.length} imp=${resImpersonate.ok} inlineCard=${resInlineCard.ok} dup=${resDupInline.ok}`
+        );
+      } finally {
+        fs.rmSync(tmp132, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑲ 全量审计守卫六（F-03）：scanBlind 在文件体积恰跨 4096 字节边界时不切断文末 [dsh-fp-link] 载体
+    {
+      const tmp132 = fs.mkdtempSync(path.join(os.tmpdir(), "audit132-f03-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        const padLen = 4096 - 35;
+        const body = "# 边界测试\n\n" + "x".repeat(padLen) + "\n";
+        const stamped = fpMod131.applyFingerprint3(body, { kind: "active", project: pid, key: "-" }).text;
+        const tailOnly = stamped
+          .replace(/^---\n[\s\S]*?\n---\n/, "")
+          .replace(/\s*<!--dsh-id:[^>]+-->/, "");
+        fs.writeFileSync(path.join(tmp132, "LEDGER.md"), tailOnly, "utf8");
+        const blind = fpMod131.scanBlind(tmp132, { project: pid });
+        ok(
+          "130⑲ 全量审计：scanBlind 在 [dsh-fp-link] 跨越 4096 字节边界时不截断载体且正常识别身份",
+          (blind.byKind.get("active") ?? []).length === 1 && blind.bad.length === 0,
+          `activeHits=${(blind.byKind.get("active") ?? []).length} bad=${blind.bad.length}`
+        );
+      } finally {
+        fs.rmSync(tmp132, { recursive: true, force: true });
+      }
+    }
+
+    // 130⑳ 全量审计守卫六（F-04）：自定义卡片目录 writeCard 正常盖三载体指纹，且 identityOfPath 排除卡片目录内 INDEX.md 并支持多级子目录
+    {
+      const tmp132 = fs.mkdtempSync(path.join(os.tmpdir(), "audit132-f04-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        fs.writeFileSync(
+          path.join(tmp132, ".dsh-ledger.json"),
+          JSON.stringify({
+            version: 1,
+            projectId: pid,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_archive",
+            decisionsDir: "custom/decisions-cards",
+            handoffDir: "docs/交接单",
+          }),
+          "utf8"
+        );
+        const w = cardOpsMod131.writeCard(tmp132, "custom/decisions-cards", "D1", "## D1 · 自定义目录卡\n\n正文\n");
+        const cardText = fs.readFileSync(w.path, "utf8");
+        const r3 = fpMod131.readFingerprint3(cardText);
+        const info = part2Mod131.inspect(tmp132);
+        const idCard = fpMod131.identityOfPath(info, path.join(tmp132, "custom/decisions-cards", "D1.md"));
+        const idIndex = fpMod131.identityOfPath(info, path.join(tmp132, "custom/decisions-cards", "INDEX.md"));
+        const idHandoff = fpMod131.identityOfPath(info, path.join(tmp132, "docs/交接单", "2026-10-28.md"));
+        ok(
+          "130⑳ 全量审计：自定义/多级卡片目录 writeCard 自动加盖三载体指纹，且 identityOfPath 排除 INDEX.md 并支持多级自定义目录",
+          r3.ok === true &&
+            r3.id?.kind === "decisions" &&
+            idCard?.kind === "decisions" &&
+            idCard?.key === "D1" &&
+            idIndex === undefined &&
+            idHandoff?.kind === "handoff",
+          `r3Ok=${r3.ok} idCard=${idCard?.kind}:${idCard?.key} idIndex=${idIndex} idHandoff=${idHandoff?.kind}`
+        );
+      } finally {
+        fs.rmSync(tmp132, { recursive: true, force: true });
+      }
+    }
+
+    // 130㉑ 全量审计守卫六（F-05）：ledger_init 预检拦截目录与文件角色同名冲突（零残留写盘）以及重跑 init 与旧清单角色冲突
+    {
+      const part4Mod132 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part4.js")).href);
+      const initTool = part4Mod132.defineInitTool();
+      const tmp132a = fs.mkdtempSync(path.join(os.tmpdir(), "audit132-f05a-"));
+      const tmp132b = fs.mkdtempSync(path.join(os.tmpdir(), "audit132-f05b-"));
+      try {
+        let fileDirClashRejected = false;
+        try {
+          await initTool.execute(
+            {
+              root: tmp132a,
+              memoryRoot: "",
+              active: "LEDGER.md",
+              decisions: "DECISIONS.md",
+              archiveDir: "_archive",
+              lessons: "lessons",
+              lessonsDir: "./lessons",
+            },
+            { sessionId: "s-132-f05a" }
+          );
+        } catch (e) {
+          fileDirClashRejected = String(e?.message ?? e).includes("目录角色与文件角色不能指向同一个路径");
+        }
+        const entriesAfterReject = fs.readdirSync(tmp132a);
+
+        await initTool.execute(
+          {
+            root: tmp132b,
+            memoryRoot: "",
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_archive",
+            journal: "JOURNAL.md",
+          },
+          { sessionId: "s-132-f05b" }
+        );
+        let reinitClashRejected = false;
+        try {
+          await initTool.execute(
+            {
+              root: tmp132b,
+              memoryRoot: "",
+              active: "./JOURNAL.md",
+              decisions: "DECISIONS.md",
+              archiveDir: "_archive",
+            },
+            { sessionId: "s-132-f05b" }
+          );
+        } catch (e) {
+          reinitClashRejected = String(e?.message ?? e).includes("角色指向同一个文件");
+        }
+
+        ok(
+          "130㉑ 全量审计：ledger_init 预检拦截文件与目录角色路径重合（零半成品写盘）并拦截重跑 init 与已登记角色冲突",
+          fileDirClashRejected && entriesAfterReject.length === 0 && reinitClashRejected,
+          `fileDirClash=${fileDirClashRejected} entries=${entriesAfterReject.length} reinitClash=${reinitClashRejected}`
+        );
+      } finally {
+        fs.rmSync(tmp132a, { recursive: true, force: true });
+        fs.rmSync(tmp132b, { recursive: true, force: true });
+      }
+    }
+
+    // 130㉒ 全量审计守卫七（F-01..F-09）：钩子越界与树内软链防御、D364 扫描与身份隔离、init/migrate 自动生成 projectId、围栏代码免疫、单文件删改保指纹、采集器 V3 迁移同步、卡片索引剥离指纹
+    {
+      const part4Mod133 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part4.js")).href);
+      const part6Mod133 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part6.js")).href);
+      const part7Mod133 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part7.js")).href);
+      const part8Mod133 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part8.js")).href);
+      const part2Tools133 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2-tools.js")).href);
+      const logCol133 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "log-collector.js")).href);
+      const tmp133 = fs.mkdtempSync(path.join(os.tmpdir(), "audit133-all-"));
+      try {
+        // F-01a: installPreCommitHook rejects outside core.hooksPath
+        const hpProj = path.join(tmp133, "hp-proj");
+        const hpOut = path.join(tmp133, "hp-out");
+        fs.mkdirSync(hpProj, { recursive: true });
+        fs.mkdirSync(hpOut, { recursive: true });
+        part2Mod131.git(hpProj, ["init"]);
+        part2Mod131.git(hpProj, ["config", "core.hooksPath", hpOut]);
+        const hpRes = part2Mod131.installPreCommitHook(hpProj, { enabled: true });
+
+        // F-02/F-03/F-04: init generates projectId, stamps D1, scanMemorySurface & identityOfPath exclude configs/registry
+        const v3Proj = path.join(tmp133, "v3-proj");
+        fs.mkdirSync(v3Proj, { recursive: true });
+        await part4Mod133.defineInitTool().execute(
+          {
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            archiveDir: "_ledger-archive",
+            initialDecisions: "# 决策\n\n## D1 · 首条\n正文\n",
+          },
+          { agent: { session: { header: { id: "s133", cwd: v3Proj } } } }
+        );
+        fs.writeFileSync(path.join(v3Proj, "package.json"), '{"name":"x"}');
+        const infoV3 = part2Mod131.inspect(v3Proj);
+        part8Mod133.createExtension(infoV3, v3Proj, { name: "ext1", description: "d", mode: "decisions" });
+        fs.mkdirSync(path.join(infoV3.memoryBase, "notes"), { recursive: true });
+        fs.writeFileSync(path.join(infoV3.memoryBase, "notes", "idea.txt"), "idea\n");
+        const scannedV3 = part6Mod133.scanMemorySurface(v3Proj, part2Mod131.inspect(v3Proj));
+        const pidV3 = fpMod131.projectOf(v3Proj);
+        const d1Fp = fpMod131.readFingerprint3(fs.readFileSync(path.join(infoV3.memoryBase, "decisions", "D1.md"), "utf8"));
+        const idMirror = fpMod131.identityOfPath(infoV3, path.join(infoV3.memoryBase, ".dsh-ledger.json"));
+        const idExtReg = fpMod131.identityOfPath(infoV3, path.join(infoV3.memoryBase, "extensions", "registry.json"));
+
+        // F-05/F-08: README code-fence immunity & buildCardBlocks/sliceEntryByKey strip fingerprint
+        const readmeFp = fpMod131.readFingerprint3(fs.readFileSync(path.join(PROJECT_ROOT, "README.md"), "utf8"));
+        const blocksV3 = cardOpsMod131.buildCardBlocks(infoV3.memoryBase, "decisions");
+
+        // ★★★★ F-03c（D365 补的覆盖缺口）：**V2 flat 边界**。
+        //   🔴 019 补丁修了它（`identityOfPath` 在 `memoryBase === projectRoot` 时早退），
+        //     但 `130㉒` 那 11 条条件**一条都没测它** —— 我实测把那条早退拆掉，`FAIL` 仍是 0，
+        //     只有 `_probe-d365-verify.mjs` 会红（2 条）。
+        //   ★ 为什么这条最危险：V2 项目（清单里没有 `memoryRoot`）下 `memoryBase === projectRoot`
+        //     ⇒ 兜底分支会把**整个代码仓库**（`package.json` / `src/*.js` …）全判成
+        //     `{kind:"custom"}` ⇒ `stampDir` 会往用户源码里写三载体指纹。那是**动用户的文件**。
+        //   ★ 判据（防退化）：**这条必须能被我拆掉修复而变红** —— 已在 D365 实测过（拆掉 ⇒ FAIL 2）。
+        const v2Proj = path.join(tmp133, "v2-flat");
+        fs.mkdirSync(path.join(v2Proj, "src"), { recursive: true });
+        fs.writeFileSync(path.join(v2Proj, "package.json"), '{"name":"v2"}');
+        fs.writeFileSync(path.join(v2Proj, "src", "index.js"), "export const a = 1;\n");
+        const infoV2 = { memoryBase: v2Proj, projectRoot: v2Proj, active: "LEDGER.md", journal: "JOURNAL.md" };
+        const v2PkgId = fpMod131.identityOfPath(infoV2, path.join(v2Proj, "package.json"));
+        const v2SrcId = fpMod131.identityOfPath(infoV2, path.join(v2Proj, "src", "index.js"));
+        // 对照（防"一刀切关掉"）：V3 下记忆根里的用户文件**必须仍然有身份**
+        const v3MineId = fpMod131.identityOfPath(infoV3, path.join(infoV3.memoryBase, "notes", "idea.txt"));
+
+        // F-07: log-collector refreshes memBase after V3 migration
+        const migProj = path.join(tmp133, "mig-proj");
+        fs.mkdirSync(migProj, { recursive: true });
+        fs.writeFileSync(path.join(migProj, ".dsh-ledger.json"), JSON.stringify({ version: 1, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", logDir: "_ledger-log" }));
+        fs.writeFileSync(path.join(migProj, "LEDGER.md"), "# 台账\n");
+        fs.writeFileSync(path.join(migProj, "DECISIONS.md"), "# 决策\n");
+        fs.mkdirSync(path.join(migProj, "_ledger-archive"), { recursive: true });
+        const lc = logCol133.createLogCollector({});
+        lc.consume(migProj, "s-mig", { type: "turn/end", time: Date.now(), data: { reason: { kind: "completed" } } });
+        lc.flushNow();
+        part7Mod133.migrateToV3(migProj, { apply: true });
+        fs.rmSync(path.join(migProj, "_ledger-log"), { recursive: true, force: true });
+        lc.consume(migProj, "s-mig", { type: "turn/end", time: Date.now(), data: { reason: { kind: "completed" } } });
+        lc.flushNow();
+        const logLeaked = fs.existsSync(path.join(migProj, "_ledger-log"));
+
+        ok(
+          "130㉒ 全量审计：钩子越界拦截、D364 扫描与身份边界、init 自动生成 projectId、围栏代码免疫、采集器迁移同步、卡片索引剥离指纹全部成立",
+          hpRes.installed === false &&
+            hpRes.unsafePath === true &&
+            typeof pidV3 === "string" &&
+            d1Fp.ok === true &&
+            !scannedV3.some((f) => f.rel === "package.json" || f.rel.endsWith("registry.json")) &&
+            scannedV3.some((f) => f.rel.includes("idea.txt")) &&
+            idMirror === undefined &&
+            idExtReg === undefined &&
+            readmeFp.ok === false &&
+            readmeFp.reason === "三处载体都没有" &&
+            blocksV3.length === 1 &&
+            !blocksV3[0].text.includes("dsh-fp-front:") && blocksV3[0].lines <= 4 &&
+            !logLeaked,
+          `hp=${hpRes.installed} pid=${pidV3} d1=${d1Fp.ok} blocksLines=${blocksV3[0]?.lines} logLeaked=${logLeaked}`
+        );
+        // ★★★ F-03c **单独一条**（D365 补）—— 不并进上面那条 AND：
+        //   那 11 个条件凑成一条时，红了根本说不清是哪一个（而且实测**漏了 V2 flat**）。
+        //   这条必须能在"拆掉早退"时变红，实测过（拆掉 ⇒ FAIL）。
+        ok(
+          "130㉒b F-03c：V2 flat（memoryBase === projectRoot）下源码文件**不给**记忆身份，而 V3 记忆根里的用户文件**仍给**",
+          v2PkgId === undefined && v2SrcId === undefined && v3MineId !== undefined && v3MineId.kind === "custom",
+          `v2 package.json=${JSON.stringify(v2PkgId)} v2 src/index.js=${JSON.stringify(v2SrcId)} v3 notes/idea.txt=${JSON.stringify(v3MineId)}`
+        );
+      } finally {
+        fs.rmSync(tmp133, { recursive: true, force: true });
+      }
+    }
+
+    // 130㉓ 全量审计：_backup 符号链接越界拦截、单例写入与归档三载体封签保真、热文件备份覆盖、单文件切卡剥离载体及 init L4 schema
+    {
+      const backupMod134 = await import("../lib/backup.js");
+      const cardOpsMod134 = await import("../lib/card-ops.js");
+      const part8Mod134 = await import("../lib/part8.js");
+      const defsMod134 = await import("../lib/defs.js");
+      const part2Mod131 = await import("../lib/part2.js");
+      const part2ToolsMod128 = await import("../lib/part2-tools.js");
+      const part4Mod131 = await import("../lib/part4.js");
+      const fpMod131 = await import("../lib/fingerprint.js");
+      const tmp134 = fs.mkdtempSync(path.join(os.tmpdir(), "audit134-"));
+      try {
+        // F-01: _backup symlink escape & path validation
+        // ★★★★ 2026-10-30（D367 · 补丁自带回归，实测抓到）：020 的补丁把这两行写成**无条件**的
+        //   `fs.symlinkSync(...)` —— 本机（Windows 非管理员）建不了符号链接 ⇒ 抛 EPERM ⇒ **整份自检当场崩掉**，
+        //   后面所有情形一条都不跑。★ 这不是"某条断言红了"，是**判据自己把尺子打断**。
+        //   ⇒ 按本项目既有约定（126 / 127 / 129 共七处同一写法）：先试建，建不出来就 `skip()` 如实登记，
+        //     **既不许写成 PASS（那是把"没测到"当"通过"，尺子错第 6 条），也不许崩掉整份自检**。
+        const f01Dir = path.join(tmp134, "f01");
+        const f01Out = path.join(tmp134, "f01-out");
+        fs.mkdirSync(f01Dir, { recursive: true });
+        fs.mkdirSync(f01Out, { recursive: true });
+        fs.writeFileSync(path.join(f01Out, "secret.txt"), "TOP_SECRET", "utf8");
+        let sym134Ok = false;
+        try {
+          fs.symlinkSync(f01Out, path.join(f01Dir, "_backup"), "dir");
+          sym134Ok = true;
+        } catch {
+          sym134Ok = false;
+        }
+        let bSym = { ok: true };
+        let leakedOut = false;
+        let rSym = { exists: true };
+        if (sym134Ok) {
+          bSym = backupMod134.backupBeforeWrite({ memBase: f01Dir, rel: "LEDGER.md", prevText: "# Secret\n" });
+          leakedOut = fs.existsSync(path.join(f01Out, "LEDGER.md.bak"));
+          fs.unlinkSync(path.join(f01Dir, "_backup"));
+          fs.mkdirSync(path.join(f01Dir, "_backup"), { recursive: true });
+          let fileSym134Ok = false;
+          try {
+            fs.symlinkSync(path.join(f01Out, "secret.txt"), path.join(f01Dir, "_backup", "LEDGER.md.bak"));
+            fileSym134Ok = true;
+          } catch {
+            fileSym134Ok = false;
+          }
+          if (fileSym134Ok) {
+            rSym = backupMod134.readBackup(f01Dir, "LEDGER.md");
+          } else {
+            skip("130㉓ b F-01b：_backup 内符号链接文件的读取拦截（本机建不了文件符号链接）");
+            rSym = { exists: false };
+          }
+        } else {
+          skip("130㉓ a F-01a/01b：_backup 符号链接越界拦截（本机建不了符号链接，EPERM）");
+          leakedOut = false;
+        }
+        const winPath = backupMod134.backupPathOf(f01Dir, "C:\\Windows\\LEDGER.md");
+        const dotPath = backupMod134.backupPathOf(f01Dir, "./LEDGER.md");
+
+        // F-02 & F-03: 3-carrier seal preservation & hot-file backups
+        const f02Dir = path.join(tmp134, "f02");
+        fs.mkdirSync(f02Dir, { recursive: true });
+        const pid134 = "0123456789abcdef";
+        fs.writeFileSync(
+          path.join(f02Dir, ".dsh-ledger.json"),
+          JSON.stringify({
+            projectId: pid134,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            journal: "JOURNAL.md",
+            principles: "PRINCIPLES.md",
+            goals: "GOALS.md",
+            lessons: "LESSONS.md",
+            archiveDir: "_ledger-archive",
+          }),
+          "utf8"
+        );
+        fs.writeFileSync(path.join(f02Dir, "LEDGER.md"), "# 台账\n\n## 已完成\n- 旧1\n\n## 进行中\n- 现1\n", "utf8");
+        fs.writeFileSync(path.join(f02Dir, "JOURNAL.md"), "# 流水\n\n- 条1\n", "utf8");
+        fs.writeFileSync(path.join(f02Dir, "PRINCIPLES.md"), "# 原则\n\n- 原则A\n\n- 原则B\n", "utf8");
+        const extC = part8Mod134.createExtension(part2Mod131.inspect(f02Dir), f02Dir, { name: "日志扩展", description: "测试", mode: "journal" });
+        const extId134 = extC.created?.id ?? "ext-1";
+        fpMod131.stampDir(f02Dir, (rel) => {
+          const id = fpMod131.identityOfPath(part2Mod131.inspect(f02Dir), path.join(f02Dir, rel));
+          return id ? { ...id, project: pid134 } : undefined;
+        });
+
+        part4Mod131.writeLedger(f02Dir, { target: "journal", mode: "append", content: "- 条2" });
+        part4Mod131.writeLedger(f02Dir, { target: "active", mode: "append", content: "- 现2" });
+        const arch134 = part4Mod131.archiveLedger(f02Dir, {
+          entries: "## 已完成\n- 旧1\n",
+          newActive: "# 台账\n\n## 进行中\n- 现1\n- 现2\n",
+        });
+        part2Mod131.writePrinciples(f02Dir, { content: "- 原则C", mode: "append", authorizedBy: "user" });
+        const st134 = defsMod134.newState();
+        const pr134 = part2Mod131.proposePrinciple(st134, "s1", { op: "remove", text: "- 原则B", reason: "r" });
+        part2Mod131.applyPrincipleProposal(f02Dir, st134, "s1", pr134.id ?? pr134.proposal?.id, "user");
+        part8Mod134.writeExtension(part2Mod131.inspect(f02Dir), f02Dir, extId134, { append: true, content: "- 记1\n" });
+
+        const checkSeal134 = (p) => {
+          const t = fs.readFileSync(p, "utf8");
+          const r3 = fpMod131.readFingerprint3(t);
+          return r3.ok === true && r3.sources.length === 3 && fpMod131.verifySeal(t, r3).ok === true;
+        };
+        const sealsOk =
+          checkSeal134(path.join(f02Dir, "JOURNAL.md")) &&
+          checkSeal134(path.join(f02Dir, "LEDGER.md")) &&
+          checkSeal134(path.join(f02Dir, "PRINCIPLES.md")) &&
+          checkSeal134(path.join(f02Dir, "extensions", extId134, "JOURNAL.md")) &&
+          !(arch134.goneSample ?? []).some((x) => x.includes("dsh-fp-front:"));
+
+        const lTool134 = part2ToolsMod128.defineLessonsTool();
+        const gTool134 = part2ToolsMod128.defineGoalsTool();
+        const exec134 = { agent: { session: { header: { id: "s134", cwd: f02Dir } } } };
+        await lTool134.execute({ op: "add", type: "教训", kind: "守卫错", title: "t1", cause: "c1" }, exec134);
+        await lTool134.execute({ op: "add", type: "教训", kind: "守卫错", title: "t2", cause: "c2" }, exec134);
+        await gTool134.execute({ op: "upsert", id: "g1", title: "t1", status: "root" }, exec134);
+        await gTool134.execute({ op: "upsert", id: "g2", title: "t2", status: "active", parent: "g1" }, exec134);
+
+        const hotOk =
+          backupMod134.isHotFile("DECISIONS.md") === true &&
+          backupMod134.readBackup(f02Dir, "PRINCIPLES.md").exists === true &&
+          backupMod134.readBackup(f02Dir, "GOALS.md").exists === true &&
+          backupMod134.readBackup(f02Dir, "LESSONS.md").exists === true;
+
+        // F-04: splitIntoCardParts & defineInitTool L4 schema
+        const stampedD = fpMod131.applyFingerprint3("# 决策\n\n## D1 · 一\n- a\n\n## D2 · 二\n- b\n", { kind: "decisions", project: pid134, key: "-" }).text;
+        const parts134 = cardOpsMod134.splitIntoCardParts(stampedD, "decisions");
+        const noCarrierLeak = !parts134.some((p) => p.text.includes("dsh-fp-front:") || p.text.includes("[dsh-fp-link]:") || p.text.includes("<!--dsh-id:"));
+        const l4SchemaOk = part4Mod131.defineInitTool().parameters.properties.logLevels?.properties?.L4?.type === "boolean";
+
+        // ★ 符号链接那两项**只在真的建出来了才计入 AND** —— 建不出来时它们已经各自 `skip()` 登记过，
+        //   若还硬塞进 AND，就等于"用一条测不到的断言把整条判据拖红"（同样是尺子错，只是方向相反）。
+        const symPart134 = sym134Ok ? bSym.ok === false && !leakedOut && rSym.exists === false : true;
+        ok(
+          "130㉓ 全量审计：_backup 路径校验、单例写入与归档三载体封签保真、热文件备份全覆盖、单文件切卡剥离载体及 init L4 schema 全部成立",
+          symPart134 && winPath === undefined && dotPath === undefined &&
+            sealsOk && hotOk && noCarrierLeak && l4SchemaOk,
+          `sym测试=${sym134Ok} bSym=${bSym.ok} leaked=${leakedOut} rSym=${rSym.exists} win=${winPath === undefined} dot=${dotPath === undefined} sealsOk=${sealsOk} hotOk=${hotOk} noLeak=${noCarrierLeak} l4=${l4SchemaOk}`
+        );
+      } finally {
+        fs.rmSync(tmp134, { recursive: true, force: true });
+      }
+    }
+
+    // 130㉔ 全量审计守卫八（F-01..F-05）：自指 "." 边界拦截与符号链接镜像阻断、verifySeal 前置分隔线与多载体 seal 一致性、仅行内信标单文件写删防崩与 GOALS/LESSONS 单例 key="-" 对齐、单例 key="-" 禁冒充卡片与 conformanceOf 真实卡片计数、以及扩展记忆盖章后空模板判定与卡片更新保指纹
+    {
+      const cardOpsMod135 = await import("../lib/card-ops.js");
+      const part4Mod135 = await import("../lib/part4.js");
+      const part2ToolsMod135 = await import("../lib/part2-tools.js");
+      const part8Mod135 = await import("../lib/part8.js");
+      const initToolMod135 = await import("../lib/init-tool.js");
+      const tmp135 = fs.mkdtempSync(path.join(os.tmpdir(), "audit135-all-"));
+      try {
+        // F-01: memoryRoot="." / 文件角色="." 拒绝 + 符号链接镜像阻断
+        const dirF01 = path.join(tmp135, "f01");
+        fs.mkdirSync(path.join(dirF01, "mem"), { recursive: true });
+        fs.writeFileSync(
+          path.join(dirF01, ".dsh-ledger.json"),
+          JSON.stringify({ protocolVersion: 3, memoryRoot: ".", active: ".", goals: "." }),
+          "utf8"
+        );
+        const infoF01 = part2Mod131.inspect(dirF01);
+        const igF01 = part2Mod131.memoryRootIgnoreLines({ memoryRoot: "." });
+        const mirPathDot = mirrorMod130.manifestMirrorPath(dirF01, { memoryRoot: "." });
+        let symMirOk = false;
+        const mfV3 = { protocolVersion: 3, memoryRoot: "mem", active: "LEDGER.md" };
+        fs.writeFileSync(path.join(dirF01, ".dsh-ledger.json"), JSON.stringify(mfV3, null, 2) + "\n", "utf8");
+        try {
+          fs.symlinkSync(path.join(dirF01, ".dsh-ledger.json"), path.join(dirF01, "mem", ".dsh-ledger.json"));
+          symMirOk = true;
+        } catch {}
+        const vMir = symMirOk ? mirrorMod130.verifyManifestMirror(dirF01, mfV3) : { state: "unsafe" };
+        const sMir = symMirOk ? mirrorMod130.syncManifestMirror(dirF01, mfV3) : { failed: "symlink", changed: false };
+        ok(
+          "130㉔a F-01：拒绝 memoryRoot 与文件角色指向 '.' 自根，且拦截指向根清单的符号链接镜像",
+          infoF01.memoryRoot === undefined &&
+            infoF01.memoryRootUnsafe?.why === "self-root-forbidden" &&
+            infoF01.activeRel === undefined &&
+            infoF01.goalsRel === undefined &&
+            igF01.length === 0 &&
+            mirPathDot === undefined &&
+            vMir.state === "unsafe" &&
+            typeof sMir.failed === "string",
+          `mr=${infoF01.memoryRoot} why=${infoF01.memoryRootUnsafe?.why} act=${infoF01.activeRel} ig=${igF01.length} vMir=${vMir.state}`
+        );
+
+        // F-02: verifySeal 兼容以 --- 开头且含多处 --- 分隔线的正文 + 拒绝多载体 seal 不一致
+        const pid135 = fpMod131.newProjectId();
+        const hrStamped = fpMod131.applyFingerprint3("---\n引言段落\n---\n\n# 标题\n正文\n", {
+          project: pid135,
+          kind: "active",
+          key: "-",
+        }).text;
+        const sealHrOk = fpMod131.verifySeal(hrStamped).ok === true;
+        const desyncedSeal = hrStamped.replace(/(\[dsh-fp-link\]:[^\n]*seal=)[0-9a-f]{8}/, "$100000000");
+        const sealDesyncRejected = fpMod131.verifySeal(desyncedSeal).ok === false;
+        ok(
+          "130㉔b F-02：verifySeal 对含首部 --- 分隔线的正文不误报篡改，且拒绝 frontmatter 与 link 的 seal 不一致",
+          sealHrOk && sealDesyncRejected,
+          `sealHrOk=${sealHrOk} sealDesyncRejected=${sealDesyncRejected}`
+        );
+
+        // F-03: inline-only 信标下写删单文件不崩溃 + 单文件 GOALS.md / LESSONS.md 指纹 key 为 "-"
+        const dirF03 = path.join(tmp135, "f03");
+        fs.mkdirSync(dirF03, { recursive: true });
+        fs.writeFileSync(
+          path.join(dirF03, ".dsh-ledger.json"),
+          JSON.stringify({
+            projectId: pid135,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            principles: "PRINCIPLES.md",
+            goals: "GOALS.md",
+            lessons: "LESSONS.md",
+            archiveDir: "_ledger-archive",
+          }),
+          "utf8"
+        );
+        fs.writeFileSync(path.join(dirF03, "LEDGER.md"), `# 台账 <!--dsh-id:${pid135}:--->\n- 旧项\n`, "utf8");
+        fs.writeFileSync(path.join(dirF03, "PRINCIPLES.md"), `# 原则 <!--dsh-id:${pid135}:--->\n- 原则1\n`, "utf8");
+        fs.writeFileSync(path.join(dirF03, "GOALS.md"), "# 目标树\n", "utf8");
+        fs.writeFileSync(path.join(dirF03, "LESSONS.md"), "# 经验与教训\n", "utf8");
+        const spInline = part2Mod131.spliceSingleFileEntry(
+          `# 经验与教训 <!--dsh-id:${pid135}:--->\n\n## 教训 L1 · 尺子错\n- 标题: t1\n\n## 教训 L2 · 守卫错\n- 标题: t2\n`,
+          /^##\s*(?:经验|教训)\s+L1\s*(?:[·|].*)?$/,
+          /^##\s*(?:经验|教训)\s+[LE]\d+/
+        );
+        const wLedInline = part4Mod135.writeLedger(dirF03, { target: "active", mode: "append", content: "- 新项\n" });
+        const wPrInline = part2Mod131.writePrinciples(dirF03, { mode: "append", content: "- 原则2\n", authorizedBy: "user" });
+        const infoF03 = part2Mod131.inspect(dirF03);
+        part2Mod131.upsertGoalCard(dirF03, "GOALS.md", { id: "g1", status: "active", title: "目标1" }, infoF03);
+        await part2ToolsMod135.defineLessonsTool().execute(
+          { op: "add", type: "教训", kind: "尺子错", title: "t1", cause: "c1" },
+          { agent: { session: { header: { id: "s135", cwd: dirF03 } } } }
+        );
+        const fpG = fpMod131.readFingerprint3(fs.readFileSync(path.join(dirF03, "GOALS.md"), "utf8"));
+        const fpL = fpMod131.readFingerprint3(fs.readFileSync(path.join(dirF03, "LESSONS.md"), "utf8"));
+        ok(
+          "130㉔c F-03：仅存行内信标时单文件写删不抛异常，且单文件 GOALS.md / LESSONS.md 指纹 key 统一为 '-'",
+          spInline.matched === true &&
+            wLedInline.ok === true &&
+            wPrInline.ok === true &&
+            fpG.ok === true &&
+            fpG.id?.key === "-" &&
+            fpL.ok === true &&
+            fpL.id?.key === "-",
+          `sp=${spInline.matched} wLed=${wLedInline.ok} wPr=${wPrInline.ok} gKey=${fpG.id?.key} lKey=${fpL.id?.key}`
+        );
+
+        // F-04: key="-" 单例文件不能冒充具体卡片 + conformanceOf 排除仅含 README.md 的空 decisionsDir
+        const dirF04 = path.join(tmp135, "f04");
+        for (const d of ["decisions", "lessons", "goals", "_ledger-archive", "_ledger-log"]) {
+          fs.mkdirSync(path.join(dirF04, d), { recursive: true });
+        }
+        fs.writeFileSync(
+          path.join(dirF04, ".dsh-ledger.json"),
+          JSON.stringify({
+            protocolVersion: 2,
+            projectId: pid135,
+            active: "LEDGER.md",
+            decisions: "DECISIONS.md",
+            decisionsDir: "decisions",
+            lessonsDir: "lessons",
+            goalsDir: "goals",
+            archiveDir: "_ledger-archive",
+            logDir: "_ledger-log",
+          }),
+          "utf8"
+        );
+        fs.writeFileSync(path.join(dirF04, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(path.join(dirF04, "DECISIONS.md"), "# 决策\n\n## D1 · 未迁移\n正文\n", "utf8");
+        fs.writeFileSync(path.join(dirF04, "decisions", "README.md"), "# 说明\n", "utf8");
+        const confReadmeOnly = part2Mod131.conformanceOf(part2Mod131.inspect(dirF04));
+        const fakeCard = fpMod131.applyFingerprint3("# 决策总表\n", { project: pid135, kind: "decisions", key: "-" }).text;
+        fs.writeFileSync(path.join(dirF04, "decisions", "D1.md"), fakeCard, "utf8");
+        const readFakeD1 = cardOpsMod135.readEntryUnified(dirF04, part2Mod131.inspect(dirF04), "decisions", "D1");
+        ok(
+          "130㉔d F-04：readEntryUnified 拒绝 key='-' 单例文件冒充卡片，且 conformanceOf 不将仅含 README.md 的 decisionsDir 判为已拆卡",
+          readFakeD1.found === false &&
+            String(readFakeD1.reason ?? "").includes("key=-") &&
+            confReadmeOnly.verdict !== "ok",
+          `found=${readFakeD1.found} reason=${readFakeD1.reason} verdict=${confReadmeOnly.verdict}`
+        );
+
+        // F-05: 扩展记忆 stampDir 后未填内容的单文件扩展仍判空模板，且卡片扩展更新后保留三载体指纹并刷新 seal
+        const dirF05 = path.join(tmp135, "f05");
+        fs.mkdirSync(path.join(dirF05, "decisions"), { recursive: true });
+        fs.writeFileSync(
+          path.join(dirF05, ".dsh-ledger.json"),
+          JSON.stringify({ projectId: pid135, active: "LEDGER.md", decisionsDir: "decisions", archiveDir: "_ledger-archive" }),
+          "utf8"
+        );
+        fs.writeFileSync(path.join(dirF05, "LEDGER.md"), "# 台账\n", "utf8");
+        const infoF05 = part2Mod131.inspect(dirF05);
+        const extSingle = part8Mod135.createExtension(infoF05, dirF05, { name: "术语表", description: "d", mode: "active" });
+        const extCard = part8Mod135.createExtension(infoF05, dirF05, { name: "图鉴", description: "d", mode: "decisions" });
+        const wExt1 = part8Mod135.writeExtension(infoF05, dirF05, extCard.created.id, { key: "B1", content: "# Boss 1\n- 阶段1\n" });
+        fpMod131.stampDir(dirF05, (rel) => fpMod131.identityOfPath(part2Mod131.inspect(dirF05), path.join(dirF05, rel)));
+        const extListAfterStamp = part8Mod135.listExtensions(part2Mod131.inspect(dirF05), dirF05);
+        const singleUsage = extListAfterStamp.extensions.find((x) => x.id === extSingle.created.id)?.usage;
+        const cardRaw1 = fs.readFileSync(path.join(dirF05, wExt1.path), "utf8");
+        part8Mod135.writeExtension(part2Mod131.inspect(dirF05), dirF05, extCard.created.id, {
+          key: "B1",
+          content: cardRaw1 + "\n- 阶段2\n",
+        });
+        const cardSealAfterUpdate = fpMod131.verifySeal(fs.readFileSync(path.join(dirF05, wExt1.path), "utf8"));
+        ok(
+          "130㉔e F-05：stampDir 盖章后单文件空扩展模板仍判为 hasContent:false，且卡片扩展更新后 verifySeal 保持通过",
+          singleUsage?.hasContent === false && cardSealAfterUpdate.ok === true,
+          `hasContent=${singleUsage?.hasContent} cardSeal=${cardSealAfterUpdate.ok}`
+        );
+      } finally {
+        fs.rmSync(tmp135, { recursive: true, force: true });
+      }
+    }
   }
 
+  // ── 情形 131：v1.6.2 全量审计修复守卫五（扩展记忆指纹自动补齐 / 身份解析防逃逸 / 归档备份回显 / 原则写入结构化错误 / 卡片保留名排查 / 扫描器损坏匹配 / 根定位防御） ──
+  section("情形 131：v1.6.2 全量审计修复守卫五（扩展记忆指纹自动补齐 / 身份解析防逃逸 / 归档备份回显 / 原则写入结构化错误 / 卡片保留名排查 / 扫描器损坏匹配 / 根定位防御）");
+  {
+    const part2Mod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2.js")).href);
+    const part4Mod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part4.js")).href);
+    const part8Mod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part8.js")).href);
+    const fpMod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "fingerprint.js")).href);
+    const initMod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "init-tool.js")).href);
+
+    const execFor131 = (root, sid = "s-131") => ({ agent: { session: { header: { id: sid, cwd: root } } } });
+
+    // 131① F-01：扩展记忆创建与写入时自动赋予三载体指纹保护
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f01-"));
+      try {
+        await initMod131.defineInitTool().execute(
+          { root: tmp131, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          execFor131(tmp131, "s-131-f01")
+        );
+        const memBase = path.join(tmp131, `${path.basename(tmp131)}-ledger-memory`);
+
+        const crSingle = part8Mod131.createExtension(null, tmp131, { name: "单文件测试", description: "描述", mode: "plain" });
+        const singleFile = path.join(memBase, "extensions", crSingle.created.id, "content.md");
+        const fpSingleTpl = fpMod131.readFingerprint3(fs.readFileSync(singleFile, "utf8"));
+        part8Mod131.writeExtension(null, tmp131, crSingle.created.id, { content: "# 新内容\n正文\n" });
+        const fpSingleW = fpMod131.readFingerprint3(fs.readFileSync(singleFile, "utf8"));
+
+        const crCard = part8Mod131.createExtension(null, tmp131, { name: "卡片测试", description: "描述", mode: "decisions" });
+        part8Mod131.writeExtension(null, tmp131, crCard.created.id, { key: "D1", content: "## D1 · 标题\n正文\n" });
+        const cardFile = path.join(memBase, "extensions", crCard.created.id, "cards", "D1.md");
+        const fpCardW = fpMod131.readFingerprint3(fs.readFileSync(cardFile, "utf8"));
+
+        ok(
+          "131① F-01：扩展记忆单文件与卡片写入均自动获得有效三载体指纹",
+          fpSingleTpl.ok === true && fpSingleW.ok === true && fpCardW.ok === true,
+          `fpSingleTpl=${fpSingleTpl.ok} fpSingleW=${fpSingleW.ok} fpCardW=${fpCardW.ok}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+      }
+    }
+
+    // 131② F-02：resolveByIdentity 严拒路径穿越 name 逃出项目根
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f02-"));
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f02-out-"));
+      try {
+        const outSecret = path.join(outsideDir, "secret.md");
+        fs.writeFileSync(outSecret, "# Secret Outside\n", "utf8");
+        const relEscape = path.relative(tmp131, outSecret);
+
+        const rEsc = fpMod131.resolveByIdentity(tmp131, { name: relEscape, kind: "custom" });
+        ok(
+          "131② F-02：resolveByIdentity 拦截相对路径逃逸并返回结构化拒绝（不读取外部文件）",
+          rEsc.ok === false && rEsc.unsafePath === true,
+          `rEsc.ok=${rEsc.ok} reason=${rEsc.reason}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    }
+
+    // 131③ F-03：archiveLedger 成功回显 backup 结果
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f03-"));
+      try {
+        await initMod131.defineInitTool().execute(
+          { root: tmp131, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          execFor131(tmp131, "s-131-f03")
+        );
+        const memBase = path.join(tmp131, `${path.basename(tmp131)}-ledger-memory`);
+        const actAbs = path.join(memBase, "LEDGER.md");
+        fs.writeFileSync(actAbs, "# 台账\n\n- 条目1\n- 条目2\n", "utf8");
+
+        const rArch = await part4Mod131.defineArchiveTool().execute({
+          root: tmp131,
+          entries: "- 条目1\n",
+          newActive: "# 台账\n\n- 条目2\n",
+        }, execFor131(tmp131, "s-131-f03"));
+
+        ok(
+          "131③ F-03：archiveLedger 在写入活跃台账时自动建立稳定备份并如实回显 backup",
+          rArch.ok === true && typeof rArch.backup === "string" && rArch.backup.includes("_backup"),
+          `rArch.ok=${rArch.ok} backup=${rArch.backup}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+      }
+    }
+
+    // 131④ F-04：writePrinciples 在写盘失败时返回结构化错误，不抛出未捕获异常
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f04-"));
+      try {
+        await initMod131.defineInitTool().execute(
+          { root: tmp131, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive", principles: "PRINCIPLES.md" },
+          execFor131(tmp131, "s-131-f04")
+        );
+        let threw = false;
+        let res;
+        try {
+          res = part2Mod131.writePrinciples(tmp131, {
+            content: "- 新原则\n",
+            authorizedBy: "user",
+          });
+        } catch {
+          threw = true;
+        }
+        ok(
+          "131④ F-04：writePrinciples 遵循返回结构化错误规范（不抛未捕获异常）",
+          !threw && typeof res === "object",
+          `threw=${threw} res=${JSON.stringify(res)}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+      }
+    }
+
+    // 131⑤ F-05：identityOfPath 排除卡片目录中的 SECURITY.md
+    {
+      const tmp131 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-f05-"));
+      try {
+        await initMod131.defineInitTool().execute(
+          { root: tmp131, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_archive" },
+          execFor131(tmp131, "s-131-f05")
+        );
+        const memBase = path.join(tmp131, `${path.basename(tmp131)}-ledger-memory`);
+        const info = part2Mod131.inspect(tmp131);
+        const secPath = path.join(memBase, "decisions", "SECURITY.md");
+        const idSec = fpMod131.identityOfPath(info, secPath);
+
+        ok(
+          "131⑤ F-05：identityOfPath 正确排除卡片目录下的 SECURITY.md 保留名文件",
+          idSec === undefined,
+          `idSec=${JSON.stringify(idSec)}`
+        );
+      } finally {
+        fs.rmSync(tmp131, { recursive: true, force: true });
+      }
+    }
+
+    // 131⑥ F-06 / F-07：scanFingerprints 匹配损坏指纹且 locateProjectRoots 对空入参防御
+    {
+      const rRootsUndefined = fpMod131.locateProjectRoots(undefined, "1234567812345678");
+      const rRootsEmpty = fpMod131.locateProjectRoots("", "1234567812345678");
+
+      ok(
+        "131⑥ F-06/F-07：locateProjectRoots 在参数为空或非字符串时不抛异常且安全返回空",
+        rRootsUndefined.roots.length === 0 && rRootsEmpty.roots.length === 0,
+        `rootsUndefined=${rRootsUndefined.roots.length} rootsEmpty=${rRootsEmpty.roots.length}`
+      );
+    }
+
+    // ── 131⑦：F-01 扩展卡片指纹路径含空格不崩且基准对齐 memoryBase ──
+    {
+      const tmpSpace = fs.mkdtempSync(path.join(os.tmpdir(), "space test dir-"));
+      try {
+        await initMod131.defineInitTool().execute({
+          active: "LEDGER.md",
+          decisions: "DECISIONS.md",
+          archiveDir: "_ledger-archive",
+          layout: "v3",
+          root: tmpSpace
+        });
+        const c = part8Mod131.createExtension(null, tmpSpace, {
+          name: "card ext",
+          description: "desc",
+          mode: "decisions"
+        });
+        const w = part8Mod131.writeExtension(null, tmpSpace, c.created.id, {
+          key: "D1",
+          content: "## D1 · 卡片一\n\n正文"
+        });
+        ok("131⑦ a F-01：路径含空格时 writeExtension(card) 不抛 key 非法异常且成功写入", w.ok === true, JSON.stringify(w));
+        const memDir = fs.readdirSync(tmpSpace).find((f) => f.endsWith("-ledger-memory"));
+        const cardPath = path.join(tmpSpace, memDir, "extensions", c.created.id, "cards", "D1.md");
+        const cardText = fs.readFileSync(cardPath, "utf8");
+        const rFp = fpMod131.readFingerprint3(cardText);
+        ok("131⑦ b F-01：扩展卡片成功盖上有效三载体指纹", rFp.ok === true, rFp.reason);
+        const wantPrefix = "extensions/";
+        ok("131⑦ c F-01：扩展卡片指纹 key 对齐 memoryBase（以 extensions/ 开头）", rFp.ok && decodeURIComponent(rFp.id.key).startsWith(wantPrefix), rFp.id?.key);
+      } finally {
+        fs.rmSync(tmpSpace, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131⑧：F-02 行内反引号代码块不误报为损坏指纹且清理不误删文本 ──
+    {
+      const docWithInline = "## 标题\n\n文档示例：`<!-- dsh-ledger-fp: example -->`\n\n正文。";
+      const rInline = fpMod131.readFingerprint3(docWithInline);
+      ok("131⑧ a F-02：含行内反引号示例的代码不被误判为损坏指纹", !rInline.corrupt?.includes("legacy"), JSON.stringify(rInline));
+      const stamped = fpMod131.applyFingerprint3(docWithInline, { kind: "decisions", project: "0123456789abcdef", key: "D999" }).text;
+      ok("131⑧ b F-02：applyFingerprint3 保留行内反引号内的示例文本", stamped.includes("`<!-- dsh-ledger-fp: example -->`"), stamped);
+    }
+
+    // ── 131⑨：F-03 locateProjectRoots 祖先遍历不重复递归扫描 ──
+    {
+      const tmpRoots = fs.mkdtempSync(path.join(os.tmpdir(), "roots-"));
+      try {
+        const sub = path.join(tmpRoots, "p", "s");
+        fs.mkdirSync(sub, { recursive: true });
+        const c = fpMod131.applyFingerprint3("# T\n", { kind: "decisions", project: "0123456789abcdef", key: "D1" }).text;
+        fs.writeFileSync(path.join(sub, "t.md"), c, "utf8");
+        const res = fpMod131.locateProjectRoots(sub, "0123456789abcdef", { upLevels: 2 });
+        eq("131⑨ a F-03：单一文件命中数不重复计算", res.roots[0]?.hits, 1);
+        eq("131⑨ b F-03：单一文件扫描计数不重复", res.scanned, 1);
+      } finally {
+        fs.rmSync(tmpRoots, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131⑩：F-05 writePrinciples 回显 backup ──
+    {
+      const tmpP6 = fs.mkdtempSync(path.join(os.tmpdir(), "wp-"));
+      try {
+        await initMod131.defineInitTool().execute({
+          active: "LEDGER.md",
+          decisions: "DECISIONS.md",
+          archiveDir: "_ledger-archive",
+          layout: "v3",
+          root: tmpP6
+        });
+        part2Mod131.writePrinciples(tmpP6, { content: "# P\n- 原则一", authorizedBy: "user" });
+        const res = part2Mod131.writePrinciples(tmpP6, { content: "# P\n- 原则二", mode: "append", authorizedBy: "user" });
+        ok("131⑩ F-05：writePrinciples 回执包含 backup 字段", res.backup === "_backup/PRINCIPLES.md.bak", JSON.stringify(res));
+      } finally {
+        fs.rmSync(tmpP6, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131⑪：F-06/F-07 scanBlind/scanFingerprints 入参防御与 resolveByIdentity 损坏匹配 ──
+    {
+      const bRes = fpMod131.scanBlind(undefined);
+      const fRes = fpMod131.scanFingerprints("");
+      // ★★★★★ 2026-10-31（D372）：这条**原来是空守** —— 补丁初版只断言 `scanned === 0`，
+      //   而**未修实现也返回 scanned:0**（只是把非法入参记成 `unreadable: 1`）
+      //   ⇒ 把修复整段拆掉它照样绿，等于没守任何东西。
+      //   实测（`tools/_tmp-d372-guardcheck.mjs`）：未修实现 scanned=0 / unreadable=1，
+      //     初版断言 PASS；加上 unreadable===0 之后才 FAIL。
+      //   ⇒ 判据：**非法入参不该污染"可读性"指标**，那正是 `unreadable` 的语义。
+      ok(
+        "131⑪ a F-06：scanBlind(undefined) 与 scanFingerprints('') 安全返回空且**不污染 unreadable 计数**",
+        bRes.scanned === 0 && fRes.scanned === 0 && bRes.unreadable === 0 && fRes.unreadable === 0,
+        `b=${JSON.stringify({ scanned: bRes.scanned, unreadable: bRes.unreadable })} f=${JSON.stringify({ scanned: fRes.scanned, unreadable: fRes.unreadable })}`,
+      );
+      const tmpCorrupt = fs.mkdtempSync(path.join(os.tmpdir(), "res-corrupt-"));
+      try {
+        const cFile = path.join(tmpCorrupt, "bad.md");
+        fs.writeFileSync(cFile, "---\ndsh-fp-front: corrupt\n---\n# Bad\n", "utf8");
+        const rRes = fpMod131.resolveByIdentity(tmpCorrupt, { name: "bad.md", kind: "decisions" });
+        ok("131⑪ b F-06：resolveByIdentity 识别损坏载体拒绝按老文件放行", rRes.ok === false && String(rRes.reason).includes("损坏"), JSON.stringify(rRes));
+      } finally {
+        fs.rmSync(tmpCorrupt, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131⑫（D372 新增）：F-02 的**真机证据** + 「放宽没放过头」+ 「strip 不吞正文行内代码」──
+    {
+      // ★★★★ 这一组是本轮唯一**有实物证据**的断言：本项目 decisions/D351.md 第 41 行
+      //   写着 `形如 HTML 注释：`<!-- dsh-ledger-fp: <类型> <短哈希> -->``，
+      //   未修时它**真的**被判 legacy 损坏、并被 scanFingerprints 列进 bad 名单。
+      const d351Abs = path.join(PROJECT_ROOT, "10.项目台账-ledger-memory", "decisions", "D351.md");
+      if (fs.existsSync(d351Abs)) {
+        const rr = fpMod131.readFingerprint3(fs.readFileSync(d351Abs, "utf8"));
+        ok(
+          "131⑫ a ★真机证据 F-02：decisions/D351.md（正文含行内反引号示例）不再被判 legacy 损坏",
+          !(Array.isArray(rr.corrupt) && rr.corrupt.includes("legacy")),
+          JSON.stringify({ corrupt: rr.corrupt, reason: String(rr.reason ?? "").slice(0, 60) }),
+        );
+        const scanMem = fpMod131.scanFingerprints(path.join(PROJECT_ROOT, "10.项目台账-ledger-memory"), {});
+        const stillBad = (scanMem.bad ?? []).some((b) => String(b.rel ?? "").includes("D351.md"));
+        ok("131⑫ b ★真机证据 F-02：整份记忆面扫描里 D351.md 不再出现在 bad 名单", stillBad === false, `scanned=${scanMem.scanned} bad=${(scanMem.bad ?? []).length}`);
+      } else {
+        // ★ 夹具前提不成立时**不许判 PASS**（尺子错第 6 条）
+        skip("131⑫ a/b F-02 真机证据", "找不到 decisions/D351.md ⇒ 前提不成立，无法测");
+      }
+
+      // ★ 放宽没放过头：**裸**（非反引号）的指纹注释仍必须被判 legacy 损坏
+      const realLegacy = "## 标题\n\n<!-- dsh-ledger-fp: decisions 0123456789abcdef D1 -->\n\n正文。\n";
+      const rLegacy = fpMod131.readFingerprint3(realLegacy);
+      ok(
+        "131⑫ c ★反向 F-02：裸（非反引号）指纹注释**仍然**被判 legacy 损坏（放宽没放过头）",
+        Array.isArray(rLegacy.corrupt) && rLegacy.corrupt.includes("legacy"),
+        JSON.stringify({ corrupt: rLegacy.corrupt }),
+      );
+
+      // ★★★★ F-02f（本轮自己发现的新风险，报告没写）：
+      //   `stripFencedCodeForFp` 把行内反引号**整段替换成等长空格**；
+      //   而 `applyFingerprint3(..., {strip:true})` 的返回值**会被写回磁盘**（全库 24 处调用点）
+      //   ⇒ 必须证明它没顺手吞掉正文里的行内代码，否则"重写一次文件"就毁正文。
+      const body131 = "# 标题\n\n运行 `npm.cmd test` 看结果，参数是 `--userconfig`。\n\n完。\n";
+      const stamp131 = fpMod131.applyFingerprint3(body131, { kind: "decisions", project: "0123456789abcdef", key: "D_INLINE" }).text;
+      const strip131 = fpMod131.applyFingerprint3(stamp131, undefined, { strip: true }).text;
+      ok(
+        "131⑫ d ★新风险 F-02f：strip 路径（会被写回磁盘）不吞正文里的行内代码",
+        strip131.includes("`npm.cmd test`") && strip131.includes("`--userconfig`"),
+        JSON.stringify(strip131.slice(0, 140)),
+      );
+    }
+
+    // ── 131⑬ (F-01)：identityOfPath 在 activeRel 为 ./LEDGER.md 时正确识别为 active 单例 ──
+    {
+      const { identityOfPath } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "fingerprint.js")).href);
+      const dummyInfo = {
+        root: "C:/repo",
+        memoryBase: "C:/repo/mem",
+        activeRel: "./LEDGER.md",
+        decisionsRel: "./DECISIONS.md",
+        journalRel: "./JOURNAL.md",
+        cardDirs: {},
+        customDirs: {},
+      };
+      const idActive = identityOfPath(dummyInfo, "C:/repo/mem/LEDGER.md");
+      ok(
+        "131⑬: identityOfPath 在 activeRel 为 ./LEDGER.md 时正确识别为 active 单例",
+        idActive && idActive.kind === "active" && idActive.key === "-",
+        "got: " + JSON.stringify(idActive),
+      );
+    }
+
+    // ── 131⑭ (F-02)：DEFAULT_IGNORE_LINES 包含 /extensions/ 与 extensions ──
+    {
+      const { DEFAULT_IGNORE_LINES } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "defs.js")).href);
+      ok(
+        "131⑭ a: DEFAULT_IGNORE_LINES 包含 /extensions/",
+        DEFAULT_IGNORE_LINES.includes("/extensions/"),
+      );
+      ok(
+        "131⑭ b: DEFAULT_IGNORE_LINES 包含 extensions",
+        DEFAULT_IGNORE_LINES.includes("extensions"),
+      );
+    }
+
+    // ── 131⑮ (F-03)：log-collector 的**调用点**真的把路径过 toGitRel ──
+    //
+    // ★★★★ 2026-11-02（D373）：这条原版**断言错了对象** —— 它只核 `toGitRel` 这个
+    //   纯函数对构造入参的输出，而从没核 `log-collector` 有没有真的**调用**它。
+    //   实测（反向验证 B3）：把 `written.push(toGitRel(b.root, abs))` 改回 `written.push(fileRel)`，
+    //   这条断言**照样绿**（因为函数本身没变）⇒ 它守不住那一行修复。
+    //   ★ 判据：**要守"某处调用了 X"，就得断言那个调用点**，不能断言 X 自己的行为。
+    {
+      const { toGitRel } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "base.js")).href);
+      const fakeRoot = "C:/repo";
+      const fakeAbs = "C:/repo/repo-ledger-memory/_ledger-log/2026-11/week1/L0.md";
+      const relForGit = toGitRel(fakeRoot, fakeAbs);
+      ok(
+        "131⑮ a: toGitRel 对 V3 记忆子目录文件产出带 memoryRoot 前缀的仓库相对路径",
+        relForGit === "repo-ledger-memory/_ledger-log/2026-11/week1/L0.md",
+        "got: " + relForGit,
+      );
+
+      // ★ 真正有区分力的那一半：**调用点存在**（把调用改回裸 fileRel 就会红）
+      const lcSrc = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "log-collector.js"), "utf8");
+      ok(
+        "131⑮ b ★调用点：log-collector 的 written 用的是 toGitRel(b.root, abs)，不是裸 fileRel",
+        lcSrc.includes("written.push(toGitRel(b.root, abs))") && !lcSrc.includes("written.push(fileRel)"),
+        (lcSrc.split("\n").find((l) => l.includes("written.push")) ?? "（没找到 written.push）").trim(),
+      );
+      ok(
+        "131⑮ c ★调用点：log-collector 确实 import 了 toGitRel",
+        /import\s*\{[^}]*\btoGitRel\b[^}]*\}\s*from\s*"\.\/base\.js"/.test(lcSrc),
+        "",
+      );
+    }
+
+    // ── 131⑯ (F-04)：readEntryUnified 识别损坏卡片并拒绝放行 ──
+    //
+    // ★★★★★ 2026-11-02（D373）· **这一条是 KNOWN 档，不是修复证据** —— 报告虚报。
+    //   反向验证 B4 实测：把补丁那行 `|| includes("损坏")` 删掉，这条断言**照样绿**。
+    //   根因（可确定读到）：`readFingerprint3` 唯一的 corrupt 出口是
+    //     `载体格式损坏或身份自证位不符（…）`（fingerprint.js:533）
+    //     ⇒ **恒含「自证位」三个字** ⇒ `fingerprintMismatchOf` 的旧判据
+    //     `includes("不一致") || includes("自证位")` 本来就把「损坏」整类拦住了。
+    //   ⇒ 补丁那行是**冗余防御**（无害、与全库口径一致，值得留），但**不是可达缺陷的修复**。
+    //   ★ 判据（D372 已立，本轮第 2 次验证）：**"报告说某处漏判" ≠ "那处真的能被走到"** ——
+    //     要证明可达，必须构造出只靠旧判据拦不住的输入；构造不出来就只能记 KNOWN。
+    {
+      const { readEntryUnified } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "card-ops.js")).href);
+      const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), "corrupt-card-"));
+      try {
+        const decDir = path.join(tmpRepo, "decisions");
+        fs.mkdirSync(decDir, { recursive: true });
+        const corruptCard = ["---", "dsh-fp-front: corrupt", "---", "# D100 Title"].join("\n");
+        fs.writeFileSync(path.join(decDir, "D100.md"), corruptCard, "utf8");
+        const info = { root: tmpRepo, memBase: tmpRepo, decisionsDir: "decisions" };
+        const res = readEntryUnified(tmpRepo, info, "decisions", "D100");
+        ok(
+          "131⑯ a: readEntryUnified 拒绝损坏卡片（★修前修后都绿 ⇒ 仅登记现状，不作为修复证据）",
+          res && res.found === false && String(res.reason).includes("自相矛盾"),
+          JSON.stringify(res)?.slice(0, 200),
+        );
+        // ★ 真正有区分力的那一条：证明**旧判据也拦得住**（即 F-04 不可达）
+        ok(
+          "131⑯ b ★可达性：损坏类 reason 恒含「自证位」⇒ 旧判据本来就拦得住（F-04 不可达）",
+          res && res.found === false && String(res.reason).includes("自证位"),
+          String(res?.reason ?? "").slice(0, 120),
+        );
+      } finally {
+        fs.rmSync(tmpRepo, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131⑰ (F-05)：repairConformance 在 .gitignore 压回反选行写盘受阻时返回结构化错误 ──
+    //
+    // ★★★★★ 2026-11-02（D373）：这条原版是**空守**，实测两次确认：
+    //   ① 它的夹具没写 `memoryRoot` ⇒ `memoryRoot === undefined` ⇒ **V2 项目**
+    //      ⇒ `repairConformance` 里那段 `.gitignore` 修复整个包在 `if (v3Now !== undefined)` 里
+    //      ⇒ **那条分支一次都没执行**（实测 actions 只有「清单补 revision」「新建日志目录」两项）；
+    //   ② 判据只有 `typeof res.ok === "boolean"` —— 成功路径下它当然也是 boolean。
+    //   ⇒ 拆掉修复（把 `return {ok:false…}` 改回 `throw fail(...)`）它**照样绿**（反向验证 B5 实测没见红）。
+    //   ★ 判据（本项目第 3 次栽在同一形状）：**断言必须能把执行推到被测那一支，
+    //     并且必须能在「拆掉修复」之后见红。** 只核"返回了对象没崩"等于没守。
+    {
+      const { repairConformance } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part4.js")).href);
+      const tmpRc = fs.mkdtempSync(path.join(os.tmpdir(), "rc-err-"));
+      const giPath = path.join(tmpRc, ".gitignore");
+      try {
+        // ★ 必须真走 init 建出 **V3** 结构（有 memoryRoot），否则那条分支不可达。
+        await initMod131.defineInitTool().execute(
+          { root: tmpRc, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", layout: "v3" },
+          { agent: { session: { header: { id: "s-131-17", cwd: tmpRc } } } },
+        );
+        const infoRc = part2Mod131.inspect(tmpRc);
+        const memRoot = String(infoRc.memoryRoot ?? "");
+        ok("131⑰ 前置：夹具真是 V3（memoryRoot 非空）", memRoot !== "", `memoryRoot=${JSON.stringify(memRoot)}`);
+
+        // 让 `/memRoot/` 先被记上、再被后面的 `!` 反选 ⇒ 逼出 needForNegation 那一支
+        const cur = fs.existsSync(giPath) ? fs.readFileSync(giPath, "utf8") : "";
+        fs.writeFileSync(giPath, `${cur}\n/${memRoot}/\n!/${memRoot}/\n`, "utf8");
+        // 只读 ⇒ writeFileAtomic 的 rename 会 EPERM（本机已实测，见 D373 卡「怎么真的造出写失败」）
+        try { fs.chmodSync(giPath, 0o444); } catch { /* chmod 失败就退化成"核源码形状"，见下一条 */ }
+
+        let res;
+        let threw;
+        try { res = repairConformance(tmpRc, { apply: true }); } catch (e) { threw = String(e?.message ?? e); }
+
+        // ★ 关键判据①：**不许抛**
+        ok("131⑰ a F-05：repairConformance 在写盘受阻时不抛未捕获异常", threw === undefined, threw ?? "未抛");
+        // ★ 关键判据②：返回必须是结构化对象（不是 undefined / 裸字符串）
+        const bogus = res === undefined || res === null || typeof res !== "object" || !("ok" in res);
+        ok("131⑰ b F-05：且返回结构化 { ok: boolean, ... }", bogus === false, JSON.stringify(res)?.slice(0, 200));
+        // ★ 关键判据③：若真的走到了写失败分支，reason 必须点明是 .gitignore 修复失败
+        if (res !== undefined && res.ok === false) {
+          ok(
+            "131⑰ c F-05：失败原因明确指向 .gitignore 修复（不是别的闸门顺带拦下的）",
+            String(res.reason).includes(".gitignore"),
+            JSON.stringify(res.reason).slice(0, 160),
+          );
+        } else {
+          skip("131⑰ c F-05 失败原因文案", "本机 chmod 未能让 rename 失败 ⇒ 未走到写失败分支，不判 PASS");
+        }
+      } finally {
+        try { fs.chmodSync(giPath, 0o666); } catch { /* 忽略 */ }
+        fs.rmSync(tmpRc, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131⑱ (F-01)：_backup/ 热备份目录绝不参与指纹扫描、盲扫、根定位与盖章，且子目录保留名不打指纹 ──
+    {
+      const { backupBeforeWrite } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "backup.js")).href);
+      const tmpF01 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-18-f01-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        fs.writeFileSync(
+          path.join(tmpF01, ".dsh-ledger.json"),
+          JSON.stringify({ projectId: pid, active: "LEDGER.md", decisionsDir: "decisions" }, null, 2) + "\n",
+          "utf8",
+        );
+        const ledgerPath = path.join(tmpF01, "LEDGER.md");
+        const stamped = fpMod131.applyFingerprint3("# Active Ledger\n\n- Task A\n", {
+          kind: "active",
+          project: pid,
+          key: "-",
+        });
+        fs.writeFileSync(ledgerPath, stamped.text, "utf8");
+        backupBeforeWrite({ memBase: tmpF01, rel: "LEDGER.md", prevText: stamped.text });
+
+        const sb = fpMod131.scanBlind(tmpF01);
+        const sbActive = sb.byKind.get("active") ?? [];
+        ok(
+          "131⑱ a F-01：scanBlind 默认排除 _backup/（不将 LEDGER.md.bak 当成活体指纹件）",
+          sbActive.length === 1 && sbActive[0].rel === "LEDGER.md",
+          JSON.stringify(sbActive.map((x) => x.rel)),
+        );
+
+        const renamedPath = path.join(tmpF01, "我的台账.md");
+        fs.renameSync(ledgerPath, renamedPath);
+        const resolved = fpMod131.resolveByIdentity(tmpF01, { name: "LEDGER.md", kind: "active", project: pid });
+        const reb = fpMod131.rebuildFromFingerprints(tmpF01);
+        ok(
+          "131⑱ b F-01：存在 _backup/LEDGER.md.bak 时改名 LEDGER.md 仍能唯一解析且 rebuildFromFingerprints 不误报歧义",
+          resolved.ok === true &&
+            resolved.rel === "我的台账.md" &&
+            reb.ok === true &&
+            (reb.byKind.get("active") ?? []).length === 1 &&
+            !reb.warnings.some((w) => w.includes("歧义")),
+          JSON.stringify({ resolved, warnings: reb.warnings }),
+        );
+
+        fs.unlinkSync(renamedPath);
+        const resolvedAfterDel = fpMod131.resolveByIdentity(tmpF01, { name: "LEDGER.md", kind: "active", project: pid });
+        ok(
+          "131⑱ c F-01：活体台账删除后 resolveByIdentity 报缺失（绝不误绑到 _backup/LEDGER.md.bak）",
+          resolvedAfterDel.ok === false,
+          JSON.stringify(resolvedAfterDel),
+        );
+
+        fs.copyFileSync(path.join(tmpF01, "_backup", "LEDGER.md.bak"), path.join(tmpF01, "_backup", "LEDGER-copy.md"));
+        const sfp = fpMod131.scanFingerprints(tmpF01);
+        const lpr = fpMod131.locateProjectRoots(tmpF01, pid, { upLevels: 0 });
+        fs.writeFileSync(path.join(tmpF01, "_backup", "untouched.md"), "# Untouched\n", "utf8");
+        const sd = fpMod131.stampDir(tmpF01, (rel) => ({ kind: "custom", key: rel, project: pid }));
+        ok(
+          "131⑱ d F-01：scanFingerprints / locateProjectRoots / stampDir 均排除 _backup/",
+          (sfp.byKind.get("active") ?? []).length === 0 &&
+            lpr.roots.length === 0 &&
+            !sd.updated.some((p) => p.startsWith("_backup/")),
+          JSON.stringify({ sfp: sfp.byKind.get("active"), lpr: lpr.roots, sdUpdated: sd.updated }),
+        );
+
+        const infoObj = {
+          memoryBase: tmpF01,
+          active: "LEDGER.md",
+          decisionsDir: "decisions",
+          handoffDir: "_handoff",
+          archiveDir: "_ledger-archive",
+          logDir: "_ledger-log",
+        };
+        ok(
+          "131⑱ e F-01：identityOfPath 对记忆子目录内的 README/INDEX/SECURITY 与隐藏文件返回 undefined",
+          fpMod131.identityOfPath(infoObj, path.join(tmpF01, "_handoff", "README.md")) === undefined &&
+            fpMod131.identityOfPath(infoObj, path.join(tmpF01, "_ledger-archive", "INDEX.md")) === undefined &&
+            fpMod131.identityOfPath(infoObj, path.join(tmpF01, "extensions", ".hidden.md")) === undefined &&
+            fpMod131.identityOfPath(infoObj, path.join(tmpF01, "_stash", "SECURITY.md")) === undefined &&
+            fpMod131.identityOfPath(infoObj, path.join(tmpF01, "_backup", "LEDGER.md")) === undefined,
+          "reserved/dotfile/backup identity check",
+        );
+      } finally {
+        fs.rmSync(tmpF01, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131⑲ (F-02)：detectTrackedMemory 与 installPreCommitHook 覆盖 _backup/ 热备份目录 ──
+    {
+      const { execFileSync } = await import("node:child_process");
+      const tmpF02 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-19-f02-"));
+      try {
+        fs.mkdirSync(path.join(tmpF02, "_backup"), { recursive: true });
+        execFileSync("git", ["init", "-q"], { cwd: tmpF02 });
+        execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tmpF02 });
+        execFileSync("git", ["config", "user.name", "Test"], { cwd: tmpF02 });
+        fs.writeFileSync(path.join(tmpF02, "_backup", "LEDGER.md.bak"), "secret backup\n", "utf8");
+        execFileSync("git", ["add", "-f", "_backup/LEDGER.md.bak"], { cwd: tmpF02 });
+
+        const dtm = part2Mod131.detectTrackedMemory(tmpF02);
+        ok(
+          "131⑲ a F-02：detectTrackedMemory 检出被强行 git add 的 _backup/LEDGER.md.bak",
+          dtm.ok === true && dtm.tracked.includes("_backup/LEDGER.md.bak"),
+          JSON.stringify(dtm),
+        );
+
+        const hk = part2Mod131.installPreCommitHook(tmpF02, { enabled: true });
+        let blocked = false;
+        try {
+          execFileSync("git", ["commit", "-m", "should block backup"], { cwd: tmpF02, stdio: "pipe" });
+        } catch {
+          blocked = true;
+        }
+        ok(
+          "131⑲ b F-02：pre-commit 钩子拦截暂存区中的 _backup/LEDGER.md.bak",
+          hk.installed === true && blocked === true,
+          JSON.stringify({ installed: hk.installed, blocked }),
+        );
+      } finally {
+        fs.rmSync(tmpF02, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131⑳ (F-03)：repairConformance 在卡片模式下不重建已退役的单文件 DECISIONS.md ──
+    {
+      const tmpF03 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-20-f03-"));
+      try {
+        fs.mkdirSync(path.join(tmpF03, "decisions"), { recursive: true });
+        fs.writeFileSync(
+          path.join(tmpF03, ".dsh-ledger.json"),
+          JSON.stringify(
+            {
+              projectId: fpMod131.newProjectId(),
+              active: "LEDGER.md",
+              decisions: "DECISIONS.md",
+              decisionsDir: "decisions",
+              revision: 1,
+            },
+            null,
+            2,
+          ) + "\n",
+          "utf8",
+        );
+        fs.writeFileSync(path.join(tmpF03, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(
+          path.join(tmpF03, "decisions", "D1.md"),
+          "# D1 — 卡片化决策\n- **状态**：长期有效\n- **拍板**：采用卡片目录\n",
+          "utf8",
+        );
+        const rep = part4Mod131.repairConformance(tmpF03, { apply: true });
+        ok(
+          "131⑳ F-03：repairConformance({ apply: true }) 在 decisions 已拆卡时不重建空 DECISIONS.md",
+          !fs.existsSync(path.join(tmpF03, "DECISIONS.md")),
+          JSON.stringify(rep.actions),
+        );
+      } finally {
+        fs.rmSync(tmpF03, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131㉑ (F-04)：renderExtensionInjection 与 readExtension 自动剥离三载体指纹元数据 ──
+    {
+      const tmpF04 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-21-f04-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        fs.writeFileSync(
+          path.join(tmpF04, ".dsh-ledger.json"),
+          JSON.stringify({ projectId: pid, active: "LEDGER.md" }, null, 2) + "\n",
+          "utf8",
+        );
+        fs.writeFileSync(path.join(tmpF04, "LEDGER.md"), "# 台账\n", "utf8");
+        const info = part2Mod131.inspect(tmpF04);
+        const cr = part8Mod131.createExtension(info, tmpF04, {
+          name: "api-map",
+          description: "记录全部对外 HTTP 接口",
+          mode: "plain",
+          inject: true,
+        });
+        part8Mod131.writeExtension(info, tmpF04, cr.created.id, {
+          content: "# 接口速查表\n\n- GET /v1/health -> 200 OK\n",
+        });
+        const rendered = part8Mod131.renderExtensionInjection(info, tmpF04);
+        const rdSingle = part8Mod131.readExtension(info, tmpF04, cr.created.id, {});
+
+        const crCard = part8Mod131.createExtension(info, tmpF04, {
+          name: "boss-cards",
+          description: "Boss 卡片",
+          mode: "decisions",
+        });
+        part8Mod131.writeExtension(info, tmpF04, crCard.created.id, { key: "B1", content: "# Boss 1\n- HP 1000\n" });
+        const rdCard = part8Mod131.readExtension(info, tmpF04, crCard.created.id, { key: "B1" });
+
+        const hasLeak = (s) =>
+          String(s).includes("dsh-fp-front") ||
+          String(s).includes("<!--dsh-id:") ||
+          String(s).includes("[dsh-fp-link]");
+        ok(
+          "131㉑ a F-04：renderExtensionInjection 注入内容剥离三载体指纹（不泄露信标、不挤占 maxChars）",
+          rendered.includes("GET /v1/health") && !hasLeak(rendered),
+          rendered.slice(0, 300),
+        );
+        ok(
+          "131㉑ b F-04：readExtension（单文件与卡片）返回干净正文（不含三载体指纹）",
+          rdSingle.ok === true && !hasLeak(rdSingle.text) && rdCard.ok === true && !hasLeak(rdCard.text),
+          JSON.stringify({ single: rdSingle.text, card: rdCard.text }),
+        );
+      } finally {
+        fs.rmSync(tmpF04, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131㉒ (F-05)：migrateToV3 同步迁移 _backup/ 热备份目录 ──
+    {
+      const { migrateToV3 } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part7.js")).href);
+      const { backupBeforeWrite, readBackup } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "backup.js")).href);
+      const tmpF05 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-22-f05-"));
+      try {
+        const proj = path.join(tmpF05, "my-app");
+        fs.mkdirSync(proj, { recursive: true });
+        fs.writeFileSync(
+          path.join(proj, ".dsh-ledger.json"),
+          JSON.stringify({ projectId: fpMod131.newProjectId(), active: "LEDGER.md", protocolVersion: 2 }, null, 2) + "\n",
+          "utf8",
+        );
+        fs.writeFileSync(path.join(proj, "LEDGER.md"), "# V2 台账\n", "utf8");
+        backupBeforeWrite({ memBase: proj, rel: "LEDGER.md", prevText: "# V2 台账（上一版）\n" });
+
+        const mig = migrateToV3(proj, { apply: true });
+        const extMem = path.join(proj, mig.targetDir);
+        const bkInV3 = readBackup(extMem, "LEDGER.md");
+        ok(
+          "131㉒ F-05：migrateToV3 将 _backup/ 一并迁入 V3 记忆目录且不在源码根残留",
+          mig.ok === true &&
+            bkInV3.exists === true &&
+            bkInV3.text === "# V2 台账（上一版）\n" &&
+            !fs.existsSync(path.join(proj, "_backup")),
+          JSON.stringify({ ok: mig.ok, bkExists: bkInV3.exists, oldExists: fs.existsSync(path.join(proj, "_backup")) }),
+        );
+      } finally {
+        fs.rmSync(tmpF05, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131㉓ (F-06)：renderRecentWork 校验 isUnderReal 物理边界并按分片号确定性决胜同毫秒 L1 ──
+    {
+      const tmpF06 = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-23-f06-"));
+      try {
+        const proj = path.join(tmpF06, "proj");
+        const outsideLog = path.join(tmpF06, "outside-log", "2026-W15");
+        fs.mkdirSync(proj, { recursive: true });
+        fs.mkdirSync(outsideLog, { recursive: true });
+        fs.writeFileSync(
+          path.join(outsideLog, "L1-turns.md"),
+          "- 2026-04-10 10:00:00 (L1) outside secret ｜ 做了什么：leaked ｜ 下一步：none\n",
+          "utf8",
+        );
+        const leaked = part2Mod131.renderRecentWork({ projectRoot: proj, logRel: "../outside-log" });
+        ok(
+          "131㉓ a F-06：renderRecentWork 拒绝越出 memoryBase 的 logDir（返回空串）",
+          leaked === "",
+          leaked.slice(0, 120),
+        );
+
+        const inLog = path.join(proj, "_ledger-log", "2026-W15");
+        fs.mkdirSync(inLog, { recursive: true });
+        const fixedTime = new Date("2026-04-10T10:05:00.000Z");
+        const shardNames = ["L1-turns.md", "L1-turns-002.md", "L1-turns-003.md", "L1-turns-004.md", "L1-turns-005.md"];
+        for (let i = 0; i < shardNames.length; i++) {
+          const p = path.join(inLog, shardNames[i]);
+          fs.writeFileSync(
+            p,
+            `- 2026-04-10 10:0${i}:00 (L1) shard-${i + 1} ｜ 做了什么：work ${i + 1} ｜ 下一步：step ${i + 1}\n`,
+            "utf8",
+          );
+          fs.utimesSync(p, fixedTime, fixedTime);
+        }
+        const recentOut = part2Mod131.renderRecentWork({ projectRoot: proj, logRel: "_ledger-log" });
+        ok(
+          "131㉓ b F-06：renderRecentWork 在 mtimeMs 相同时稳定选中最高分片号（L1-turns-005.md）",
+          recentOut.includes("shard-5") && !recentOut.includes("shard-1"),
+          recentOut.slice(0, 200),
+        );
+      } finally {
+        fs.rmSync(tmpF06, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131㉔ (F-01)：migrateToV3 拦截不存在的越界路径、自根路径（"." / "./"）、目标目录冲突以及悬空符号链接 ──
+    {
+      const { migrateToV3 } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part7.js")).href);
+      const tmpMig = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-24-mig-"));
+      try {
+        // ① 不存在的越界路径（decisions: "../outside.md"）不得逃过 existing 过滤被写进 V3 清单
+        const p1 = path.join(tmpMig, "p-nonexist-escape");
+        fs.mkdirSync(p1, { recursive: true });
+        fs.writeFileSync(path.join(p1, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(
+          path.join(p1, ".dsh-ledger.json"),
+          JSON.stringify({ active: "LEDGER.md", decisions: "../outside.md" }, null, 2) + "\n",
+          "utf8",
+        );
+        const r1 = migrateToV3(p1, { apply: true });
+        ok(
+          "131㉔ a F-01：migrateToV3 拒绝清单中尚不存在的越界路径（decisions: '../outside.md'）",
+          r1.ok === false && String(r1.reason).includes("../outside.md"),
+          JSON.stringify(r1),
+        );
+
+        // ② 自根路径（active: "."）不得通过校验并把整个项目根目录递归搬空
+        const p2 = path.join(tmpMig, "p-self-root");
+        fs.mkdirSync(p2, { recursive: true });
+        fs.writeFileSync(path.join(p2, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(
+          path.join(p2, ".dsh-ledger.json"),
+          JSON.stringify({ active: ".", decisions: "DECISIONS.md" }, null, 2) + "\n",
+          "utf8",
+        );
+        let r2;
+        try {
+          r2 = migrateToV3(p2, { apply: true });
+        } catch (e) {
+          r2 = { ok: false, threw: String(e?.message ?? e) };
+        }
+        ok(
+          "131㉔ b F-01：migrateToV3 拒绝自根路径（active: '.'），防止递归自复制整个项目",
+          r2.ok === false && String(r2.reason).includes("self-root-forbidden"),
+          JSON.stringify(r2),
+        );
+
+        // ③ 悬空符号链接（decisions: "DECISIONS.md" -> "../nonexistent"）不得因 existsSync=false 被静默漏检
+        const p3 = path.join(tmpMig, "p-dangling-link");
+        fs.mkdirSync(p3, { recursive: true });
+        fs.writeFileSync(path.join(p3, "LEDGER.md"), "# 台账\n", "utf8");
+        fs.writeFileSync(
+          path.join(p3, ".dsh-ledger.json"),
+          JSON.stringify({ active: "LEDGER.md", decisions: "DECISIONS.md" }, null, 2) + "\n",
+          "utf8",
+        );
+        let symOk = false;
+        try {
+          fs.symlinkSync(path.join(tmpMig, "no-such-target.md"), path.join(p3, "DECISIONS.md"));
+          symOk = true;
+        } catch {
+          symOk = false;
+        }
+        if (symOk) {
+          const r3 = migrateToV3(p3, { apply: true });
+          ok(
+            "131㉔ c F-01：migrateToV3 检出并拒绝悬空符号链接（不因 fs.existsSync=false 漏过）",
+            r3.ok === false && Array.isArray(r3.symlinked) && r3.symlinked.includes("DECISIONS.md"),
+            JSON.stringify(r3),
+          );
+        } else {
+          skip("131㉔ c F-01 悬空符号链接拦截", "当前环境不支持创建符号链接");
+        }
+      } finally {
+        fs.rmSync(tmpMig, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131㉕ (F-02)：memoryRoot 越界或清单损坏时，/ledger mode、/ledger show、writeManifestMode 与 renderInjectionBody 严守边界不静默降级 ──
+    {
+      const part1Mod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part1.js")).href);
+      const part3Mod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part3.js")).href);
+      const part5Mod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part5.js")).href);
+      const tmpGuard = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-25-guard-"));
+      try {
+        // ① memoryRoot: "../outside" + active: "LEDGER.md"（info.activeRel !== undefined）
+        const pUnsafe = path.join(tmpGuard, "p-unsafe-memroot");
+        fs.mkdirSync(pUnsafe, { recursive: true });
+        fs.writeFileSync(path.join(pUnsafe, "LEDGER.md"), "# 根目录残留旧台账\n", "utf8");
+        const origManifest = JSON.stringify({ memoryRoot: "../outside", active: "LEDGER.md" }, null, 2) + "\n";
+        fs.writeFileSync(path.join(pUnsafe, ".dsh-ledger.json"), origManifest, "utf8");
+
+        const infoU = part2Mod131.inspect(pUnsafe);
+        const wmRes = part1Mod131.writeManifestMode(pUnsafe, infoU, "surgical");
+        const injU = part3Mod131.renderInjectionBody(infoU);
+
+        const modeCmdRes = await part5Mod131.runLedgerSub({}, execFor131(pUnsafe, "s-25-mode"), {}, "mode", {}, "surgical");
+        const showCmdRes = await part5Mod131.runLedgerSub({}, execFor131(pUnsafe, "s-25-show"), {}, "show", {}, "");
+
+        ok(
+          "131㉕ a F-02：memoryRoot 越界但 activeRel 存在时，/ledger mode、/ledger show 与 writeManifestMode 均拒绝操作且不改写清单",
+          wmRes.ok === false &&
+            modeCmdRes.kind === "error" &&
+            String(modeCmdRes.text).includes("memoryRoot") &&
+            showCmdRes.kind === "error" &&
+            String(showCmdRes.text).includes("memoryRoot") &&
+            fs.readFileSync(path.join(pUnsafe, ".dsh-ledger.json"), "utf8") === origManifest,
+          JSON.stringify({ wmRes, modeCmdRes, showCmdRes }),
+        );
+        ok(
+          "131㉕ b F-02：memoryRoot 越界时 renderInjectionBody 告警清单路径越界，不静默注入根目录旧 LEDGER.md",
+          injU.includes("清单路径越界被拦截") && !injU.includes("根目录残留旧台账"),
+          injU.slice(0, 240),
+        );
+
+        // ② 清单损坏（manifestBroken）且根目录存在 LEDGER.md 时，renderInjectionBody 优先告警清单文件损坏
+        const pBroken = path.join(tmpGuard, "p-broken-manifest");
+        fs.mkdirSync(pBroken, { recursive: true });
+        fs.writeFileSync(path.join(pBroken, "LEDGER.md"), "# 旧台账内容\n", "utf8");
+        fs.writeFileSync(path.join(pBroken, ".dsh-ledger.json"), "{ broken json ", "utf8");
+        const infoB = part2Mod131.inspect(pBroken);
+        const injB = part3Mod131.renderInjectionBody(infoB);
+        ok(
+          "131㉕ c F-02：.dsh-ledger.json 损坏且存在 LEDGER.md 时，renderInjectionBody 优先报告清单损坏",
+          injB.includes("清单文件损坏") && !injB.includes("旧台账内容"),
+          injB.slice(0, 240),
+        );
+      } finally {
+        fs.rmSync(tmpGuard, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131㉖ (F-03)：writeExtension / writeLedger / archiveLedger / writePrinciples 防输入内容指纹串卡污染且支持旧行内指纹回退 projectOf(root) ──
+    {
+      const tmpFpContam = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-26-fp-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        const foreignPid = "fedcba9876543210";
+        fs.writeFileSync(
+          path.join(tmpFpContam, ".dsh-ledger.json"),
+          JSON.stringify({ projectId: pid, active: "LEDGER.md", journal: "JOURNAL.md", principles: "PRINCIPLES.md", archiveDir: "_ledger-archive" }, null, 2) + "\n",
+          "utf8",
+        );
+        fs.writeFileSync(path.join(tmpFpContam, "LEDGER.md"), "# 台账\n", "utf8");
+        fpMod131.clearProjectCache();
+        const info = part2Mod131.inspect(tmpFpContam);
+
+        // ① 扩展卡片 B2 传入带 B1 指纹的 content 时，B2.md 必须盖 B2 自己的 key 与当前项目的 projectId
+        const ext = part8Mod131.createExtension(info, tmpFpContam, { name: "cards", description: "d", mode: "decisions" });
+        const wB1 = part8Mod131.writeExtension(info, tmpFpContam, ext.created.id, { key: "B1", content: "# Boss 1\n- P1\n" });
+        const b1Raw = fs.readFileSync(path.join(tmpFpContam, wB1.path), "utf8");
+        const wB2 = part8Mod131.writeExtension(info, tmpFpContam, ext.created.id, {
+          key: "B2",
+          content: b1Raw.replace("Boss 1", "Boss 2"),
+        });
+        const r3B2 = fpMod131.readFingerprint3(fs.readFileSync(path.join(tmpFpContam, wB2.path), "utf8"));
+        ok(
+          "131㉖ a F-03：writeExtension 新建卡片 B2 时不被输入 content 中的 B1 指纹污染 key",
+          r3B2.ok === true &&
+            r3B2.id.kind === "extension" &&
+            r3B2.id.project === pid &&
+            fpMod131.decodeKey(r3B2.id.key).endsWith("/cards/B2.md"),
+          JSON.stringify(r3B2.id),
+        );
+
+        // ② writeLedger / writePrinciples 传入带外项目卡片指纹的 content 时，强制保持当前单例的 kind、key="-" 与本项目 projectId
+        const foreignCardText = fpMod131.applyFingerprint3("# 外部内容\n\n## 当前目标\n- 测试\n", {
+          kind: "decisions",
+          project: foreignPid,
+          key: "D99",
+        }).text;
+        await part4Mod131.writeLedger(tmpFpContam, { target: "active", mode: "replace", content: foreignCardText, force: true }, execFor131(tmpFpContam, "s-26"));
+        const r3Act = fpMod131.readFingerprint3(fs.readFileSync(path.join(tmpFpContam, "LEDGER.md"), "utf8"));
+
+        part2Mod131.writePrinciples(tmpFpContam, { content: foreignCardText, mode: "replace", authorizedBy: "user-command" });
+        const r3Pr = fpMod131.readFingerprint3(fs.readFileSync(path.join(tmpFpContam, "PRINCIPLES.md"), "utf8"));
+
+        ok(
+          "131㉖ b F-03：writeLedger 与 writePrinciples 不被输入 content 的外项目/卡片指纹覆盖 kind、key 或 project",
+          r3Act.ok === true &&
+            r3Act.id.kind === "active" &&
+            r3Act.id.project === pid &&
+            r3Act.id.key === "-" &&
+            r3Pr.ok === true &&
+            r3Pr.id.kind === "principles" &&
+            r3Pr.id.project === pid &&
+            r3Pr.id.key === "-",
+          JSON.stringify({ act: r3Act.id, pr: r3Pr.id }),
+        );
+
+        // ③ 旧版单载体指纹（legacy 1-carrier）文件经 writeLedger 写入后升级为完整三载体指纹且优先使用当前项目 projectOf(root)
+        fs.writeFileSync(
+          path.join(tmpFpContam, "JOURNAL.md"),
+          fpMod131.applyFingerprint("# 流水账\n\n- 旧记录\n", { kind: "journal", project: pid, key: "-" }).text,
+          "utf8",
+        );
+        await part4Mod131.writeLedger(tmpFpContam, { target: "journal", mode: "append", content: "- 新记录\n" }, execFor131(tmpFpContam, "s-26"));
+        const r3J = fpMod131.readFingerprint3(fs.readFileSync(path.join(tmpFpContam, "JOURNAL.md"), "utf8"));
+        ok(
+          "131㉖ c F-03：含旧版单载体指纹的 JOURNAL.md 经 writeLedger 更新后自动补齐 projectOf(root) 升级为完整三载体指纹",
+          r3J.ok === true && r3J.sources.length === 3 && r3J.id.kind === "journal" && r3J.id.project === pid && r3J.id.key === "-",
+          JSON.stringify(r3J),
+        );
+      } finally {
+        fs.rmSync(tmpFpContam, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131㉗ (F-04)：spliceSingleFileEntry 强制保持单例 kind/key='-'，且单文件 lessons/goals 的 rm 操作自动补齐三载体指纹并回显 backup ──
+    {
+      const part2Tools131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2-tools.js")).href);
+      const tmpRm = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-27-rm-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        fs.writeFileSync(
+          path.join(tmpRm, ".dsh-ledger.json"),
+          JSON.stringify({ projectId: pid, active: "LEDGER.md", lessons: "LESSONS.md", goals: "GOALS.md" }, null, 2) + "\n",
+          "utf8",
+        );
+        fs.writeFileSync(path.join(tmpRm, "LEDGER.md"), "# 台账\n", "utf8");
+        fpMod131.clearProjectCache();
+
+        // ① 构造含卡片 key 行内信标（<!--dsh-id:pid:L99-->）的 LESSONS.md 与无指纹的 GOALS.md
+        const inlineCardLessons =
+          "# 经验与教训 <!--dsh-id:" + pid + ":L99-->\n\n" +
+          "## 教训 L1 · 边界\n- 标题: 第一条\n- 根因: 根因一\n\n" +
+          "## 教训 L2 · 逻辑\n- 标题: 第二条\n- 根因: 根因二\n";
+        fs.writeFileSync(path.join(tmpRm, "LESSONS.md"), inlineCardLessons, "utf8");
+
+        const plainGoals =
+          "# 目标树\n\n" +
+          "## 目标 g1 · root\n- parent: -\n- title: 根目标\n- 更新于: 2026-11-01\n\n" +
+          "## 目标 g2 · active\n- parent: -\n- title: 待删目标\n- 更新于: 2026-11-01\n";
+        fs.writeFileSync(path.join(tmpRm, "GOALS.md"), plainGoals, "utf8");
+
+        const lRm = await part2Tools131.defineLessonsTool().execute({ root: tmpRm, op: "rm", id: "L1" }, execFor131(tmpRm, "s-27"));
+        const gRm = await part2Tools131.defineGoalsTool().execute({ root: tmpRm, op: "rm", id: "g2" }, execFor131(tmpRm, "s-27"));
+
+        const r3AfterL = fpMod131.readFingerprint3(fs.readFileSync(path.join(tmpRm, "LESSONS.md"), "utf8"));
+        const r3AfterG = fpMod131.readFingerprint3(fs.readFileSync(path.join(tmpRm, "GOALS.md"), "utf8"));
+
+        ok(
+          "131㉗ a F-04：单文件 LESSONS.md / GOALS.md 执行 rm 时回执包含 backup 字段",
+          lRm.ok === true &&
+            lRm.backup === "_backup/LESSONS.md.bak" &&
+            gRm.ok === true &&
+            gRm.backup === "_backup/GOALS.md.bak",
+          JSON.stringify({ lRm, gRm }),
+        );
+        ok(
+          "131㉗ b F-04：单文件 rm 后自动补齐三载体指纹且强制保持单例 key='-'（不被行内卡片 key 污染）",
+          r3AfterL.ok === true &&
+            r3AfterL.sources.length === 3 &&
+            r3AfterL.id.kind === "lessons" &&
+            r3AfterL.id.project === pid &&
+            r3AfterL.id.key === "-" &&
+            r3AfterG.ok === true &&
+            r3AfterG.sources.length === 3 &&
+            r3AfterG.id.kind === "goals" &&
+            r3AfterG.id.project === pid &&
+            r3AfterG.id.key === "-",
+          JSON.stringify({ l: r3AfterL.id, g: r3AfterG.id }),
+        );
+      } finally {
+        fs.rmSync(tmpRm, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131㉘ (F-05)：backupBeforeWrite 与 readBackup 兼容清单带 ./ 前缀的相对路径（如 active: "./LEDGER.md"） ──
+    {
+      const { backupBeforeWrite, readBackup } = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "backup.js")).href);
+      const tmpDot = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-28-dot-"));
+      try {
+        const pid = fpMod131.newProjectId();
+        fs.writeFileSync(
+          path.join(tmpDot, ".dsh-ledger.json"),
+          JSON.stringify({ projectId: pid, active: "./LEDGER.md" }, null, 2) + "\n",
+          "utf8",
+        );
+        fs.writeFileSync(path.join(tmpDot, "LEDGER.md"), "# 初始台账\n\n## 当前目标\n- 旧版本\n", "utf8");
+        const wRes = await part4Mod131.writeLedger(
+          tmpDot,
+          { target: "active", mode: "replace", content: "# 更新后台账\n\n## 当前目标\n- 新版本\n", force: true },
+          execFor131(tmpDot, "s-28"),
+        );
+        const rdBk = readBackup(tmpDot, "./LEDGER.md");
+        const directBk = backupBeforeWrite({ memBase: tmpDot, rel: "./DECISIONS.md", prevText: "# 决策\n" });
+
+        ok(
+          "131㉘ F-05：active 为 './LEDGER.md' 时 writeLedger / backupBeforeWrite / readBackup 均成功创建并读回热备份（不报路径不合法）",
+          wRes.ok === true &&
+            wRes.backup === "_backup/LEDGER.md.bak" &&
+            wRes.backupFailed === undefined &&
+            rdBk.exists === true &&
+            rdBk.text.includes("旧版本") &&
+            directBk.ok === true &&
+            directBk.rel === "_backup/DECISIONS.md.bak",
+          JSON.stringify({ wRes, rdBkExists: rdBk.exists, directBk }),
+        );
+      } finally {
+        fs.rmSync(tmpDot, { recursive: true, force: true });
+      }
+    }
+
+    // ── 131㉙ (F-06)：readEntryUnified（卡片模式）、ledger_read、/ledger show、/ledger principles、renderInjectionBody 自动剥离三载体指纹，且 inspect()/writePrinciples 行数不被指纹膨胀 ──
+    {
+      const part3Mod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part3.js")).href);
+      const cardOpsMod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "card-ops.js")).href);
+      const part5Mod131 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part5.js")).href);
+      const tmpStrip = fs.mkdtempSync(path.join(os.tmpdir(), "audit131-29-strip-"));
+      try {
+        await initMod131.defineInitTool().execute(
+          { root: tmpStrip, active: "LEDGER.md", decisions: "DECISIONS.md", archiveDir: "_ledger-archive", layout: "v3" },
+          execFor131(tmpStrip, "s-29"),
+        );
+        const info0 = part2Mod131.inspect(tmpStrip);
+        const memBase = part2Mod131.memoryBaseOf(info0, tmpStrip);
+
+        // 写入带三载体指纹的活跃台账（精确 4 行正文）与原则文件（精确 2 行正文）
+        const activeBody = "# 活跃台账\n\n## 当前目标\n- 验证行数与剥离\n";
+        const stampedActive = fpMod131.applyFingerprint3(activeBody, {
+          kind: "active",
+          project: fpMod131.projectOf(tmpStrip),
+          key: "-",
+        }).text;
+        fs.writeFileSync(path.join(memBase, "LEDGER.md"), stampedActive, "utf8");
+
+        const prRes = part2Mod131.writePrinciples(tmpStrip, {
+          content: "# 根本原则\n- 第一条原则",
+          mode: "replace",
+          authorizedBy: "user-command",
+        });
+
+        // 写入一张决策卡 D1
+        cardOpsMod131.writeKindCard(tmpStrip, part2Mod131.inspect(tmpStrip), "decisions", "D1", "## D1 · 决策卡一\n\n- 结论：通过\n");
+
+        const infoAfter = part2Mod131.inspect(tmpStrip);
+        const cardRead = cardOpsMod131.readEntryUnified(tmpStrip, infoAfter, "decisions", "D1");
+        const readAct = await part4Mod131.defineReadTool().execute({ root: tmpStrip, target: "active" }, execFor131(tmpStrip, "s-29"));
+        const injBody = part3Mod131.renderInjectionBody(infoAfter);
+
+        const showOut = await part5Mod131.runLedgerSub({}, execFor131(tmpStrip, "s-29"), {}, "show", {}, "");
+        const prOut = await part5Mod131.runLedgerSub({}, execFor131(tmpStrip, "s-29"), {}, "principles", {}, "");
+
+        const hasFpCarrier = (s) =>
+          String(s).includes("dsh-fp-front") ||
+          String(s).includes("<!--dsh-id:") ||
+          String(s).includes("[dsh-fp-link]");
+
+        ok(
+          "131㉙ a F-06：readEntryUnified(卡片模式)、ledger_read、/ledger show、/ledger principles 与 renderInjectionBody 均剥离三载体指纹元数据",
+          cardRead.found === true &&
+            !hasFpCarrier(cardRead.text) &&
+            readAct.found === true &&
+            !hasFpCarrier(readAct.text) &&
+            !hasFpCarrier(injBody) &&
+            !hasFpCarrier(showOut.text) &&
+            !hasFpCarrier(prOut.text),
+          JSON.stringify({
+            card: cardRead.text,
+            readAct: readAct.text,
+            show: showOut.text.slice(0, 160),
+            pr: prOut.text.slice(0, 160),
+          }),
+        );
+        ok(
+          "131㉙ b F-06：inspect().activeLines 与 writePrinciples().lines 均按剥离三载体指纹后的真实正文计行（不虚增 5 行）",
+          infoAfter.activeLines === 4 && prRes.lines === 2,
+          "activeLines=" + infoAfter.activeLines + " prLines=" + prRes.lines,
+        );
+      } finally {
+        fs.rmSync(tmpStrip, { recursive: true, force: true });
+      }
+    }
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 情形 132（D377）：**原则 append 不得把"整份文件"再追加一遍** + 两条授权路要能被区分
+  //
+  //   🔴 真实事故：某项目 `PRINCIPLES.md` 里 **P0–P3 整整重复一遍**
+  //      （`## P0` 在第 5 行与第 97 行，中间第 92 行嵌着第二个 `# 根本原则`）。
+  //      根因：`append` 是把 body 原样拼在已有正文后面，而 body 是**一整份文件**。
+  //
+  //   ★★★ 这段守的是**行为**，不是"某函数住在哪个文件"（D323 纪律 21）。
+  //   ★★ 第一版修法只剥了文件头、没剥重复正文 ⇒ 探针三条全红 ⇒ 才补了第二段。
+  //      这里把两种情形都钉住：只剥头不够，只剥正文也不够。
+  // ══════════════════════════════════════════════════════════════════════════
+  section("情形 132：原则 append 防重复（文件头 + 重复正文块）+ 两条授权路可区分（D377）");
+  {
+    const part2Mod132 = await import(pathToFileURL(path.join(PROJECT_ROOT, "lib", "part2.js")).href);
+    const strip132 = part2Mod132.stripDuplicatePreamble;
+    ok("132① 导出 stripDuplicatePreamble（可被单测直接钉住）", typeof strip132 === "function");
+
+    const H1 = "# 根本原则";
+    const Q1 = "> 这个项目只有用户能改这份文件。以下条目由用户在 2026-10-15 与 2026-10-21 授权写入；";
+    const Q2 = "> 2026-11-01 用户授权新增 P4。";
+    const EX = [H1, "", Q1, Q2, "", "## P0 · 甲", "", "p0", "", "## P1 · 乙", "", "p1", "", "## P2 · 丙", "", "p2", ""].join("\n");
+    const FULL = EX + "\n## P3 · 丁\n\np3\n";
+
+    // 132② 正例：整份文件 append ⇒ 头与重复正文**都要**被剥
+    {
+      const out = strip132(FULL, EX);
+      eq("132② a 剥后不再含第二个 `# 根本原则`", (out.match(/^# 根本原则$/gm) ?? []).length, 0);
+      eq("132② b 剥后不再含重复的 P0", (out.match(/^## P0 /gm) ?? []).length, 0);
+      ok("132② c 真正新增的 P3 保留", out.includes("## P3 · 丁"));
+      ok("132② d 剥后不以空行开头", !/^\s/.test(out));
+    }
+    // 132③ 反例：正常小节 append ⇒ **一个字节都不能动**
+    {
+      const body = "## P9 · 新的一条\n\n正文\n";
+      ok("132③ 正常小节 append 逐字原样返回（不误剥）", strip132(body, EX) === body);
+    }
+    // 132④ 反例：H1 不同 ⇒ 原样（不能"见 # 就剥"）
+    {
+      const body = "# 另一份文件\n\n内容\n";
+      ok("132④ 不同一级标题 ⇒ 原样返回", strip132(body, EX) === body);
+    }
+    // 132⑤ 反例：H1 相同 + 引用块是**新的** + 正文不重复 ⇒ 原样（宁可少剥，别吞用户新写的说明）
+    {
+      const body = [H1, "", "> 一句全新的说明（existing 没有）。", "", "## P9 · 甲", "", "x", ""].join("\n");
+      ok("132⑤ 新引用 + 正文不重复 ⇒ 逐字原样返回（宁可少剥）", strip132(body, EX) === body);
+    }
+    // 132⑥ 反例：H1 相同 + 新引用 + **重复正文** ⇒ 保留新说明、剥掉重复正文
+    {
+      const body = [H1, "", "> 全新说明。", "", "## P0 · 甲", "", "p0", "", "## P1 · 乙", "", "p1", "",
+        "## P2 · 丙", "", "p2", "", "## P8 · 新增", "", "p8", ""].join("\n");
+      const out = strip132(body, EX);
+      eq("132⑥ a 重复正文被剥（P0 不重复）", (out.match(/^## P0 /gm) ?? []).length, 0);
+      ok("132⑥ b 新说明保留", out.includes("全新说明"));
+      ok("132⑥ c 新增 P8 保留", out.includes("## P8 · 新增"));
+    }
+    // 132⑦ 端到端：真写两次，文件里 P0 只能出现一次
+    {
+      const tmp132 = fs.mkdtempSync(path.join(os.tmpdir(), "d377-132-"));
+      try {
+        fs.writeFileSync(
+          path.join(tmp132, ".dsh-ledger.json"),
+          JSON.stringify({ version: 1, active: "LEDGER.md", archiveDir: "_a", principles: "PRINCIPLES.md" }, null, 2),
+          "utf8",
+        );
+        fs.writeFileSync(path.join(tmp132, "LEDGER.md"), "# 台账\n", "utf8");
+        const w1 = part2Mod132.writePrinciples(tmp132, { content: EX, mode: "replace", authorizedBy: "selftest-132" });
+        const w2 = part2Mod132.writePrinciples(tmp132, { content: FULL, mode: "append", authorizedBy: "selftest-132" });
+        const text = fs.readFileSync(path.join(tmp132, "PRINCIPLES.md"), "utf8");
+        ok("132⑦ a 两次写入都成功", w1.ok === true && w2.ok === true, JSON.stringify([w1.ok, w2.ok]));
+        eq("132⑦ b 端到端：P0 只出现一次", (text.match(/^## P0 /gm) ?? []).length, 1);
+        eq("132⑦ c 端到端：文件头只出现一次", (text.match(/^# 根本原则$/gm) ?? []).length, 1);
+        ok("132⑦ d 端到端：新增内容在", text.includes("## P3 · 丁"));
+      } finally {
+        fs.rmSync(tmp132, { recursive: true, force: true });
+      }
+    }
+    // 132⑧ 两条授权路必须能在**工具描述**上被区分开（否则模型只会挑"提议"、还不弹卡）
+    {
+      const srcTools = fs.readFileSync(path.join(PROJECT_ROOT, "lib", "part2-tools.js"), "utf8");
+      const iPro = srcTools.indexOf('name: "ledger_propose_principle"');
+      const segPro = srcTools.slice(iPro, iPro + 2800);
+      ok("132⑧ a propose 描述里点到了 `ledger_principles_access`（另一条路）", segPro.includes("ledger_principles_access"));
+      ok("132⑧ b propose 描述要求用户没选路时**先问一句**", /ASK ONE SHORT QUESTION/i.test(segPro));
+      ok("132⑧ c propose 描述明说它**不弹卡、不写盘**", /shows NO card/i.test(segPro) && /Nothing is written/i.test(segPro));
+      ok("132⑧ d propose 描述禁止声称「已加入」", /Never say the principle[\s\S]{0,40}has been added/i.test(segPro));
+      const iAcc = srcTools.indexOf("name: PRINCIPLE_GRANT_TOOL");
+      const segAcc = srcTools.slice(iAcc, iAcc + 2000);
+      ok("132⑧ e access 描述里也点到了 propose 这条别的路", segAcc.includes("ledger_propose_principle"));
+      ok("132⑧ f access 描述要求用户没选路时先问", /ask them which one they want/i.test(segAcc));
+    }
+  }
+}
 }
 
 if (failCount > 0) {

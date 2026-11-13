@@ -104,7 +104,9 @@ Thumbs.db
 #     `_probe-*`（283 个）与 7 个其他脚本；下面这六类**从未被跟踪**过 ⇒ 沿用它。
 #     ★ 所以「一次性手术脚本」与「探针」在**本仓库的既有惯例里就是两类**，不要混。
 tools/_out*
-tools/_p2.txt
+tools/_p*.txt
+tools/_msg-*.txt
+tools/*.legacy
 tools/_prep-archive-*
 tools/_apply-archive-*
 tools/_archive-v3-entries*

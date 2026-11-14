@@ -1,0 +1,227 @@
+﻿// _probe-d352-fp.mjs —— 文件指纹机制的正当性 + 反向验证
+// ★ 判据来源（本项目纪律）：
+//   · 正向：改名后仍能按指纹找回
+//   · 反向：**必须摘到能看见红** —— 把指纹摘掉/改错，解析必须失败
+//   · 假绿检查：两个项目混在一起必须报"身份不唯一"，不许瞎选
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  FP_VERSION, FP_MARK, newProjectId, sha8Of, renderFingerprintLine,
+  readFingerprint3, applyFingerprint3, isFingerprintLine,
+  scanFingerprints, resolveByIdentity, stampDir,
+} from "../lib/fingerprint.js";
+
+let pass = 0, fail = 0;
+const ok = (name, cond, extra) => {
+  if (cond) { pass++; console.log(`  ✅ ${name}`); }
+  else { fail++; console.log(`  ❌ ${name}${extra === undefined ? "" : "  ← " + extra}`); }
+};
+const eq = (name, a, b) => ok(name, a === b, `实际=${JSON.stringify(a)} 期望=${JSON.stringify(b)}`);
+
+// ══════════════════════════════════════════════════════════
+console.log("\n=== 1. 指纹行的生成与解析（纯字符串）===");
+{
+  const proj = "0123456789abcdef";
+  const line = renderFingerprintLine({ kind: "decisions", project: proj, key: "D195", sha8: "deadbeef" });
+  eq("生成的行含前缀", line.includes(FP_MARK), true);
+  ok("生成的行单行无换行", !line.includes("\n"), line);
+
+  const body = "# 标题\n\n正文内容\n";
+  const applied = applyFingerprint(body, { kind: "decisions", project: proj, key: "D195" });
+  ok("写入后首行是指纹", applied.text.startsWith(FP_MARK), applied.text.slice(0, 60));
+
+  const parsed = parseFingerprint(applied.text);
+  eq("解析 ok", parsed.ok, true);
+  eq("kind 正确", parsed.fp.kind, "decisions");
+  eq("project 正确", parsed.fp.project, proj);
+  eq("key 正确", parsed.fp.key, "D195");
+  eq("v 正确", parsed.fp.v, FP_VERSION);
+  eq("指纹落在第 0 行", parsed.line, 0);
+
+  // ★ 关键：写入后正文没被破坏
+  eq("正文完好", applied.text.slice(applied.text.indexOf("\n") + 1), body);
+
+  // ★ 幂等：重复写入不叠加
+  const twice = applyFingerprint(applied.text, { kind: "decisions", project: proj, key: "D195" });
+  const count = twice.text.split("\n").filter((l) => isFingerprintLine(l)).length;
+  eq("幂等：只有一行指纹", count, 1);
+  eq("幂等：移除计数为 1", twice.removed, 1);
+}
+
+// ══════════════════════════════════════════════════════════
+console.log("\n=== 2. 校验位：内容变了必须认得出 ===");
+{
+  const proj = "aaaaaaaaaaaaaaaa";
+  const v1 = applyFingerprint("内容 A\n", { kind: "active", project: proj, key: "-" });
+  const p1 = parseFingerprint(v1.text);
+  eq("原样校验通过", verifySeal(v1.text, p1).ok, true);
+
+  // 反向：改正文
+  const tampered = v1.text.replace("内容 A", "内容 B");
+  const p2 = parseFingerprint(tampered);
+  eq("★反向：正文被改，校验必须失败", verifySeal(tampered, p2).ok, false);
+  ok("失败原因说明了校验位", String(verifySeal(tampered, p2).reason).includes("校验位"));
+}
+
+// ══════════════════════════════════════════════════════════
+console.log("\n=== 3. 反向验证：指纹缺/坏时解析必须报错（不许假绿）===");
+{
+  eq("无指纹文本 → ok:false", parseFingerprint("# 普通文件\n正文\n").ok, false);
+  eq("指纹在 9 行之后 → 扫不到（只认头部）", parseFingerprint("\n\n\n\n\n\n\n\n\n" + renderFingerprintLine({ kind: "active", project: "1111111111111111", key: "-", sha8: "00000000" })).ok, false);
+  eq("空文本 → ok:false", parseFingerprint("").ok, false);
+  eq("非字符串 → ok:false", parseFingerprint(null).ok, false);
+
+  // 恶意/畸形：缺字段
+  const bad1 = "<!-- dsh-ledger-fp: v=1 kind=active project=short key=- sha8=deadbeef -->";
+  eq("project 只有 5 位 → 解析失败", parseFingerprint(bad1).ok, false);
+  const bad2 = "<!-- dsh-ledger-fp: v=1 kind=active project=0123456789abcdef key=- sha8=zzz -->";
+  eq("sha8 非十六进制 → 解析失败", parseFingerprint(bad2).ok, false);
+  const bad3 = "<!-- dsh-ledger-fp: v=1 kind=ACTIVE project=0123456789abcdef key=- sha8=deadbeef -->";
+  eq("kind 大写 → 解析失败（只认小写）", parseFingerprint(bad3).ok, false);
+
+  // 生成侧也要拒
+  let threw = false;
+  try { renderFingerprintLine({ kind: "Bad Kind", project: "0123456789abcdef", key: "-", sha8: "deadbeef" }); } catch { threw = true; }
+  ok("★生成侧拒绝非法 kind", threw);
+  threw = false;
+  try { renderFingerprintLine({ kind: "ok", project: "short", key: "-", sha8: "deadbeef" }); } catch { threw = true; }
+  ok("★生成侧拒绝非法 project", threw);
+}
+
+// ══════════════════════════════════════════════════════════
+console.log("\n=== 4. BOM 处理（中文文件常见）===");
+{
+  const withBom = "\uFEFF# 带 BOM 的文件\n正文\n";
+  const a = applyFingerprint(withBom, { kind: "active", project: "abcdef0123456789", key: "-" });
+  ok("★BOM 仍留在文件最前", a.text.startsWith("\uFEFF"), JSON.stringify(a.text.slice(0, 12)));
+  ok("指纹在 BOM 之后", a.text.slice(1).startsWith(FP_MARK), JSON.stringify(a.text.slice(0, 40)));
+  eq("解析得到 kind", parseFingerprint(a.text).fp.kind, "active");
+}
+
+// ══════════════════════════════════════════════════════════
+console.log("\n=== 5. 真文件：改名后按指纹找回（核心主张）===");
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fp-test-"));
+  const proj = newProjectId();
+  const mem = path.join(tmp, "mem");
+  fs.mkdirSync(mem, { recursive: true });
+  fs.mkdirSync(path.join(mem, "decisions"), { recursive: true });
+
+  // 造一个"台账"，带指纹
+  fs.writeFileSync(path.join(mem, "LEDGER.md"),
+    applyFingerprint("# 台账\n\n内容\n", { kind: "active", project: proj, key: "-" }).text, "utf8");
+  // 造两张决策卡
+  fs.writeFileSync(path.join(mem, "decisions", "D195.md"),
+    applyFingerprint("## D195 · 某决定\n", { kind: "decisions", project: proj, key: "D195" }).text, "utf8");
+  fs.writeFileSync(path.join(mem, "decisions", "D196.md"),
+    applyFingerprint("## D196 · 另一决定\n", { kind: "decisions", project: proj, key: "D196" }).text, "utf8");
+
+  // ① 按名字找：应命中
+  const r1 = resolveByIdentity(mem, { name: "LEDGER.md", kind: "active", project: proj });
+  eq("① 按名字找到", r1.ok, true);
+  eq("① how=name", r1.how, "name");
+
+  // ② ★★★ 改名：LEDGER.md → 我的笔记.md
+  fs.renameSync(path.join(mem, "LEDGER.md"), path.join(mem, "我的笔记.md"));
+  const r2 = resolveByIdentity(mem, { name: "LEDGER.md", kind: "active", project: proj });
+  eq("★★ 改名后仍能找到", r2.ok, true);
+  eq("★★ how=fp（走的是指纹）", r2.how, "fp");
+  eq("★★ 找到的是新名字", r2.rel, "我的笔记.md");
+  ok("★★ 并且明说被改过名", String(r2.note).includes("改过名"), r2.note);
+
+  // ③ 两张卡互相改名（甚至换位）
+  fs.renameSync(path.join(mem, "decisions", "D195.md"), path.join(mem, "decisions", "老早那个决定.md"));
+  const r3 = resolveByIdentity(mem, { name: "decisions/D195.md", kind: "decisions", project: proj });
+  eq("③ 卡片改名后…", r3.ok, false); // ★ 因为 kind=decisions 有两张卡 ⇒ 不唯一，必须拒
+  ok("③ 身份不唯一时**拒绝瞎选**", String(r3.reason).includes("不唯一"), r3.reason);
+  eq("③ 但列出了候选", Array.isArray(r3.candidates) && r3.candidates.length === 2, true);
+
+  // ④ 指定 key 后应能精确定位
+  const scan = scanFingerprints(mem, { project: proj });
+  const decs = scan.byKind.get("decisions") ?? [];
+  eq("④ 扫到 2 张决策卡", decs.length, 2);
+  const card195 = decs.find((d) => d.key === "D195");
+  ok("④ ★ 从指纹里恢复了 key=D195", card195 !== undefined, JSON.stringify(decs.map((d) => d.key)));
+  eq("④ key=D195 的文件已被改名", card195.rel, "decisions/老早那个决定.md");
+
+  // ⑤ 全删：必须报缺失，且提示"扫了多少"
+  fs.rmSync(path.join(mem, "我的笔记.md"));
+  const r5 = resolveByIdentity(mem, { name: "LEDGER.md", kind: "active", project: proj });
+  eq("⑤ 真删了 → ok:false", r5.ok, false);
+  ok("⑤ 报错说明扫了多少文件", String(r5.reason).includes("扫了"), r5.reason);
+
+  // ⑥ 别的项目的同名文件：必须拒绝
+  const otherProj = newProjectId();
+  fs.writeFileSync(path.join(mem, "LEDGER.md"),
+    applyFingerprint("# 别的项目的台账\n", { kind: "active", project: otherProj, key: "-" }).text, "utf8");
+  const r6 = resolveByIdentity(mem, { name: "LEDGER.md", kind: "active", project: proj });
+  eq("⑥ ★ 别的项目的文件 → 拒绝按名字认", r6.ok, false);
+  ok("⑥ 理由点名 project 不符", String(r6.reason).includes("project="), r6.reason);
+
+  // ⑦ kind 不符：必须拒绝
+  fs.writeFileSync(path.join(mem, "LEDGER.md"),
+    applyFingerprint("# 其实是决策文件\n", { kind: "decisions", project: proj, key: "-" }).text, "utf8");
+  const r7 = resolveByIdentity(mem, { name: "LEDGER.md", kind: "active", project: proj });
+  eq("⑦ ★ kind 不符 → 拒绝按名字认", r7.ok, false);
+  ok("⑦ 理由点名 kind", String(r7.reason).includes("kind="), r7.reason);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// ══════════════════════════════════════════════════════════
+console.log("\n=== 6. stampDir：批量补指纹，幂等 ===");
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fp-stamp-"));
+  const proj = newProjectId();
+  fs.mkdirSync(path.join(tmp, "lessons"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "lessons", "L1.md"), "## 教训 L1 · 尺子错\n- 根因: x\n", "utf8");
+  fs.writeFileSync(path.join(tmp, "lessons", "E2.md"), "## 经验 E2 · 机制\n- 出处: y\n", "utf8");
+
+  const idOf = (rel, name) => {
+    const m = /^([LE]\d+)\.md$/.exec(name);
+    if (m) return { kind: "lessons", project: proj, key: m[1] };
+    return undefined;
+  };
+  const s1 = stampDir(tmp, idOf);
+  eq("第一次：补了 2 个", s1.updated.length, 2);
+  eq("第一次：无失败", s1.failed.length, 0);
+
+  // 校验真写进去了
+  const t = fs.readFileSync(path.join(tmp, "lessons", "L1.md"), "utf8");
+  eq("L1 有指纹且 key 正确", parseFingerprint(t).fp.key, "L1");
+  eq("L1 kind 正确", parseFingerprint(t).fp.kind, "lessons");
+
+  // 幂等：再跑一次不该再改
+  const s2 = stampDir(tmp, idOf);
+  eq("第二次：不再更新", s2.updated.length, 0);
+  eq("第二次：全部跳过", s2.skipped.length, 2);
+
+  // 非 .md 不碰
+  fs.writeFileSync(path.join(tmp, "lessons", "note.txt"), "纯文本", "utf8");
+  const s3 = stampDir(tmp, idOf);
+  eq("不碰 .txt", s3.updated.length, 0);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// ══════════════════════════════════════════════════════════
+console.log("\n=== 7. 扫描安全：不跟随联接、坏文件不崩 ===");
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fp-scan-"));
+  const proj = newProjectId();
+  fs.mkdirSync(path.join(tmp, "a"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "a", "x.md"),
+    applyFingerprint("内容\n", { kind: "active", project: proj, key: "-" }).text, "utf8");
+  // 一个坏文件（不可读）不该让扫描崩
+  const r = scanFingerprints(tmp, { project: proj });
+  eq("扫到 1 个", r.scanned, 1);
+  eq("按 kind 有 active", (r.byKind.get("active") ?? []).length, 1);
+  eq("byProject 计到 1", r.byProject.get(proj), 1);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// ══════════════════════════════════════════════════════════
+console.log(`\n=== 结果：${pass} PASS / ${fail} FAIL ===`);
+if (fail !== 0) process.exitCode = 1;
+console.log("PROBE-COMPLETE");

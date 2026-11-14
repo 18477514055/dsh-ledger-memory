@@ -1,0 +1,119 @@
+﻿// _probe-d352-regress.mjs —— 全量解析回归：加指纹会不会破坏现有卡片解析？
+// ★ 这是 D351 里我自己标的"未实测风险"，必须先验再谈落地。
+// ★ 做法：在**一次性副本**上做（绝不在生产工作区改），比对加指纹前后的解析结果。
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { applyFingerprint3, readFingerprint3, stampDir, scanBlind } from "../lib/fingerprint.js";
+import { splitIntoCardParts, entryTocOf } from "../lib/card-ops.js";
+import { splitBlocks } from "../lib/part1.js";
+
+const MEM = "D:\\Deepseek工作区\\20-DSH插件\\04-其余插件\\10.项目台账\\10.项目台账-ledger-memory";
+const PROJ_FAKE = "fedcba9876543210";
+
+let pass = 0, fail = 0;
+const ok = (n, c, e) => { if (c) { pass++; console.log(`  ✅ ${n}`); } else { fail++; console.log(`  ❌ ${n}${e === undefined ? "" : "  ← " + e}`); } };
+const eq = (n, a, b) => ok(n, a === b, `实际=${JSON.stringify(a)} 期望=${JSON.stringify(b)}`);
+
+// ── 1. 决策卡：splitIntoCardParts 解析结果比对 ──
+console.log("=== 1. 决策卡解析（取 8 张真卡）===");
+const decDir = path.join(MEM, "decisions");
+const cards = fs.readdirSync(decDir).filter((f) => /^D\d+\.md$/.test(f)).slice(0, 8);
+console.log(`样本 ${cards.length} 张: ${cards.join(", ")}`);
+
+let sameToc = 0, sameParts = 0, checked = 0;
+for (const f of cards) {
+  const raw = fs.readFileSync(path.join(decDir, f), "utf8");
+  const key = f.replace(/\.md$/, "");
+  const after = applyFingerprint3(raw, { kind: "decisions", project: PROJ_FAKE, key }).text;
+
+  // 解析前后应等价：拿"去掉指纹后的文本"与原文本比
+  const back = applyFingerprint3(after, undefined, { strip: true }).text;
+  if (back === raw) sameParts++;
+  else console.log(`    ⚠ ${f} 剥离指纹后与原文本不一致`);
+
+  // TOC 解析：指纹会不会被当成条目
+  const tocBefore = entryTocOf(raw, 200);
+  const tocAfter = entryTocOf(after, 200);
+  const nBefore = Array.isArray(tocBefore) ? tocBefore.length : -1;
+  const nAfter = Array.isArray(tocAfter) ? tocAfter.length : -1;
+  if (nBefore === nAfter) sameToc++;
+  else console.log(`    ⚠ ${f} TOC 条目数变了: ${nBefore} → ${nAfter}`);
+  checked++;
+}
+eq(`剥离后逐字相同`, sameParts, checked);
+eq(`TOC 条目数不变`, sameToc, checked);
+
+// ── 2. 台账：splitBlocks 分块结果 ──
+console.log("\n=== 2. 台账分块（LEDGER.md）===");
+const ledgerRaw = fs.readFileSync(path.join(MEM, "LEDGER.md"), "utf8");
+const ledgerAfter = applyFingerprint3(ledgerRaw, { kind: "active", project: PROJ_FAKE, key: "-" }).text;
+{
+  const b1 = splitBlocks(ledgerRaw);
+  const b2 = splitBlocks(ledgerAfter);
+  const k1 = Array.isArray(b1) ? b1.length : Object.keys(b1 ?? {}).length;
+  const k2 = Array.isArray(b2) ? b2.length : Object.keys(b2 ?? {}).length;
+  eq(`分块数不变（${k1}）`, k1, k2);
+  // ★ 正确断言（D352 修正）：指纹行**不参与分块** ⇒ 第一块内容必须**逐字不变**，
+  //   而不是"多出一行"。原来那条断言写反了：它要求"第一块多出指纹行"，
+  //   而那正是我们**要避免**的（那会让第一块 hash 随 seal 变 ⇒ 每次注入都判成"变了"）。
+  const first1 = JSON.stringify(Array.isArray(b1) ? b1[0] : Object.values(b1)[0]);
+  const first2 = JSON.stringify(Array.isArray(b2) ? b2[0] : Object.values(b2)[0]);
+  eq("★ 第一块逐字不变（指纹已从分块中排除）", first2, first1);
+  ok("★ 且整份文本里确实有指纹", ledgerAfter.includes("dsh-ledger-fp"));
+}
+
+// ── 3. 经验卡 ──
+console.log("\n=== 3. 经验/教训卡解析（取 5 张）===");
+const lesDir = path.join(MEM, "lessons");
+const lcards = fs.readdirSync(lesDir).filter((f) => /^[LE]\d+\.md$/.test(f)).slice(0, 5);
+let lsame = 0;
+for (const f of lcards) {
+  const raw = fs.readFileSync(path.join(lesDir, f), "utf8");
+  const key = f.replace(/\.md$/, "");
+  const after = applyFingerprint3(raw, { kind: "lessons", project: PROJ_FAKE, key }).text;
+  const back = applyFingerprint3(after, undefined, { strip: true }).text;
+  if (back === raw) lsame++;
+  else console.log(`    ⚠ ${f} 剥离后不一致`);
+}
+eq(`${lcards.length} 张卡剥离后逐字相同`, lsame, lcards.length);
+
+// ── 4. 在副本上跑真 stampDir，统计覆盖率与体积增量 ──
+console.log("\n=== 4. 副本上真跑 stampDir（决策卡目录）===");
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fp-regress-"));
+const copyDec = path.join(tmp, "decisions");
+fs.cpSync(decDir, copyDec, { recursive: true });
+const before = fs.readdirSync(copyDec).reduce((a, f) => a + fs.statSync(path.join(copyDec, f)).size, 0);
+
+const idOf = (rel, name) => {
+  const m = /^(D\d+)\.md$/.exec(name);
+  if (m) return { kind: "decisions", project: PROJ_FAKE, key: m[1] };
+  return undefined;
+};
+const s = stampDir(copyDec, idOf);
+const after = fs.readdirSync(copyDec).reduce((a, f) => a + fs.statSync(path.join(copyDec, f)).size, 0);
+console.log(`  更新 ${s.updated.length} · 跳过 ${s.skipped.length} · 失败 ${s.failed.length}`);
+eq("无失败", s.failed.length, 0);
+ok("确实更新了卡", s.updated.length > 100, `只更新了 ${s.updated.length}`);
+
+const bytes = after - before;
+console.log(`  体积：${before} → ${after}（+${bytes} 字节，平均每张 +${(bytes / s.updated.length).toFixed(1)} 字节）`);
+ok("体积增幅合理（< 120 字节/文件）", bytes / s.updated.length < 120, `${(bytes / s.updated.length).toFixed(1)} 字节/文件`);
+
+// 幂等：再跑不变
+const s2 = stampDir(copyDec, idOf);
+eq("★ 幂等：第二次不再更新", s2.updated.length, 0);
+const after2 = fs.readdirSync(copyDec).reduce((a, f) => a + fs.statSync(path.join(copyDec, f)).size, 0);
+eq("★ 幂等：体积不再增长", after2, after);
+
+// 扫描：能在副本里认出全部卡
+const scan = scanBlind(tmp, { project: PROJ_FAKE });
+const got = (scan.byKind.get("decisions") ?? []).length;
+eq(`扫描认出 ${s.updated.length} 张决策卡`, got, s.updated.length);
+console.log(`  扫描耗时文件数 = ${scan.scanned} · 不可读 ${scan.unreadable} · 截断 ${scan.truncated}`);
+
+fs.rmSync(tmp, { recursive: true, force: true });
+
+console.log(`\n=== 结果：${pass} PASS / ${fail} FAIL ===`);
+if (fail !== 0) process.exitCode = 1;
+console.log("PROBE-COMPLETE");

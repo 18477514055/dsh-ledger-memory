@@ -7,7 +7,7 @@
 //
 // ★ 判据只来自 .publicallow.json，不在这里硬编码任何路径或正则。
 // ★ 只读：不改工作区、不碰远端。
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -59,7 +59,8 @@ const patterns = (M.content?.denyPatterns ?? []).map((p) => ({
 const args = process.argv.slice(2);
 const mode = args.find((a) => a.startsWith("--")) ?? "--check";
 const rest = args.filter((a) => !a.startsWith("--"));
-const ref = rest[0] ?? "HEAD";
+// ★ --build 的第一个位置参数是目标目录，不是 ref（否则 ref 会被当成路径 ⇒ git 报 not a valid object name）
+const ref = mode === "--build" ? (rest[1] ?? "HEAD") : (rest[0] ?? "HEAD");
 
 // ── 1. 候选文件（只看被跟踪的 ⇒ 未跟踪的本来就推不上去）───────────────
 const all = git("ls-tree", "-r", ref, "--name-only", "-z").split("\0").filter(Boolean);
@@ -111,6 +112,49 @@ for (const r of inScope) {
   }
 }
 
+// ── 4b. --guard <ref>：这是 pre-push 用的闸门 ─────────────────────────
+// 它不问“白名单”，只问一件更硬的事：**这棵树里有没有带条目前缀的文件**（例外除外）。
+// 因为白名单决定“应该有什么”，而泄露是“已经有什么” —— 已经混进去的脏文件，白名单拦不住。
+// ★ 放在报告之前 ⇒ hook 里只看到一行结论，不被判定表刷屏。
+if (mode === "--guard") {
+  const guardRef = rest[0] ?? "HEAD";
+  const gHits = hitsFor(guardRef);
+  const files = git("ls-tree", "-r", guardRef, "--name-only", "-z").split("\0").filter(Boolean);
+  const leak = files.filter((p) => {
+    const hits = gHits.get(p) ?? [];
+    return hits.some((h) => h.severity === "block") && !exemptWhy.has(p);
+  });
+  if (leak.length) {
+    console.error(`✗ 公开树闸门：ref=${guardRef} 里有 ${leak.length} 个文件带台账条目前缀`);
+    for (const p of leak.slice(0, 20)) console.error(`    ${p}`);
+    if (leak.length > 20) console.error(`    …另有 ${leak.length - 20} 个`);
+    console.error("  ⇒ 拒绝推送。先用 node tools/public-tree.mjs --build <目录> 生成干净树再提交。");
+    process.exit(1);
+  }
+  console.log(`✓ 公开树闸门：ref=${guardRef} 扫了 ${files.length} 个文件，未发现台账条目前缀（例外 ${exemptWhy.size} 个已登记）`);
+  process.exit(0);
+}
+
+// 按任意 ref 重扫（★ 不能用默认 ref 的结果去判另一棵树：那两棵树的文件集可能不同）
+function hitsFor(r) {
+  if (r === ref) return hitMap;
+  const m = new Map();
+  for (const p of patterns) {
+    let out = "";
+    try {
+      out = git("grep", "-l", "-I", "-E", "-e", p.re, r, "--", ".");
+    } catch (e) {
+      if (e.status !== 1) throw e;
+    }
+    for (const line of out.split(/\r?\n/).filter(Boolean)) {
+      const file = line.startsWith(`${r}:`) ? line.slice(r.length + 1) : line;
+      if (!m.has(file)) m.set(file, []);
+      m.get(file).push(p);
+    }
+  }
+  return m;
+};
+
 const show = (arr, label, n = 15) => {
   if (!arr.length) return;
   console.log(`\n=== ${label}（${arr.length}）===`);
@@ -153,6 +197,55 @@ if (mode === "--verify") {
   if (removed.length) {
     console.log("  ⚠️ 「将消失」= 清单判定它们不该公开。下次快照提交会真的删除，先确认再推。");
   }
+}
+
+// ── 4. --build：按清单真正铺出一棵公开树（只读仓库，只写目标目录）─────
+if (mode === "--build") {
+  const dest = rest[0];
+  const buildRef = rest[1] ?? ref;
+  if (!dest) {
+    console.error("用法：node tools/public-tree.mjs --build <目标目录> [ref]");
+    process.exit(2);
+  }
+  const tree = git("ls-tree", "-r", "-z", buildRef).split("\0").filter(Boolean);
+  const shaOf = new Map();
+  for (const line of tree) {
+    const tab = line.indexOf("\t");
+    const meta = line.slice(0, tab).split(/\s+/);
+    shaOf.set(line.slice(tab + 1), meta[2]);
+  }
+  const want = pub.map((p) => ({ path: p, sha: shaOf.get(p) })).filter((e) => e.sha);
+  if (want.length !== pub.length) {
+    console.error(`内部不一致：判定 ${pub.length} 个，取到 blob ${want.length} 个`);
+    process.exit(1);
+  }
+  // 一次 cat-file --batch 读全部 blob：比逐个 git show 快两个数量级
+  const r = spawnSync(GIT, ["cat-file", "--batch"], {
+    cwd: repo,
+    input: want.map((e) => e.sha).join("\n") + "\n",
+    maxBuffer: 1 << 30,
+  });
+  if (r.status !== 0) {
+    console.error(r.stderr.toString());
+    process.exit(1);
+  }
+  const buf = r.stdout;
+  let off = 0;
+  let n = 0;
+  for (const e of want) {
+    const nl = buf.indexOf(10, off);
+    const size = Number(buf.subarray(off, nl).toString("utf8").split(" ")[2]);
+    const body = buf.subarray(nl + 1, nl + 1 + size);
+    off = nl + 1 + size + 1;
+    const abs = path.join(dest, e.path);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, body);
+    n++;
+  }
+  console.log(`\n=== 已物料化公开树 ===`);
+  console.log(`  目标  ${dest}`);
+  console.log(`  写入  ${n} 个文件（判定将公开 ${pub.length} 个）`);
+  console.log(`  ★ 被挡下的 ${blocked.length} 个不在里面；这棵树可直接当一个提交的树用。`);
 }
 
 console.log("\nCOMPLETE");

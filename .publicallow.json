@@ -1,0 +1,50 @@
+{
+  "$comment": "公开树白名单。只有同时满足【命中 include】【不命中 deny】【通过 content 扫描】的文件，才会进入公开仓库。改这个文件 = 改公开面，按 D393 走：改完跑 node tools/public-tree.mjs --check 与 --verify，看红绿再决定。★ 清单本身可以公开：它只列“哪些能出去”，不列“我们内部有什么”。",
+  "version": 1,
+  "include": [
+    "README.md",
+    "package.json",
+    "LICENSE",
+    "cordis.patch.yml",
+    ".publicallow.json",
+    "lib/**",
+    "tools/**",
+    ".gitignore"
+  ],
+  "deny": [
+    "**/node_modules/**",
+    "**/*.bak",
+    "**/*.local.*",
+    "**/.DS_Store"
+  ],
+  "content": {
+    "denyPatterns": [
+      {
+        "id": "ledger-entry",
+        "re": "- \\[[0-9a-f]{4}\\] ",
+        "why": "台账条目前缀（行首的「减号-空格-[四位会话标记]-空格」）。★ 不要加行首锚：泄露形态是「字符串里嵌着条目前缀」，行首根本不是它；也不要要求后面跟两个星号 —— 常见变体只到「减号-空格-[四位标记]-空格-时间占位」为止。★ 本行故意不写真实样本：写了清单就会自己命中自己（实测过，还连带把一个真实条目标题写进了公开库）。"
+      },
+      {
+        "id": "internal-path",
+        "re": "项目台账-ledger-memory|_ledger-archive|用户原话",
+        "severity": "warn",
+        "why": "只提到内部路径名/栏目名，不带条目内容 —— 单独出现不算泄露（README 本来就写着这些），故只告警不挡"
+      }
+    ],
+    "exceptions": [
+      {
+        "path": "lib/part1.js",
+        "why": "注释里用「减号-空格-[占位] xxx」这种**格式示例**讲比对逻辑（part1.js:2516），不是条目正文"
+      },
+      {
+        "path": "tools/selftest.mjs",
+        "why": "测试夹具用「减号-空格-[占位] A 做的事」这类**占位**验证解析（selftest.mjs:3567 等），不含真实条目"
+      }
+    ],
+    "notes": [
+      "★ 判据只认「台账条目正文形态」。LEDGER-BLOCKS 不算：它是插件的注入围栏常量（lib/part3.js 里就写着），出现在代码里是设计如此。",
+      "★ 记忆目录名 / 归档目录名也不算：那只说明脚本知道路径，不说明它带着内容。",
+      "★ 新发现的泄露形态不要塞进 deny：加进来之前先问「它是不是设计的一部分」。"
+    ]
+  }
+}
